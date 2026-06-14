@@ -1,0 +1,1089 @@
+{
+  "responses": {
+    "assess_uncertainty": {
+      "choice_set": [],
+      "confidence": 0.84,
+      "model": "fixture-model",
+      "non_blocking_user_action": "",
+      "provider": "fixture-llm",
+      "reason": "Fixture task has enough context for a default one-shot path.",
+      "safe_default": "Use the selected Nexus selection candidate as the default path.",
+      "severity": "low",
+      "tripped": false
+    },
+    "classify_route": {
+      "artifacts": true,
+      "checkmodel": true,
+      "confidence": 0.7,
+      "hypotheses": [
+        {
+          "claim": "Fixture LLM inferred the user wants a one-shot answer without clarification.",
+          "confidence": 0.86,
+          "evidence": "fixture prompt case",
+          "id": "H1"
+        },
+        {
+          "claim": "Complete the default structured fixture request with assumptions, candidate search, and verification.",
+          "confidence": 0.82,
+          "evidence": "fixture route semantic fields",
+          "id": "H2"
+        }
+      ],
+      "language": "zh",
+      "level": "L2_structured",
+      "profile": "cogev",
+      "real_objective": "Complete the default structured fixture request with assumptions, candidate search, and verification.",
+      "reason": "default structured task",
+      "search": false,
+      "surface_request": "fixture semantic surface request",
+      "task_type": "structured_decision_or_design"
+    },
+    "classify_route_cases": [
+      {
+        "contains": [
+          "架构",
+          "冲突"
+        ],
+        "response": {
+          "artifacts": true,
+          "checkmodel": true,
+          "confidence": 0.9,
+          "hypotheses": [
+            {
+              "claim": "Fixture LLM inferred an architecture conflict cleanup objective.",
+              "confidence": 0.86,
+              "evidence": "架构 and 冲突 prompt signals",
+              "id": "H1"
+            },
+            {
+              "claim": "Optimize the requested agent/prompt system through one-shot candidate search and evidence-aware validation.",
+              "confidence": 0.83,
+              "evidence": "fixture route semantic fields",
+              "id": "H2"
+            }
+          ],
+          "language": "zh",
+          "level": "L4_evolutionary",
+          "profile": "research",
+          "real_objective": "Optimize the requested agent/prompt system through one-shot candidate search and evidence-aware validation.",
+          "reason": "architecture conflict resolution",
+          "search": true,
+          "surface_request": "开始填充架构，去除不必要的冗余内容，解决逻辑冲突",
+          "task_type": "architecture_refactor_or_migration"
+        }
+      },
+      {
+        "contains": [
+          "agent系统",
+          "演化",
+          "调优"
+        ],
+        "response": {
+          "artifacts": true,
+          "checkmodel": true,
+          "confidence": 0.9,
+          "hypotheses": [
+            {
+              "claim": "Fixture LLM inferred the user wants a one-shot answer without clarification.",
+              "confidence": 0.86,
+              "evidence": "fixture prompt case",
+              "id": "H1"
+            },
+            {
+              "claim": "Optimize the requested agent/prompt system through one-shot candidate search and evidence-aware validation.",
+              "confidence": 0.82,
+              "evidence": "fixture route semantic fields",
+              "id": "H2"
+            }
+          ],
+          "language": "zh",
+          "level": "L4_evolutionary",
+          "profile": "research",
+          "real_objective": "Optimize the requested agent/prompt system through one-shot candidate search and evidence-aware validation.",
+          "reason": "agent-system paradigm evolution tuning",
+          "search": true,
+          "surface_request": "fixture semantic surface request",
+          "task_type": "architecture_refactor_or_migration"
+        }
+      },
+      {
+        "contains": [
+          "谢谢"
+        ],
+        "response": {
+          "artifacts": false,
+          "checkmodel": false,
+          "confidence": 0.95,
+          "hypotheses": [
+            {
+              "claim": "Fixture LLM inferred the user wants a one-shot answer without clarification.",
+              "confidence": 0.86,
+              "evidence": "fixture prompt case",
+              "id": "H1"
+            },
+            {
+              "claim": "Reply briefly to the user acknowledgement.",
+              "confidence": 0.82,
+              "evidence": "fixture route semantic fields",
+              "id": "H2"
+            }
+          ],
+          "language": "zh",
+          "level": "L0_direct",
+          "profile": "quick",
+          "real_objective": "Reply briefly to the user acknowledgement.",
+          "reason": "short thanks",
+          "search": false,
+          "surface_request": "fixture semantic surface request",
+          "task_type": "direct_answer_or_small_edit"
+        }
+      },
+      {
+        "contains": [
+          "本地",
+          "测试",
+          "fixture",
+          "删除"
+        ],
+        "response": {
+          "artifacts": false,
+          "checkmodel": false,
+          "confidence": 0.9,
+          "hypotheses": [
+            {
+              "claim": "Fixture LLM inferred the user wants a one-shot answer without clarification.",
+              "confidence": 0.86,
+              "evidence": "fixture prompt case",
+              "id": "H1"
+            },
+            {
+              "claim": "Safely complete the local fixture/code task with verification and rollback.",
+              "confidence": 0.82,
+              "evidence": "fixture route semantic fields",
+              "id": "H2"
+            }
+          ],
+          "language": "zh",
+          "level": "L1_clarified",
+          "profile": "implement",
+          "real_objective": "Safely complete the local fixture/code task with verification and rollback.",
+          "reason": "reversible local test fixture edit",
+          "search": false,
+          "surface_request": "fixture semantic surface request",
+          "task_type": "technical_execution_or_codebase_task"
+        }
+      },
+      {
+        "contains": [
+          "ai",
+          "prompt"
+        ],
+        "response": {
+          "artifacts": true,
+          "checkmodel": true,
+          "confidence": 0.86,
+          "hypotheses": [
+            {
+              "claim": "Fixture LLM inferred the user wants a one-shot answer without clarification.",
+              "confidence": 0.86,
+              "evidence": "fixture prompt case",
+              "id": "H1"
+            },
+            {
+              "claim": "Optimize the requested agent/prompt system through one-shot candidate search and evidence-aware validation.",
+              "confidence": 0.82,
+              "evidence": "fixture route semantic fields",
+              "id": "H2"
+            }
+          ],
+          "language": "zh",
+          "level": "L4_evolutionary",
+          "profile": "research",
+          "real_objective": "Optimize the requested agent/prompt system through one-shot candidate search and evidence-aware validation.",
+          "reason": "AI prompt/eval workflow optimization",
+          "search": true,
+          "surface_request": "fixture semantic surface request",
+          "task_type": "architecture_refactor_or_migration"
+        }
+      },
+      {
+        "contains": [
+          "迭代",
+          "优化"
+        ],
+        "response": {
+          "artifacts": true,
+          "checkmodel": true,
+          "confidence": 0.88,
+          "hypotheses": [
+            {
+              "claim": "Fixture LLM inferred the user wants a one-shot answer without clarification.",
+              "confidence": 0.86,
+              "evidence": "fixture prompt case",
+              "id": "H1"
+            },
+            {
+              "claim": "Optimize the requested agent/prompt system through one-shot candidate search and evidence-aware validation.",
+              "confidence": 0.82,
+              "evidence": "fixture route semantic fields",
+              "id": "H2"
+            }
+          ],
+          "language": "zh",
+          "level": "L4_evolutionary",
+          "profile": "research",
+          "real_objective": "Optimize the requested agent/prompt system through one-shot candidate search and evidence-aware validation.",
+          "reason": "multi-axis project evolution",
+          "search": true,
+          "surface_request": "fixture semantic surface request",
+          "task_type": "architecture_refactor_or_migration"
+        }
+      }
+    ],
+    "critique_candidate": {
+      "confidence": 0.88,
+      "findings": [
+        {
+          "candidate_id": "candidate-under-review",
+          "evidence_gap": "No concrete artifact or command is named for validating the claim.",
+          "finding": "The candidate needs an explicit evidence or test hook for its strongest claim.",
+          "id": "semantic:evidence-gap",
+          "mutation_hint": "Add a specific validation artifact, command, or ledger entry.",
+          "severity": "medium"
+        },
+        {
+          "candidate_id": "candidate-under-review",
+          "evidence_gap": "N/A",
+          "finding": "The candidate can be shorter if concepts that do not change interfaces, gates, or tests are removed.",
+          "id": "semantic:remove-redundancy",
+          "mutation_hint": "Bind each concept to an interface, artifact, gate, or test.",
+          "severity": "low"
+        }
+      ],
+      "model": "fixture-model",
+      "new_information": [
+        "llm_critic_identified_missing_validation_hook",
+        "llm_critic_identified_redundancy_removal_rule"
+      ],
+      "provider": "fixture-llm"
+    },
+    "extract_governance": {
+      "checkmodel_tier_recommendation": "T3",
+      "claims": [
+        {
+          "claim": "Selected candidate improves evidence-first evolution",
+          "confidence": 0.82,
+          "evidence": "fixture final scored candidates and LLM rationales",
+          "risk_if_wrong": "the selected path may optimize presentation rather than outcome",
+          "validation_path": "inspect Nexus-frontier-report.json and Nexus runtime self-check"
+        },
+        {
+          "claim": "Complexity remains bounded by LLM-first runtime",
+          "confidence": 0.78,
+          "evidence": "no no-LLM fallback branches in candidate design",
+          "risk_if_wrong": "complexity may creep through hidden adapters",
+          "validation_path": "run compileall and unit tests"
+        }
+      ],
+      "cognitive_debt": [
+        {
+          "item": "Need real provider smoke beyond fixture",
+          "paydown_action": "run with a real LiteLLM model and compare governance report",
+          "severity": "medium"
+        }
+      ],
+      "complexity_score": 4,
+      "confidence": 0.86,
+      "model": "fixture-model",
+      "provider": "fixture-llm",
+      "recommended_next_action": "Run one real-provider smoke and inspect token/cost telemetry.",
+      "review_summary": "Fixture governance keeps claim evidence and cognitive debt visible without restoring the large v0.6 stack.",
+      "status": "pass_with_review"
+    },
+    "generate_candidates": {
+      "candidates": [
+        {
+          "claims": [
+            {
+              "claim": "Evidence-first evolution improves decision quality",
+              "confidence": 0.8,
+              "evidence": "fixture LLM rationale",
+              "type": "inference"
+            }
+          ],
+          "design_lines": [
+            "Create a claim/evidence table",
+            "Make validation commands explicit",
+            "Keep rollback task-local"
+          ],
+          "relevance_score": 0.8,
+          "relevance_trace": [
+            "Fixture candidate 1 is relevant to the active CognitiveEvolve problem through evidence, validation, rollback, or user-outcome optimization."
+          ],
+          "risks": [
+            "The LLM may overstate evidence if downstream checks are skipped"
+          ],
+          "rollback": "Delete this candidate artifact and regenerate with the configured LLM.",
+          "strategy": "llm-evidence-first",
+          "summary": "Prioritize evidence-backed claims and user decision clarity before expanding scope.",
+          "title": "LLM Evidence-First Candidate",
+          "validation": [
+            "Run native eval and inspect LLM runtime report"
+          ]
+        },
+        {
+          "claims": [
+            {
+              "claim": "Cognitive-gain artifacts reduce review friction",
+              "confidence": 0.78,
+              "evidence": "fixture LLM rationale",
+              "type": "recommendation"
+            }
+          ],
+          "design_lines": [
+            "Surface a decision card",
+            "Show assumptions separately",
+            "Preserve dissenting alternatives"
+          ],
+          "relevance_score": 0.8,
+          "relevance_trace": [
+            "Fixture candidate 2 is relevant to the active CognitiveEvolve problem through evidence, validation, rollback, or user-outcome optimization."
+          ],
+          "risks": [
+            "Too much explanation can increase review load"
+          ],
+          "rollback": "Re-run with a smaller candidate count.",
+          "strategy": "llm-cognitive-gain",
+          "summary": "Optimize for user cognitive gain and review-ready next actions.",
+          "title": "LLM Cognitive-Gain Candidate",
+          "validation": [
+            "Check cognitive feedback artifact and selected candidate rationale"
+          ]
+        },
+        {
+          "claims": [
+            {
+              "claim": "Risk-control gates prevent unsafe overclaiming",
+              "confidence": 0.82,
+              "evidence": "fixture LLM rationale",
+              "type": "inference"
+            }
+          ],
+          "design_lines": [
+            "Bind high-impact claims to evidence",
+            "Add rollback trigger",
+            "Escalate uncertain claims"
+          ],
+          "relevance_score": 0.8,
+          "relevance_trace": [
+            "Fixture candidate 3 is relevant to the active CognitiveEvolve problem through evidence, validation, rollback, or user-outcome optimization."
+          ],
+          "risks": [
+            "Excessive gates can slow adoption"
+          ],
+          "rollback": "Drop the stricter gates if user chooses faster iteration.",
+          "strategy": "llm-risk-control",
+          "summary": "Reduce risk by requiring CheckModel and rollback gates before acceptance.",
+          "title": "LLM Risk-Control Candidate",
+          "validation": [
+            "Inspect checkmodel report and archive summary"
+          ]
+        },
+        {
+          "claims": [
+            {
+              "claim": "Minimize surface-area change while preserving evidence and rollback.",
+              "confidence": 0.77,
+              "evidence": "fixture LLM rationale",
+              "type": "recommendation"
+            }
+          ],
+          "design_lines": [
+            "Select the smallest viable interface change",
+            "Record changed contracts",
+            "Run smoke validation"
+          ],
+          "relevance_score": 0.8,
+          "relevance_trace": [
+            "Fixture candidate 4 is relevant to the active CognitiveEvolve problem through evidence, validation, rollback, or user-outcome optimization."
+          ],
+          "risks": [
+            "Minimal change can under-address broad architecture drift"
+          ],
+          "rollback": "Drop this seed and regenerate the candidate pool.",
+          "strategy": "llm-minimal-change",
+          "summary": "Minimize surface-area change while preserving evidence and rollback.",
+          "title": "LLM Minimal-Change Candidate",
+          "validation": [
+            "Inspect generated nexus_search and verifier artifacts"
+          ]
+        },
+        {
+          "claims": [
+            {
+              "claim": "Drive the answer from explicit public/internal contracts.",
+              "confidence": 0.77,
+              "evidence": "fixture LLM rationale",
+              "type": "recommendation"
+            }
+          ],
+          "design_lines": [
+            "Identify the public contract",
+            "Bind internal steps to that contract",
+            "Reject unowned side paths"
+          ],
+          "relevance_score": 0.8,
+          "relevance_trace": [
+            "Fixture candidate 5 is relevant to the active CognitiveEvolve problem through evidence, validation, rollback, or user-outcome optimization."
+          ],
+          "risks": [
+            "Over-focusing on contracts may delay user-visible improvements"
+          ],
+          "rollback": "Drop this seed and regenerate the candidate pool.",
+          "strategy": "llm-interface-contract",
+          "summary": "Drive the answer from explicit public/internal contracts.",
+          "title": "LLM Interface-Contract Candidate",
+          "validation": [
+            "Inspect generated nexus_search and verifier artifacts"
+          ]
+        },
+        {
+          "claims": [
+            {
+              "claim": "Let verifier gates determine what survives synthesis.",
+              "confidence": 0.77,
+              "evidence": "fixture LLM rationale",
+              "type": "recommendation"
+            }
+          ],
+          "design_lines": [
+            "List hard and soft gates",
+            "Attach evidence to each gate",
+            "Escalate unsupported claims"
+          ],
+          "relevance_score": 0.8,
+          "relevance_trace": [
+            "Fixture candidate 6 is relevant to the active CognitiveEvolve problem through evidence, validation, rollback, or user-outcome optimization."
+          ],
+          "risks": [
+            "Strict gates may produce conservative answers"
+          ],
+          "rollback": "Drop this seed and regenerate the candidate pool.",
+          "strategy": "llm-verification-led",
+          "summary": "Let verifier gates determine what survives synthesis.",
+          "title": "LLM Verification-Led Candidate",
+          "validation": [
+            "Inspect generated nexus_search and verifier artifacts"
+          ]
+        },
+        {
+          "claims": [
+            {
+              "claim": "Make every proposed action reversible before optimization.",
+              "confidence": 0.77,
+              "evidence": "fixture LLM rationale",
+              "type": "recommendation"
+            }
+          ],
+          "design_lines": [
+            "Define rollback triggers",
+            "Prefer read-only inspection first",
+            "Patch only after evidence is recorded"
+          ],
+          "relevance_score": 0.8,
+          "relevance_trace": [
+            "Fixture candidate 7 is relevant to the active CognitiveEvolve problem through evidence, validation, rollback, or user-outcome optimization."
+          ],
+          "risks": [
+            "Rollback-first can be slower for harmless edits"
+          ],
+          "rollback": "Drop this seed and regenerate the candidate pool.",
+          "strategy": "llm-rollback-first",
+          "summary": "Make every proposed action reversible before optimization.",
+          "title": "LLM Rollback-First Candidate",
+          "validation": [
+            "Inspect generated nexus_search and verifier artifacts"
+          ]
+        },
+        {
+          "claims": [
+            {
+              "claim": "Optimize for the concrete user outcome rather than project-internal slogans.",
+              "confidence": 0.77,
+              "evidence": "fixture LLM rationale",
+              "type": "recommendation"
+            }
+          ],
+          "design_lines": [
+            "Restate the user outcome",
+            "Map candidates to outcome fit",
+            "Remove self-referential templates"
+          ],
+          "relevance_score": 0.8,
+          "relevance_trace": [
+            "Fixture candidate 8 is relevant to the active CognitiveEvolve problem through evidence, validation, rollback, or user-outcome optimization."
+          ],
+          "risks": [
+            "Outcome framing can miss hidden implementation constraints"
+          ],
+          "rollback": "Drop this seed and regenerate the candidate pool.",
+          "strategy": "llm-user-outcome",
+          "summary": "Optimize for the concrete user outcome rather than project-internal slogans.",
+          "title": "LLM User-Outcome Candidate",
+          "validation": [
+            "Inspect generated nexus_search and verifier artifacts"
+          ]
+        }
+      ],
+      "confidence": 0.87,
+      "model": "fixture-model",
+      "provider": "fixture-llm"
+    },
+    "generate_round_artifact": {
+      "confidence": 0.84,
+      "failed_assumptions": [
+        "A verifier can be considered semantic while relying on marker words."
+      ],
+      "model": "fixture-model",
+      "mutations": [
+        "Convert critic findings into concrete validation and contract actions."
+      ],
+      "new_claims": [
+        "The next improvement must replace template evolution artifacts with semantic deltas."
+      ],
+      "new_counterexamples": [
+        "A loop-index artifact can pass count-based tests while adding no decision value."
+      ],
+      "new_evidence": [
+        "Fixture semantic critic and mutator events are recorded as LLM runtime events."
+      ],
+      "new_information": [
+        "llm_semantic_round_artifact_added_counterexample",
+        "llm_semantic_round_artifact_corrected_keyword_verifier_assumption"
+      ],
+      "provider": "fixture-llm",
+      "score_changes": [
+        "Evidence and simplicity improve when redundant scaffold is removed."
+      ],
+      "stop_decision": {
+        "continue": false,
+        "reason": "semantic artifact contains enough new information for verifier handoff in fixture run"
+      }
+    },
+    "judge_pairwise": {
+      "confidence": 0.86,
+      "decisive_differences": [
+        "A has a more explicit validation path.",
+        "A reduces rollback risk more clearly."
+      ],
+      "dimension_votes": [
+        {
+          "dimension": "evidence",
+          "reason": "A names stronger evidence hooks.",
+          "winner": "A"
+        },
+        {
+          "dimension": "safety",
+          "reason": "A includes clearer rollback and verification gates.",
+          "winner": "A"
+        },
+        {
+          "dimension": "simplicity",
+          "reason": "Both candidates are comparable in surface complexity.",
+          "winner": "tie"
+        }
+      ],
+      "model": "fixture-model",
+      "provider": "fixture-llm",
+      "reasons": [
+        "Fixture judge prefers the candidate with clearer evidence hooks and reversible execution.",
+        "Weighted local scores are treated as context only, not as the deciding rule."
+      ],
+      "winner": "A"
+    },
+    "judge_pairwise_candidate": {
+      "confidence": 0.74,
+      "dimension_votes": {
+        "evidence": "tie",
+        "feasibility": "A",
+        "quality": "A",
+        "safety": "A"
+      },
+      "model": "fixture-model",
+      "provider": "fixture-llm",
+      "reason": "Fixture judge prefers the blind candidate with stronger concrete validation and safer execution.",
+      "winner": "A"
+    },
+    "llm_smoke": {
+      "model": "fixture-model",
+      "ok": true,
+      "provider": "fixture-llm"
+    },
+    "mutate_candidate": {
+      "actions": [
+        "Route the public runtime directly through NexusRuntime.",
+        "Replace template critic output with LLM semantic findings recorded in nexus_search.search_diagnosis.",
+        "Generate round artifacts from LLM semantic deltas rather than loop-index templates.",
+        "Verify final answers through LLM semantic gates plus local one-shot protocol prechecks."
+      ],
+      "confidence": 0.86,
+      "model": "fixture-model",
+      "mutation_strategy": [
+        "llm_semantic_critic_to_mutation",
+        "remove_redundant_concepts_without_runtime_contract",
+        "add_verification_artifacts"
+      ],
+      "new_information": [
+        "llm_mutation_bound_concepts_to_contracts",
+        "llm_mutation_added_verifier_gate_path"
+      ],
+      "provider": "fixture-llm",
+      "score_deltas": {
+        "evidence": 0.4,
+        "quality": 0.3,
+        "simplicity": 0.2
+      },
+      "summary": "Tighten the selected path by binding every concept to a runtime contract, artifact, verifier gate, or test.",
+      "title": "LLM-mutated contract and verification candidate"
+    },
+    "nexus_build_evolution_policy": {
+      "archive_schema": {
+        "AnswerArchive": {
+          "enabled": true
+        },
+        "DormantArchive": {
+          "enabled": true
+        },
+        "RarityArchive": {
+          "enabled": true
+        }
+      },
+      "candidate_niches": [
+        "direct",
+        "rare",
+        "tool-grounded"
+      ],
+      "culling_principles": [
+        "do not promote auxiliary shells as main answers"
+      ],
+      "fitness_axes": [
+        "objective_alignment",
+        "answer_likelihood",
+        "core_mechanism_strength",
+        "novelty",
+        "rarity",
+        "verifiability"
+      ],
+      "model": "fixture-model",
+      "mutation_operators": [
+        "Deepen",
+        "Repair",
+        "RareInject",
+        "CrossOver"
+      ],
+      "parent_selection_preferences": {},
+      "provider": "fixture-llm",
+      "rarity_budget": 0.25,
+      "stagnation_actions": [
+        "rare_inject",
+        "reactivate_dormant"
+      ],
+      "synthesis_policy": {
+        "prefer_model_synthesized_final": true
+      },
+      "tool_preferences": []
+    },
+    "nexus_build_objective_contract": {
+      "allowed_evidence_sources": [
+        "Input Evidence",
+        "Tool Evidence",
+        "Model Hypothesis"
+      ],
+      "disallowed_goal_mutations": [
+        "do not answer with a router"
+      ],
+      "expected_output_forms": [
+        "final answer"
+      ],
+      "failure_dimensions": [
+        "semantic_drift"
+      ],
+      "input_constraints": [],
+      "model": "fixture-model",
+      "normalized_goal": "Fixture normalized Nexus goal",
+      "original_user_goal": "fixture goal",
+      "provider": "fixture-llm",
+      "success_dimensions": [
+        "objective_alignment",
+        "answer_likelihood"
+      ],
+      "uncertainty_policy": "one-shot bounded uncertainty",
+      "verification_preferences": []
+    },
+    "nexus_build_project_objective_contract": {
+      "allowed_evidence_sources": [
+        "Input Evidence",
+        "Tool Evidence",
+        "Model Hypothesis"
+      ],
+      "allowed_patch_scope": [
+        "local project files"
+      ],
+      "contract_files": [],
+      "disallowed_goal_mutations": [
+        "do not answer with a router"
+      ],
+      "expected_output_forms": [
+        "final answer"
+      ],
+      "failure_dimensions": [
+        "semantic_drift"
+      ],
+      "frozen_regions": [],
+      "implementation_files": [],
+      "input_constraints": [],
+      "model": "fixture-model",
+      "mutable_regions": [
+        "project files"
+      ],
+      "normalized_goal": "Fixture normalized Nexus goal",
+      "original_user_goal": "fixture goal",
+      "provider": "fixture-llm",
+      "success_dimensions": [
+        "objective_alignment",
+        "answer_likelihood"
+      ],
+      "test_contracts": [],
+      "uncertainty_policy": "one-shot bounded uncertainty",
+      "unsafe_change_patterns": [
+        "secret exfiltration"
+      ],
+      "verification_preferences": []
+    },
+    "nexus_diagnose_search_state": {
+      "auxiliary_collapse_risk": 0.0,
+      "notes": "fixture nexus diagnosis",
+      "over_explored_families": [],
+      "prematurely_culled_genes": [],
+      "recommended_actions": [
+        "continue"
+      ],
+      "semantic_drift_risk": 0.0,
+      "stagnation_detected": false,
+      "stagnation_type": "None",
+      "under_explored_families": []
+    },
+    "nexus_generate_offspring": {
+      "offspring": [
+        {
+          "artifact": "Fixture LLM-backed offspring answer.",
+          "artifact_type": "answer",
+          "concise_claim": "fixture offspring",
+          "core_mechanism": "fixture evolved mechanism",
+          "generation": 1,
+          "id": "FX2",
+          "multihead_scores": {
+            "answer_likelihood": 0.8,
+            "objective_alignment": 0.82,
+            "verifiability": 0.55
+          },
+          "parent_ids": [
+            "FX0"
+          ]
+        }
+      ]
+    },
+    "nexus_plan_mutations": {
+      "plans": [
+        {
+          "instruction": "fixture deepen the main mechanism",
+          "operator": "Deepen",
+          "parent_ids": [
+            "FX0"
+          ]
+        }
+      ]
+    },
+    "nexus_relative_rank": {
+      "auxiliary_ids": [],
+      "best_final_answer_id": "FX0",
+      "crossover_pairs": [],
+      "dominated_pairs": [],
+      "dormant_ids": [],
+      "edge_value_ids": [
+        "FX1"
+      ],
+      "multihead_observations": {},
+      "mutation_worthy_ids": [
+        "FX0"
+      ],
+      "pairwise_preferences": [],
+      "preserve_incomplete_ids": [],
+      "raw_notes": "fixture nexus rank",
+      "strongest_mechanism_id": "FX0"
+    },
+    "nexus_request_context": {
+      "need_files": [],
+      "need_symbols": [],
+      "need_tests": [],
+      "reason": "fixture has enough context"
+    },
+    "nexus_seed_population": {
+      "candidates": [
+        {
+          "artifact": "Fixture LLM-backed Nexus seed answer.",
+          "artifact_type": "answer",
+          "concise_claim": "fixture seed",
+          "core_mechanism": "fixture model generated mechanism",
+          "generation": 0,
+          "id": "FX0",
+          "multihead_scores": {
+            "answer_likelihood": 0.7,
+            "objective_alignment": 0.7,
+            "verifiability": 0.5
+          }
+        },
+        {
+          "artifact": "Fixture rare seed answer.",
+          "artifact_type": "answer",
+          "concise_claim": "fixture rare seed",
+          "core_mechanism": "fixture rare mechanism",
+          "edge_knowledge_seeds": [
+            "fixture edge"
+          ],
+          "generation": 0,
+          "id": "FX1",
+          "multihead_scores": {
+            "answer_likelihood": 0.45,
+            "objective_alignment": 0.55,
+            "rarity": 0.9
+          }
+        }
+      ],
+      "model": "fixture-model",
+      "provider": "fixture-llm"
+    },
+    "nexus_synthesize_result": {
+      "best_candidate_id": "FX2",
+      "final_answer": "Fixture Nexus model-backed final answer.",
+      "status": "ok",
+      "warnings": []
+    },
+    "nexus_update_policy": {
+      "archive_schema": {
+        "AnswerArchive": {
+          "enabled": true
+        },
+        "DormantArchive": {
+          "enabled": true
+        },
+        "RarityArchive": {
+          "enabled": true
+        }
+      },
+      "candidate_niches": [
+        "direct",
+        "rare",
+        "tool-grounded"
+      ],
+      "culling_principles": [
+        "do not promote auxiliary shells as main answers"
+      ],
+      "fitness_axes": [
+        "objective_alignment",
+        "answer_likelihood",
+        "core_mechanism_strength",
+        "novelty",
+        "rarity",
+        "verifiability"
+      ],
+      "model": "fixture-model",
+      "mutation_operators": [
+        "Deepen",
+        "Repair",
+        "RareInject",
+        "CrossOver"
+      ],
+      "parent_selection_preferences": {},
+      "provider": "fixture-llm",
+      "rarity_budget": 0.25,
+      "stagnation_actions": [
+        "rare_inject",
+        "reactivate_dormant"
+      ],
+      "synthesis_policy": {
+        "prefer_model_synthesized_final": true
+      },
+      "tool_preferences": []
+    },
+    "optimize_prompt": {
+      "confidence": 0.86,
+      "model": "fixture-model",
+      "provider": "fixture-llm",
+      "selected_variant": "llm_cognitive_runtime",
+      "variants": [
+        {
+          "description": "Baseline LLM task prompt.",
+          "id": "baseline",
+          "mutation_dimensions": [
+            "baseline"
+          ],
+          "prompt": "Use CognitiveEvolve with mandatory LLM routing, scoring, mutation, and eval evidence.",
+          "rationale": "Clear but less explicit about cognitive quality.",
+          "score": 7
+        },
+        {
+          "description": "LLM-first prompt with cognitive and evidence requirements.",
+          "id": "llm_cognitive_runtime",
+          "mutation_dimensions": [
+            "llm_required",
+            "evidence",
+            "cognitive_gain",
+            "checkmodel"
+          ],
+          "prompt": "Use CognitiveEvolve with mandatory LLM route classification, LLM candidate generation, LLM semantic scoring, evidence-backed claims, CheckModel review, and no no-LLM fallback branches.",
+          "rationale": "Best balance of LLM execution, evidence, cognitive gain, and review.",
+          "score": 9
+        }
+      ]
+    },
+    "reflect_candidates": {
+      "confidence": 0.85,
+      "findings": [
+        {
+          "candidate_id": "global",
+          "evidence_gap": "Reflection sees evidence hooks as required for final selection.",
+          "finding": "The candidate pool should preserve a concrete evidence or test hook before verifier handoff.",
+          "id": "reflection:pool-evidence-hook",
+          "mutation_hint": "Prioritize candidates with explicit validation artifacts.",
+          "severity": "medium"
+        }
+      ],
+      "handoff": "mutate",
+      "model": "fixture-model",
+      "pool_assessment": "Fixture reflection prefers evidence-grounded candidates and rejects threshold-only review.",
+      "provider": "fixture-llm"
+    },
+    "score_candidate": {
+      "confidence": 0.9,
+      "model": "fixture-model",
+      "provider": "fixture-llm",
+      "rationales": {
+        "adoption_likelihood": "Fixture candidate fits workflow.",
+        "evidence_strength": "Fixture candidate contains evidence hooks.",
+        "feasibility": "Fixture candidate is locally implementable.",
+        "novelty": "Fixture candidate keeps evolution variety.",
+        "reversibility": "Fixture candidate is task-local and reversible.",
+        "risk_control": "Fixture candidate has risk notes.",
+        "simplicity": "Fixture candidate avoids extra service layers.",
+        "solution_quality": "Fixture semantic judge sees adequate coverage.",
+        "user_cognitive_gain": "Fixture emphasizes decision clarity."
+      },
+      "scores": {
+        "adoption_likelihood": 4,
+        "evidence_strength": 4,
+        "feasibility": 4,
+        "novelty": 4,
+        "reversibility": 5,
+        "risk_control": 4,
+        "simplicity": 4,
+        "solution_quality": 4,
+        "user_cognitive_gain": 5
+      }
+    },
+    "synthesize_final_answer": {
+      "conclusion": "已按 v1.0 Nexus one-shot 架构收敛：主路径由 nexus_search 中的 Nexus selection 选择和 LLM 语义批判结果驱动，而不是固定模板或关键词门禁。",
+      "confidence": 0.87,
+      "failure_modes": [
+        "Critic 或 round artifact 退回硬编码字符串。",
+        "VerifierStack 用中文或英文关键词存在性代替语义判断。",
+        "FinalSynthesizer 不读取 nexus_search.candidate_genomes。"
+      ],
+      "key_assumptions": [
+        "本轮目标是修复 Plan 与实现之间的 P0 缺口，而不是继续增加并列框架。",
+        "旧字段只能保留为兼容别名，不能重新成为主流程控制字段。",
+        "没有外部澄清问题；缺失信息由内部假设、证据计划和验证门禁处理。"
+      ],
+      "model": "fixture-model",
+      "provider": "fixture-llm",
+      "rejected_options": [
+        {
+          "candidate_id": "C2",
+          "reason": "docs/specs-only cannot close the runtime implementation gap."
+        },
+        {
+          "candidate_id": "C3",
+          "reason": "greenfield rewrite exceeds the requested cleanup scope."
+        }
+      ],
+      "selected_candidate_id": "",
+      "synthesis_notes": [
+        "选择 nexus_search.selection 的推荐候选作为主路径。",
+        "候选 actions、critic_findings 和 round_artifacts 必须进入最终答案。",
+        "LLM 语义 verifier 负责目标对齐、概念精度和执行可行性。"
+      ],
+      "validation_plan": [
+        "运行 pytest -q。",
+        "检查 llm-runtime-report 中是否包含 critique_candidate、mutate_candidate、generate_round_artifact、synthesize_final_answer、verify_final_answer。",
+        "检查 final-answer.md 是否包含 selected candidate 的动态 action，而不是固定 CognitiveEvolve 模板。"
+      ]
+    },
+    "verify_final_answer": {
+      "confidence": 0.89,
+      "gates": [
+        {
+          "hard": true,
+          "id": "real_objective_alignment",
+          "passed": true,
+          "reason": "The answer is centered on closing the P0 implementation gap."
+        },
+        {
+          "hard": true,
+          "id": "assumption_visibility",
+          "passed": true,
+          "reason": "The answer surfaces assumptions and boundaries."
+        },
+        {
+          "hard": true,
+          "id": "concept_precision",
+          "passed": true,
+          "reason": "Concepts are tied to contracts, artifacts, gates, tests, or runtime paths."
+        },
+        {
+          "hard": false,
+          "id": "evidence_grounding",
+          "passed": true,
+          "reason": "The answer names evidence and test artifacts."
+        },
+        {
+          "hard": true,
+          "id": "execution_feasibility",
+          "passed": true,
+          "reason": "The answer contains executable steps and validation commands."
+        },
+        {
+          "hard": true,
+          "id": "safety_boundary",
+          "passed": true,
+          "reason": "Risky actions are bounded by validation and rollback."
+        },
+        {
+          "hard": true,
+          "id": "technical_validation",
+          "passed": true,
+          "reason": "pytest and runtime artifact checks are included."
+        },
+        {
+          "hard": true,
+          "id": "semantic_not_keyword_only",
+          "passed": true,
+          "reason": "The verifier result is an LLM semantic judgment, not marker matching."
+        }
+      ],
+      "hard_failures": [],
+      "model": "fixture-model",
+      "provider": "fixture-llm",
+      "soft_warnings": []
+    }
+  }
+}

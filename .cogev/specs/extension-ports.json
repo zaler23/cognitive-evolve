@@ -1,0 +1,38 @@
+{
+  "schema_version": "2.0",
+  "runtime_architecture": "nexus",
+  "policy": "adapters_only_no_alternate_runtime",
+  "allowed_ports": [
+    {
+      "id": "llm_provider_interface",
+      "path": "cognitive_evolve_runtime/llm/provider_interface.py",
+      "purpose": "Structured upstream model calls."
+    },
+    {
+      "id": "structured_model_adapter",
+      "path": "cognitive_evolve_runtime/nexus/model_adapter.py",
+      "purpose": "Schema-bound model semantics for Nexus."
+    },
+    {
+      "id": "tool_adapters",
+      "path": "cognitive_evolve_runtime/tools/adapters.py",
+      "purpose": "Local command/verifier adapters."
+    },
+    {
+      "id": "patch_sandbox",
+      "path": "cognitive_evolve_runtime/tools/patch_sandbox.py",
+      "purpose": "Project patch isolation and verification."
+    },
+    {
+      "id": "api_openai_compat",
+      "path": "cognitive_evolve_runtime/api/openai_compat.py",
+      "purpose": "OpenAI-shaped frontend boundary."
+    }
+  ],
+  "disallowed": [
+    "runtime selector bypassing NexusRuntime",
+    "duplicate archive or ranking authority",
+    "hidden real-provider fallback in hermetic tests",
+    "external framework declared as replacement runtime"
+  ]
+}

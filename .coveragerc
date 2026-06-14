@@ -1,0 +1,10 @@
+[run]
+source = cognitive_evolve_runtime
+branch = False
+
+[report]
+show_missing = True
+fail_under = 80
+exclude_lines =
+    pragma: no cover
+    if __name__ == .__main__.:

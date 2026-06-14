@@ -1,0 +1,27 @@
+{
+  "schema_version": "2.0",
+  "name": "CognitiveEvolve Nexus Runtime",
+  "source_of_truth": "cognitive_evolve_runtime.nexus.runtime.NexusRuntime",
+  "runtime_authority": "nexus",
+  "alternate_runtime_backends": [],
+  "candidate_model": [
+    "CandidateGenome",
+    "ProjectCandidateGenome"
+  ],
+  "ranking_authority": "cognitive_evolve_runtime/ranking",
+  "archive_authority": "cognitive_evolve_runtime/archives",
+  "artifact_root": "nexus-runtime/",
+  "runtime_state_schema": "nexus_runtime_state",
+  "pipeline": [
+    "input_packet",
+    "world_model",
+    "objective_contract",
+    "evolution_policy",
+    "candidate_population",
+    "local_verification",
+    "relative_ranking",
+    "archives_and_diagnosis",
+    "mutation_or_crossover",
+    "final_synthesis_or_structured_failure"
+  ]
+}

@@ -1,0 +1,62 @@
+name: Bug report
+description: Report a reproducible defect in CognitiveEvolve
+title: "[Bug]: "
+labels: ["bug", "needs-triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Do not include secrets, private task artifacts, or vulnerability details.
+  - type: textarea
+    id: summary
+    attributes:
+      label: Summary
+      description: What went wrong?
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Include exact commands and sanitized inputs.
+      placeholder: |
+        1. Run ...
+        2. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      placeholder: "3.12.8"
+  - type: input
+    id: os
+    attributes:
+      label: Operating system
+      placeholder: "macOS, Linux, Windows"
+  - type: dropdown
+    id: runtime
+    attributes:
+      label: Local runtime involved?
+      options:
+        - "No"
+        - "Yes: standalone local runtime"
+        - "Yes: other runtime"
+        - "Unsure"
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs or output
+      render: text
