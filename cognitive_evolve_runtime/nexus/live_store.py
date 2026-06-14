@@ -49,6 +49,7 @@ class LiveNexusStore:
         diagnosis = update.get("diagnosis")
         progress_event = dict(update.get("progress_event") or {})
         budget_history = [dict(item) for item in update.get("budget_history", []) if isinstance(item, dict)]
+        adaptive_state = dict(update.get("adaptive_state") or {}) if isinstance(update.get("adaptive_state"), dict) else {}
         error = update.get("error") if isinstance(update.get("error"), dict) else None
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -75,6 +76,7 @@ class LiveNexusStore:
                 mode=self.mode,
                 budget_history=budget_history,
                 budget=budget_payload,
+                adaptive_state=adaptive_state,
                 allow_progress_round_repair=allow_round_repair,
             )
             checkpoint_written = True
@@ -106,6 +108,7 @@ class LiveNexusStore:
             "policy": policy.to_dict() if hasattr(policy, "to_dict") else {},
             "diagnosis": diagnosis.to_dict() if hasattr(diagnosis, "to_dict") else {},
             "progress_event": progress_event,
+            "adaptive_state": adaptive_state,
         }
         atomic_write_json(self.round_dir / f"round-{round_index:04d}-{_safe_phase(phase)}.json", snapshot, sort_keys=True)
         self._append_candidate_journal(round_index, phase, population)

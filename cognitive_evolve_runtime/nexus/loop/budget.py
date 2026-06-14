@@ -108,6 +108,7 @@ class EvolutionLoopResult:
     max_rounds: int = 0
     stop_reason: str = ""
     completion_status: str = "running"
+    adaptive_state: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -127,6 +128,7 @@ class EvolutionLoopResult:
             "max_rounds": self.max_rounds,
             "stop_reason": self.stop_reason,
             "completion_status": self.completion_status,
+            "adaptive_state": self.adaptive_state,
         }
 
 

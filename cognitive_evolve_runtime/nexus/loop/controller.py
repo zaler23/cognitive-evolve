@@ -13,6 +13,7 @@ from cognitive_evolve_runtime.candidates.mutation import MutationEngine, Mutatio
 from cognitive_evolve_runtime.contracts.objective_contract import NexusObjectiveContract
 from cognitive_evolve_runtime.events.progress import EvolutionProgressEvent, PipelineProgressEvent
 from cognitive_evolve_runtime.nexus.critique import CandidateCritique, CritiqueEngine
+from cognitive_evolve_runtime.nexus.adaptive import AdaptiveRuntimeController, apply_final_certificate_to_closure, build_final_certificate
 from cognitive_evolve_runtime.nexus.activation_reseed import emergency_activation_reseed
 from cognitive_evolve_runtime.nexus._serde import utc_now
 from cognitive_evolve_runtime.nexus.exploration import action_palette_for_round, amplify_population
@@ -78,6 +79,8 @@ class EvolutionLoopController:
         observer: Callable[[dict[str, Any]], None] | None = None,
         cancellation_callback: Callable[[], bool] | None = None,
         offspring_verifier: Callable[[list[CandidateGenome]], list[Any]] | None = None,
+        adaptive_config: dict[str, Any] | None = None,
+        adaptive_state: dict[str, Any] | None = None,
     ) -> None:
         self.population = population
         self.archives = archives
@@ -89,7 +92,14 @@ class EvolutionLoopController:
         self.observer = observer
         self.cancellation_callback = cancellation_callback
         self.offspring_verifier = offspring_verifier
-        self.round_pipeline = EvolutionRound(model=model, budget=budget)
+        self.adaptive = AdaptiveRuntimeController.from_sources(
+            explicit=adaptive_config,
+            restored_state=adaptive_state,
+            contract=contract,
+            policy=policy,
+            world=world,
+        )
+        self.round_pipeline = EvolutionRound(model=model, budget=budget, adaptive=self.adaptive)
         self.progress_events: list[dict[str, Any]] = []
         self.pipeline_events: list[dict[str, Any]] = [
             PipelineProgressEvent(
@@ -296,6 +306,15 @@ class EvolutionLoopController:
             improvement_certificate=improvement_certificate,
             latent_assessment=latent_override.get("assessment") if isinstance(latent_override.get("assessment"), dict) else {},
         )
+        final_certificate = build_final_certificate(
+            population=self.population,
+            synthesis=synthesis,
+            closure_certificate=synthesis.closure_certificate,
+            evaluator_required=self.adaptive.evaluator_enabled,
+        ) if self.adaptive.enabled else {}
+        if final_certificate:
+            synthesis.closure_certificate = apply_final_certificate_to_closure(synthesis.closure_certificate, final_certificate)
+            self.adaptive.attach_final_certificate(final_certificate)
         latent_replay_audit = audit_latent_replay_bundle(
             self.contract,
             population=self.population,
@@ -326,6 +345,7 @@ class EvolutionLoopController:
             max_rounds=self.budget.round_limit,
             stop_reason=self.budget.stop_reason,
             completion_status=completion_status,
+            adaptive_state=self.adaptive.to_dict(),
         )
 
     def _notify(self, phase: str, round_index: int, progress_event: dict[str, Any], *, error: dict[str, Any] | None = None) -> None:
@@ -340,6 +360,7 @@ class EvolutionLoopController:
             progress_event=progress_event,
             budget_history=self.budget.history,
             error=error,
+            adaptive_state=self.adaptive.to_dict(),
         )
 
 
@@ -355,6 +376,8 @@ def evolve_once(
     observer: Callable[[dict[str, Any]], None] | None = None,
     cancellation_callback: Callable[[], bool] | None = None,
     offspring_verifier: Callable[[list[CandidateGenome]], list[Any]] | None = None,
+    adaptive_config: dict[str, Any] | None = None,
+    adaptive_state: dict[str, Any] | None = None,
 ) -> EvolutionLoopResult:
     return EvolutionLoopController(
         population=population,
@@ -367,6 +390,8 @@ def evolve_once(
         observer=observer,
         cancellation_callback=cancellation_callback,
         offspring_verifier=offspring_verifier,
+        adaptive_config=adaptive_config,
+        adaptive_state=adaptive_state,
     ).run()
 
 

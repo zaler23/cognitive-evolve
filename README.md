@@ -163,6 +163,9 @@ nexus-runtime/checkpoint.json
 nexus-runtime/events.jsonl
 nexus-runtime/candidate-journal.jsonl
 nexus-runtime/rounds/round-*.json
+nexus-runtime/adaptive/adaptive-state.json
+nexus-runtime/adaptive/final-certificate.json
+nexus-runtime/adaptive/spatial-topology.json
 nexus-runtime/nexus-runtime-self-check.json
 nexus-runtime/nexus-runtime-self-check.md
 evaluations/native-eval-report.json
@@ -176,6 +179,14 @@ Fallbacks are auditable runtime events, not silent logger-only behavior.
 `evolution.fallback_event_count`; `nexus-runtime/events.jsonl` stores the same
 sanitized fallback event summaries. These summaries redact local paths and
 secret-shaped text and do not include long prompts or provider credentials.
+
+The optional Adaptive Evidence Layer is disabled unless configured by
+environment, `.cogev/config.yaml`, or a task-local `task.yaml`. Its initial
+public surface is evidence-oriented: external evaluator results, observe-only
+spatial population telemetry, checkpointable adaptive state, and a final
+certificate. A configured external evaluator is treated as objective evidence;
+model self-claims such as "verified" do not by themselves set
+`objective_solved=true`.
 
 ## Testing and validation
 

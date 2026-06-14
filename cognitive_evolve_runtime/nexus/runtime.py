@@ -110,6 +110,7 @@ class NexusRuntime:
         stop_policy: str = "llm_after_minimum",
         min_rounds_before_stop: int = 1,
         runtime_metadata: dict[str, Any] | None = None,
+        adaptive_config: dict[str, Any] | None = None,
         cancellation_callback: Any | None = None,
     ) -> NexusRunResult:
         fallback_token = start_fallback_capture()
@@ -141,6 +142,7 @@ class NexusRuntime:
             model=self.model,
             observer=observer,
             cancellation_callback=cancellation_callback,
+            adaptive_config=adaptive_config,
         )
         run = NexusRunResult(
             mode="text",
@@ -172,6 +174,7 @@ class NexusRuntime:
         budget: EvolutionBudget | None = None,
         stop_policy: str = "llm_after_minimum",
         min_rounds_before_stop: int = 1,
+        adaptive_config: dict[str, Any] | None = None,
         cancellation_callback: Any | None = None,
     ) -> NexusRunResult:
         fallback_token = start_fallback_capture()
@@ -219,6 +222,7 @@ class NexusRuntime:
             observer=observer,
             cancellation_callback=cancellation_callback,
             offspring_verifier=verify_offspring,
+            adaptive_config=adaptive_config,
         )
         run = NexusRunResult(
             mode="project",
@@ -284,7 +288,18 @@ class NexusRuntime:
         budget.max_rounds = target_rounds
         budget.history = list(restored.get("budget_history") or [])
         observer = self._live_observer(mode=mode, contract=contract, world=world, max_rounds=target_rounds, budget=budget.to_dict())
-        result = evolve_once(population=population, archives=archives, policy=policy, contract=contract, world=world, budget=budget, model=self.model, observer=observer, offspring_verifier=offspring_verifier)
+        result = evolve_once(
+            population=population,
+            archives=archives,
+            policy=policy,
+            contract=contract,
+            world=world,
+            budget=budget,
+            model=self.model,
+            observer=observer,
+            offspring_verifier=offspring_verifier,
+            adaptive_state=restored.get("adaptive_state") or {},
+        )
         world_payload = _world_to_dict_with_latent_metadata(world, contract)
         run = NexusRunResult(
             mode=mode,

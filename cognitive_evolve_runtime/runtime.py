@@ -11,6 +11,7 @@ from pathlib import Path
 
 from .artifacts.store import _append_trace, _format_list, _load_json, _now, _task_dir, _write_json
 from .artifacts.task_files import _task_seed_prompt
+from .configuration import parse_simple_yaml
 from .llm.env import LLMConfigurationError, LLMResponseError, require_llm_config
 from .nexus.evaluation import write_runtime_validation_report
 from .nexus.budget_factory import evolution_budget_from_round_budget
@@ -80,12 +81,14 @@ def runtime_run(path: str | None, prompt: str | None, activate_all: bool = False
         difficulty_assessment=difficulty_assessment,
     )
     evolution_budget = evolution_budget_from_round_budget(round_budget)
+    adaptive_config = _task_adaptive_config(task_dir)
 
     output_dir = task_dir / "nexus-runtime"
     result = NexusRuntime(model=runtime_model, output_dir=output_dir).run_text(
         seed_prompt,
         user_goal=seed_prompt,
         budget=evolution_budget,
+        adaptive_config=adaptive_config,
         runtime_metadata={
             "semantic_route": route.to_dict() if hasattr(route, "to_dict") else dict(getattr(route, "__dict__", {})),
             "entry_difficulty_assessment": difficulty_assessment,
@@ -125,6 +128,32 @@ def runtime_run(path: str | None, prompt: str | None, activate_all: bool = False
     print(f"Active capabilities: {_format_list(selected)}")
     print("Runtime path: nexus")
     return 0 if validation_report.get("status") == "pass" else 1
+
+
+def _task_adaptive_config(task_dir: Path) -> dict[str, object]:
+    task_yaml = task_dir / "task.yaml"
+    if not task_yaml.exists():
+        return {}
+    try:
+        data = parse_simple_yaml(task_yaml.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    adaptive = data.get("adaptive")
+    evaluator = data.get("evaluator")
+    config: dict[str, object] = {}
+    if isinstance(adaptive, dict):
+        config.update(adaptive)
+    if isinstance(evaluator, dict):
+        evaluator_config = dict(evaluator)
+        evaluator_config.setdefault("cwd", str(task_dir))
+        existing = config.get("evaluator")
+        if isinstance(existing, dict):
+            merged = dict(existing)
+            merged.update(evaluator_config)
+            evaluator_config = merged
+        config["evaluator"] = evaluator_config
+        config.setdefault("enabled", True)
+    return config
 
 
 def _classify_runtime_seed(seed_prompt: str, runtime_model: object | None) -> object:

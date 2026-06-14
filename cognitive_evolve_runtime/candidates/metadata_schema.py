@@ -10,7 +10,9 @@ from typing import Any, Mapping
 KNOWN_METADATA_KEYS: frozenset[str] = frozenset(
     {
         "active_repair_floor",
+        "adaptive",
         "bootstrap_entry_survival",
+        "budget_account",
         "claim_maturity_stage",
         "created_in_round",
         "dedupe_signature",
@@ -22,6 +24,7 @@ KNOWN_METADATA_KEYS: frozenset[str] = frozenset(
         "failure_archive_reseed",
         "failure_classification",
         "failure_micro_guidance",
+        "evaluator",
         "fate_transition_history",
         "final_answer_blocked_until_repaired",
         "generation_plan_fate",
@@ -32,6 +35,7 @@ KNOWN_METADATA_KEYS: frozenset[str] = frozenset(
         "incubation_started_round",
         "latent_pareto_frontier",
         "latent_ranking",
+        "mdl",
         "max_incubation_age",
         "max_incubation_attempts",
         "model_critique_degraded",
@@ -52,6 +56,7 @@ KNOWN_METADATA_KEYS: frozenset[str] = frozenset(
         "selection_deprioritized_until_new_delta",
         "selection_pressure",
         "source_grounding_required",
+        "spatial",
         "stage_eligibility",
         "state_transition_reason",
         "target_obligation_ids",

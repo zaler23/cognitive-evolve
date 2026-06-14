@@ -12,7 +12,9 @@ from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateG
 from cognitive_evolve_runtime.candidates.mutation import MutationEngine, MutationOperator, MutationPlan, MutationPlanner
 from cognitive_evolve_runtime.contracts.objective_contract import NexusObjectiveContract
 from cognitive_evolve_runtime.events.progress import EvolutionProgressEvent, PipelineProgressEvent
+from cognitive_evolve_runtime.evaluators import EvaluatorSpec, ExternalEvaluatorRunner
 from cognitive_evolve_runtime.nexus.critique import CandidateCritique, CritiqueEngine
+from cognitive_evolve_runtime.nexus.adaptive import AdaptiveRuntimeController
 from cognitive_evolve_runtime.nexus.activation_reseed import emergency_activation_reseed
 from cognitive_evolve_runtime.nexus._serde import utc_now
 from cognitive_evolve_runtime.nexus.exploration import action_palette_for_round, amplify_population
@@ -85,9 +87,10 @@ class EvolutionRound:
     adding a new stage no longer requires editing one giant try-block.
     """
 
-    def __init__(self, *, model: NexusModelLike | None, budget: EvolutionBudget) -> None:
+    def __init__(self, *, model: NexusModelLike | None, budget: EvolutionBudget, adaptive: AdaptiveRuntimeController | None = None) -> None:
         self.model = model
         self.budget = budget
+        self.adaptive = adaptive or AdaptiveRuntimeController.from_sources()
         self.rater = RelativeRater(model=model)
         self.elo = MultiHeadElo()
         self.diagnoser = SearchStateDiagnoser(model=model)
@@ -97,6 +100,7 @@ class EvolutionRound:
         self.mutation_engine = MutationEngine()
         self.critique_engine = CritiqueEngine(model=model)
         self.verifier_stack = NexusVerifierStack()
+        self.evaluator_runner = ExternalEvaluatorRunner()
         self.stop_decider = StopDecisionEngine()
         self.theory_layer = TheoryLayer()
         self.last_generation_plan: dict[str, Any] = {}
@@ -111,6 +115,8 @@ class EvolutionRound:
         policy: EvolutionPolicy,
         contract: NexusObjectiveContract,
     ) -> RoundEvaluation:
+        self.adaptive.begin_round(round_index=current_round)
+        self.adaptive.observe_population(population=population, round_index=current_round)
         critiques, verification_results = self.critique_and_verify(
             current_round=current_round,
             population=population,
@@ -118,7 +124,20 @@ class EvolutionRound:
             policy=policy,
             contract=contract,
         )
+        evaluator_results = self.evaluator_runner.evaluate_population_if_configured(
+            population.candidates,
+            spec=EvaluatorSpec.from_mapping(self.adaptive.config.evaluator),
+        )
+        if self.adaptive.evaluator_enabled:
+            passed = len([item for item in evaluator_results if item.passed])
+            self.adaptive.record_evaluator_summary(
+                round_index=current_round,
+                evaluated=len(evaluator_results),
+                passed=passed,
+                failed=len(evaluator_results) - passed,
+            )
         rankings = self.rank(population=population, archives=archives, policy=policy, contract=contract, current_round=current_round)
+        self.adaptive.observe_population(population=population, round_index=current_round)
         plan = GenerationPlan.from_dict(self.last_generation_plan)
         completed_stage_ops = list(self.last_completed_stage_ops)
         repair_parent_candidates = list(population.candidates)
@@ -176,6 +195,7 @@ class EvolutionRound:
                 "generation_plan_id": generation_plan.get("plan_id", ""),
                 "incubating_candidates": len([c for c in population.candidates if CandidateFate.normalize(c.current_fate) == CandidateFate.INCUBATING.value]),
                 "population_vitality": vitality_snapshot(population.candidates, branch_factor=self.budget.branch_factor).to_dict(),
+                "adaptive_features": dict(self.adaptive.state.enabled_features),
             },
         ).to_dict()
         stage_count = self.budget.round_limit

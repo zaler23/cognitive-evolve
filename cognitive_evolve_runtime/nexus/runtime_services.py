@@ -6,6 +6,7 @@ reasoned about without reading the whole runtime entrypoint.
 """
 from __future__ import annotations
 
+import json
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -70,7 +71,9 @@ class NexusPersistenceService:
             progress_event = checkpoint_progress_event_for_interruption(progress_event, result.current_round)
         event_store = EventStore(event_path)
         fallback_events = [dict(event) for event in (run.evolution.get("fallback_events") or []) if isinstance(event, dict)]
-        events_to_write = list(result.pipeline_events) + list(result.progress_events) + fallback_events
+        adaptive_state = dict(getattr(result, "adaptive_state", {}) or {})
+        adaptive_events = [dict(event) for event in adaptive_state.get("events", []) if isinstance(event, dict)]
+        events_to_write = list(result.pipeline_events) + list(result.progress_events) + fallback_events + adaptive_events
         if result.interrupted and progress_event and not any(
             isinstance(event, dict) and event.get("type") == "evolution_progress" and int(event.get("round") or 0) == int(progress_event.get("round") or 0)
             for event in events_to_write
@@ -93,8 +96,11 @@ class NexusPersistenceService:
             mode=run.mode,
             budget_history=budget_history or [],
             budget=_checkpoint_budget_payload(budget, checkpoint_round=checkpoint_round),
+            adaptive_state=adaptive_state,
             allow_progress_round_repair=bool(result.interrupted),
         )
+        adaptive_dir = self.output_dir / "adaptive"
+        final_certificate = dict((result.synthesis.closure_certificate or {}).get("final_certificate") or adaptive_state.get("final_certificate") or {})
 
         artifacts = {
             "population": str(population_path),
@@ -105,16 +111,32 @@ class NexusPersistenceService:
             "run_result": str(run_result_path),
             "snapshot_transaction": str(self.output_dir / "snapshot-transaction.json"),
         }
+        if adaptive_state:
+            artifacts.update(
+                {
+                    "adaptive_state": str(adaptive_dir / "adaptive-state.json"),
+                    "adaptive_events": str(adaptive_dir / "adaptive-events.jsonl"),
+                    "final_certificate": str(adaptive_dir / "final-certificate.json"),
+                }
+            )
         run.artifacts = dict(artifacts)
-        NexusSnapshotTransaction(self.output_dir).commit(
-            [
-                SnapshotWrite("population.json", "json", result.population.to_dict()),
-                SnapshotWrite("archives.json", "json", result.archives.to_dict()),
-                SnapshotWrite("checkpoint.json", "json", checkpoint.to_dict()),
-                SnapshotWrite("final-answer.md", "text", final_answer_artifact_text(result) + "\n", sort_keys=False),
-                SnapshotWrite("run-result.json", "json", run.to_dict()),
-            ]
-        )
+        writes = [
+            SnapshotWrite("population.json", "json", result.population.to_dict()),
+            SnapshotWrite("archives.json", "json", result.archives.to_dict()),
+            SnapshotWrite("checkpoint.json", "json", checkpoint.to_dict()),
+            SnapshotWrite("final-answer.md", "text", final_answer_artifact_text(result) + "\n", sort_keys=False),
+            SnapshotWrite("run-result.json", "json", run.to_dict()),
+        ]
+        if adaptive_state:
+            writes.extend(_adaptive_snapshot_writes(adaptive_state, final_certificate))
+        NexusSnapshotTransaction(self.output_dir).commit(writes)
+        if adaptive_events:
+            adaptive_events_path = adaptive_dir / "adaptive-events.jsonl"
+            adaptive_events_path.parent.mkdir(parents=True, exist_ok=True)
+            adaptive_events_path.write_text(
+                "".join(json.dumps(event, ensure_ascii=False, sort_keys=True, default=str) + "\n" for event in adaptive_events),
+                encoding="utf-8",
+            )
         assert_runtime_consistency(checkpoint=checkpoint.to_dict(), events=event_store.read_all(), nexus_data=run.to_dict())
         return artifacts
 
@@ -191,6 +213,22 @@ def _sync_budget_width_metadata(evolution: dict[str, Any], budget: EvolutionBudg
     runtime = dict(evolution.get("round_budget_runtime") or {})
     runtime["mutation_branches_per_round"] = int(getattr(budget, "branch_factor", 0) or 0)
     evolution["round_budget_runtime"] = runtime
+
+
+def _adaptive_snapshot_writes(adaptive_state: dict[str, Any], final_certificate: dict[str, Any]) -> list[SnapshotWrite]:
+    spatial = dict(adaptive_state.get("spatial") or {})
+    regions = dict(spatial.get("regions") or {})
+    writes = [
+        SnapshotWrite("adaptive/adaptive-state.json", "json", adaptive_state),
+        SnapshotWrite("adaptive/final-certificate.json", "json", final_certificate or {}),
+    ]
+    if spatial:
+        writes.append(SnapshotWrite("adaptive/spatial-topology.json", "json", spatial))
+        writes.append(SnapshotWrite("adaptive/spatial-regions.json", "json", regions))
+    evaluator = dict(adaptive_state.get("evaluator") or {})
+    if evaluator:
+        writes.append(SnapshotWrite("adaptive/evaluator-results.jsonl", "text", json.dumps(evaluator, ensure_ascii=False, sort_keys=True, default=str) + "\n", sort_keys=False))
+    return writes
 
 
 __all__ = [
