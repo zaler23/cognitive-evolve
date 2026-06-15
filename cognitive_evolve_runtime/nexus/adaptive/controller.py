@@ -4,8 +4,10 @@ from __future__ import annotations
 from typing import Any
 
 from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidatePopulation
+from cognitive_evolve_runtime.core.scalars import bounded_score
 from cognitive_evolve_runtime.evaluators.challenge_memory import ChallengeMemory
 from cognitive_evolve_runtime.evaluators.evidence import SearchPressure, latest_evidence_record
+from cognitive_evolve_runtime.nexus._serde import coerce_dict
 from cognitive_evolve_runtime.nexus.adaptive.config import AdaptiveConfig
 from cognitive_evolve_runtime.nexus.adaptive.spatial_population import SpatialPopulationState, build_or_update_spatial_state
 from cognitive_evolve_runtime.nexus.adaptive.state import AdaptiveRuntimeState
@@ -16,6 +18,7 @@ class AdaptiveRuntimeController:
     def __init__(self, *, config: AdaptiveConfig, state: AdaptiveRuntimeState | None = None) -> None:
         self.config = config
         self.state = AdaptiveRuntimeState.from_dict(state)
+        self.state.config = config.to_dict()
         self.state.enabled_features = dict(config.enabled_features)
         self._spatial_state = SpatialPopulationState.from_dict(self.state.spatial)
         self.challenge_memory = ChallengeMemory.from_dict(self.state.challenge_memory)
@@ -30,7 +33,13 @@ class AdaptiveRuntimeController:
         policy: Any | None = None,
         world: Any | None = None,
     ) -> "AdaptiveRuntimeController":
-        config = AdaptiveConfig.from_sources(explicit=explicit, contract=contract, policy=policy, world=world)
+        restored_payload = coerce_dict(restored_state)
+        restored_config = coerce_dict(restored_payload.get("config"))
+        if restored_config and explicit:
+            restored_config = _deep_merge(restored_config, coerce_dict(explicit))
+        elif explicit:
+            restored_config = coerce_dict(explicit)
+        config = AdaptiveConfig.from_sources(explicit=restored_config or None, contract=contract, policy=policy, world=world)
         return cls(config=config, state=AdaptiveRuntimeState.from_dict(restored_state))
 
     @property
@@ -85,6 +94,9 @@ class AdaptiveRuntimeController:
                 self.challenge_memory.mark_targeted(getattr(candidate, "id", ""), record.target_challenge_ids)
             if record.resolved_challenge_ids:
                 self.challenge_memory.mark_resolved(getattr(candidate, "id", ""), record.resolved_challenge_ids)
+            auto_resolved = self.challenge_memory.mark_schema_resolved_from_record(record)
+            if auto_resolved:
+                _attach_auto_resolved_schema_challenges(candidate, auto_resolved)
         self.state.challenge_memory = self.challenge_memory.to_dict()
         challenge_summary = self.challenge_memory.summary(limit=12)
         self.state.evaluator = {
@@ -120,3 +132,36 @@ class AdaptiveRuntimeController:
 
 
 __all__ = ["AdaptiveRuntimeController"]
+
+
+def _attach_auto_resolved_schema_challenges(candidate: Any, challenge_ids: list[str]) -> None:
+    metadata = dict(getattr(candidate, "metadata", {}) or {})
+    resolved = list(dict.fromkeys([*(metadata.get("resolved_challenge_ids") or []), *challenge_ids]))
+    metadata["resolved_challenge_ids"] = resolved
+    state = dict(metadata.get("evidence_state") or {})
+    targets = list(dict.fromkeys(state.get("target_challenge_ids") or metadata.get("target_challenge_ids") or []))
+    state["target_challenge_ids"] = targets
+    state["resolved_challenge_ids"] = list(dict.fromkeys([*(state.get("resolved_challenge_ids") or []), *challenge_ids]))
+    if targets:
+        state["challenge_resolution"] = bounded_score(len(set(state["resolved_challenge_ids"]) & set(targets)) / max(1, len(set(targets))))
+    metadata["evidence_state"] = state
+    records = metadata.get("evidence_records")
+    if isinstance(records, list) and records:
+        latest = dict(records[-1]) if isinstance(records[-1], dict) else {}
+        latest["resolved_challenge_ids"] = list(dict.fromkeys([*(latest.get("resolved_challenge_ids") or []), *challenge_ids]))
+        records[-1] = latest
+        metadata["evidence_records"] = records
+    candidate.metadata = metadata
+    scores = dict(getattr(candidate, "multihead_scores", {}) or {})
+    scores["challenge_resolution"] = bounded_score(state.get("challenge_resolution", 0.0))
+    candidate.multihead_scores = scores
+
+
+def _deep_merge(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
+    merged = dict(left)
+    for key, value in right.items():
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _deep_merge(dict(merged[key]), dict(value))
+        else:
+            merged[key] = value
+    return merged

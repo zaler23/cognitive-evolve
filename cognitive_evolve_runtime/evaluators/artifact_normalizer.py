@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ast
+from copy import deepcopy
 import json
 from typing import Any
 
@@ -15,31 +16,25 @@ def normalize_artifact(candidate: Any, *, artifact_type: str = "", policy: Artif
     declared_type = str(artifact_type or policy.artifact_type or getattr(candidate, "artifact_type", "") or "").strip()
     artifact = getattr(candidate, "artifact", None)
     if _is_clean_artifact(artifact):
-        normalized = artifact
-        inferred_type = declared_type or _infer_type(normalized)
-        return {
-            "artifact_type": inferred_type,
-            "artifact": artifact,
-            "normalized_artifact": normalized,
-            "status": "clean",
-            "schema_cleanliness": 1.0,
-            "probe_eligible": True,
-            "final_eligible": True,
-            "diagnostics": [],
-        }
+        return _machine_artifact_view(
+            original_artifact=artifact,
+            parsed_artifact=artifact,
+            declared_type=declared_type,
+            policy=policy,
+            forced_refolded=False,
+            base_diagnostics=[],
+        )
     if isinstance(artifact, str) and artifact.strip():
         refolded = _extract_embedded_artifact(artifact)
         if refolded is not None:
-            return {
-                "artifact_type": declared_type or _infer_type(refolded),
-                "artifact": artifact,
-                "normalized_artifact": refolded,
-                "status": "refolded",
-                "schema_cleanliness": 0.55,
-                "probe_eligible": bool(policy.allow_refold_for_probe),
-                "final_eligible": bool(policy.allow_refold_for_final),
-                "diagnostics": ["artifact_refolded_from_natural_language"],
-            }
+            return _machine_artifact_view(
+                original_artifact=artifact,
+                parsed_artifact=refolded,
+                declared_type=declared_type,
+                policy=policy,
+                forced_refolded=True,
+                base_diagnostics=["artifact_refolded_from_natural_language"],
+            )
         return {
             "artifact_type": declared_type,
             "artifact": artifact,
@@ -48,7 +43,7 @@ def normalize_artifact(candidate: Any, *, artifact_type: str = "", policy: Artif
             "schema_cleanliness": 0.2 if policy.machine_readable_required else 0.35,
             "probe_eligible": bool(policy.allow_text_fallback and not policy.machine_readable_required),
             "final_eligible": bool(policy.allow_text_fallback and not policy.machine_readable_required and policy.allow_refold_for_final),
-            "diagnostics": ["artifact_not_machine_parseable"],
+            "diagnostics": ["machine_parse_failure", "artifact_not_machine_parseable"] if policy.machine_readable_required else ["artifact_not_machine_parseable"],
         }
     fallback_text = str(getattr(candidate, "concise_claim", "") or getattr(candidate, "core_mechanism", "") or "").strip()
     if fallback_text and policy.allow_text_fallback and not policy.machine_readable_required:
@@ -73,6 +68,55 @@ def normalize_artifact(candidate: Any, *, artifact_type: str = "", policy: Artif
         "diagnostics": ["artifact_absent"],
     }
 
+
+def _machine_artifact_view(
+    *,
+    original_artifact: Any,
+    parsed_artifact: Any,
+    declared_type: str,
+    policy: ArtifactPolicy,
+    forced_refolded: bool,
+    base_diagnostics: list[str],
+) -> dict[str, Any]:
+    normalized = deepcopy(parsed_artifact)
+    diagnostics = list(base_diagnostics)
+    canonical_type, type_refolded, type_ok = _canonical_artifact_type(declared_type, normalized, policy, diagnostics)
+    field_refolded = False
+    if isinstance(normalized, dict):
+        field_refolded = _apply_field_aliases(normalized, policy.field_aliases, diagnostics)
+    missing = _missing_required_fields(normalized, policy.required_fields)
+    if missing:
+        diagnostics.append("missing_required_fields: " + ", ".join(missing))
+    changed = forced_refolded or type_refolded or field_refolded
+    if missing or not type_ok:
+        status = "malformed"
+    elif changed:
+        status = "refolded"
+    else:
+        status = "clean"
+    final_eligible = status == "clean"
+    if status == "refolded":
+        final_eligible = bool(policy.allow_refold_for_final and not policy.final_requires_clean_schema)
+    if status == "malformed":
+        final_eligible = False
+    if policy.final_requires_clean_schema and status != "clean":
+        diagnostics.append("final_requires_clean_schema")
+        final_eligible = False
+    probe_eligible = status == "clean" or (status == "refolded" and bool(policy.allow_refold_for_probe))
+    cleanliness = _schema_cleanliness(status=status, parsed_artifact=normalized, missing_count=len(missing), type_ok=type_ok)
+    return {
+        "artifact_type": canonical_type,
+        "artifact": original_artifact,
+        "normalized_artifact": normalized if status in {"clean", "refolded"} else None,
+        "status": status,
+        "schema_cleanliness": cleanliness,
+        "probe_eligible": probe_eligible,
+        "final_eligible": final_eligible,
+        "diagnostics": list(dict.fromkeys(diagnostics)),
+        "missing_required_fields": missing,
+        "normalization_applied": bool(changed),
+    }
+
 def _is_clean_artifact(value: Any) -> bool:
     return isinstance(value, (dict, list)) and bool(value)
 
@@ -86,6 +130,57 @@ def _infer_type(value: Any) -> str:
     if isinstance(value, list):
         return "array_artifact"
     return "machine_artifact"
+
+
+def _canonical_artifact_type(declared_type: str, artifact: Any, policy: ArtifactPolicy, diagnostics: list[str]) -> tuple[str, bool, bool]:
+    declared = str(declared_type or "").strip()
+    expected = str(policy.artifact_type or "").strip()
+    aliases = {str(k): str(v) for k, v in (policy.artifact_type_aliases or {}).items()}
+    inferred = declared or _infer_type(artifact)
+    if declared in aliases:
+        canonical = aliases[declared]
+        diagnostics.append(f"artifact_type_alias_normalized: {declared} -> {canonical}")
+        return canonical, True, not expected or canonical == expected
+    if expected and declared and declared != expected:
+        diagnostics.append(f"artifact_type_mismatch: expected {expected} got {declared}")
+        return declared, False, False
+    return expected or inferred, False, True
+
+
+def _apply_field_aliases(value: dict[str, Any], aliases: dict[str, str], diagnostics: list[str]) -> bool:
+    changed = False
+    for alias, canonical in (aliases or {}).items():
+        alias = str(alias or "").strip()
+        canonical = str(canonical or "").strip()
+        if not alias or not canonical or alias not in value:
+            continue
+        if canonical not in value:
+            value[canonical] = value.pop(alias)
+        else:
+            value.pop(alias, None)
+        diagnostics.append(f"field_alias_normalized: {alias} -> {canonical}")
+        changed = True
+    return changed
+
+
+def _missing_required_fields(value: Any, required_fields: list[str]) -> list[str]:
+    if not required_fields:
+        return []
+    if not isinstance(value, dict):
+        return list(required_fields)
+    return [field for field in required_fields if field not in value]
+
+
+def _schema_cleanliness(*, status: str, parsed_artifact: Any, missing_count: int, type_ok: bool) -> float:
+    if status == "clean":
+        return 1.0
+    if status == "refolded":
+        return 0.85
+    base = 0.45 if isinstance(parsed_artifact, dict) else 0.2
+    if not type_ok:
+        base -= 0.15
+    base -= min(0.3, 0.08 * missing_count)
+    return bounded_score(base)
 
 
 def _extract_embedded_artifact(text: str) -> Any | None:

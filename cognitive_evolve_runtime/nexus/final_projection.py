@@ -55,7 +55,11 @@ def build_final_projection(*, population: CandidatePopulation, synthesis: Any, f
     solved = bool(certificate.get("objective_solved") or getattr(synthesis, "objective_solved", False))
     if solved:
         candidate = _candidate_by_id(population.candidates, str(certificate.get("candidate_id") or getattr(synthesis, "best_candidate_id", "")))
-        return _projection_for_candidate(candidate, status="solved", objective_solved=True, certificate=certificate)
+        if _projection_candidate_final_eligible(candidate):
+            return _projection_for_candidate(candidate, status="solved", objective_solved=True, certificate=certificate)
+        certificate.setdefault("blocking_reasons", [])
+        if isinstance(certificate["blocking_reasons"], list):
+            certificate["blocking_reasons"].append("candidate_not_clean_final_eligible")
     best = _best_current_candidate(population.candidates)
     if best is not None:
         return _projection_for_candidate(best, status="best_current", objective_solved=False, certificate=certificate)
@@ -138,6 +142,19 @@ def _candidate_by_id(candidates: list[CandidateGenome], candidate_id: str) -> Ca
 def _hard_rejected(candidate: CandidateGenome) -> bool:
     metadata = candidate.metadata if isinstance(candidate.metadata, dict) else {}
     return bool(metadata.get("terminal_failure"))
+
+
+def _projection_candidate_final_eligible(candidate: CandidateGenome | None) -> bool:
+    if candidate is None:
+        return False
+    state = evidence_state(candidate)
+    if state.get("final_blocked", True):
+        return False
+    evidence = latest_evidence_record(candidate)
+    artifact_state = evidence.metadata.get("artifact_state", {}) if evidence is not None and isinstance(evidence.metadata, dict) else {}
+    if isinstance(artifact_state, dict) and artifact_state:
+        return artifact_state.get("status") == "clean" and bool(artifact_state.get("final_eligible", False))
+    return True
 
 
 def _render_artifact(artifact: Any) -> str:
