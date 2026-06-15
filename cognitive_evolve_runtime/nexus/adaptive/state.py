@@ -25,7 +25,7 @@ class AdaptiveRuntimeState:
     pattern_memory: dict[str, Any] | None = None
     mdl: dict[str, Any] | None = None
     evaluator: dict[str, Any] | None = None
-    challenge_bank: dict[str, Any] | None = None
+    challenge_memory: dict[str, Any] | None = None
     metrics: dict[str, Any] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     events: list[dict[str, Any]] = field(default_factory=list)
@@ -51,7 +51,7 @@ class AdaptiveRuntimeState:
             pattern_memory=_optional_dict(data.get("pattern_memory")),
             mdl=_optional_dict(data.get("mdl")),
             evaluator=_optional_dict(data.get("evaluator")),
-            challenge_bank=_optional_dict(data.get("challenge_bank")),
+            challenge_memory=_optional_dict(data.get("challenge_memory") or data.get("challenge_bank")),
             metrics=coerce_dict(data.get("metrics")),
             warnings=[str(item) for item in data.get("warnings", []) if item],
             events=[dict(item) for item in data.get("events", []) if isinstance(item, dict)],

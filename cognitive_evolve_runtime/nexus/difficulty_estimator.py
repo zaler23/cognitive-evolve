@@ -199,7 +199,7 @@ def _difficulty_topography(*, semantic: dict[str, object], raw: dict[str, object
         "verification_cost": verification_cost,
         "final_gate_required": bool(final_gate_required),
         "low_round_semantics": "direction_discovery" if search_difficulty in {"hard", "research", "frontier"} else "candidate_iteration",
-        "recommended_mode": "progressive_evidence_spatial_search" if tags or final_gate_required else "standard_evolution",
+        "recommended_mode": "evidence_control_plane" if tags or final_gate_required else "standard_evolution",
         "principle": "verification cheap != search easy",
     }
 

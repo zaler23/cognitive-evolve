@@ -22,6 +22,7 @@ def candidate_final_quality(candidate: CandidateGenome) -> float:
     scores = candidate.multihead_scores
     axes = [
         "final_verification",
+        "final_confidence",
         "objective_alignment",
         "answer_likelihood",
         "core_mechanism_strength",
@@ -41,7 +42,9 @@ def candidate_search_quality(candidate: CandidateGenome) -> float:
     axes = [
         "frontier_score",
         "challenge_pass_rate",
+        "challenge_resolution",
         "schema_cleanliness",
+        "continuation_value",
         "novelty",
         "rarity",
         "repair_value",

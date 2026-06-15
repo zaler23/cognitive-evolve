@@ -1,69 +1,84 @@
-"""Progressive evaluator wrapper.
-
-This layer turns legacy evaluator output and artifact normalization into a
-runtime-level EvidenceResult.  Domain-specific adapters can later override the
-L1/L2/L3 details without changing the Nexus loop contract.
-"""
+"""Progressive evaluator wrapper for the Evidence Control Plane."""
 from __future__ import annotations
 
 from typing import Any
 
+from cognitive_evolve_runtime.core.scalars import bounded_score
 from cognitive_evolve_runtime.evaluators.artifact_normalizer import artifact_policy_from_config, normalize_artifact
-from cognitive_evolve_runtime.evaluators.challenge_bank import challenge_from_diagnostic
-from cognitive_evolve_runtime.evaluators.evidence import EvidenceResult
+from cognitive_evolve_runtime.evaluators.challenge_memory import challenge_from_diagnostic
+from cognitive_evolve_runtime.evaluators.evidence import EvidenceRecord, repair_value_from_record
 from cognitive_evolve_runtime.evaluators.result import EvaluatorResult
 from cognitive_evolve_runtime.evaluators.spec import EvaluatorSpec
-from cognitive_evolve_runtime.core.scalars import bounded_score
 
 
 class ProgressiveEvaluator:
-    def evaluate_result(self, candidate: Any, evaluator_result: EvaluatorResult | None, *, spec: EvaluatorSpec | None = None, round_index: int = 0) -> EvidenceResult:
+    def evaluate_result(self, candidate: Any, evaluator_result: EvaluatorResult | None, *, spec: EvaluatorSpec | None = None, round_index: int = 0) -> EvidenceRecord:
         spec = spec or EvaluatorSpec()
         policy = artifact_policy_from_config(getattr(spec, "progressive", {}) if spec is not None else {})
-        artifact_view = normalize_artifact(
-            candidate,
-            artifact_type=str(policy.get("artifact_type") or getattr(candidate, "artifact_type", "") or ""),
-            machine_artifact_required=bool(policy.get("machine_artifact_required")),
-        )
-        domain_id = str(getattr(spec, "domain_id", "") or artifact_view.artifact_type or "general")
+        artifact_state = normalize_artifact(candidate, artifact_type=policy.artifact_type or getattr(candidate, "artifact_type", "") or "", policy=policy)
+        source = str(getattr(spec, "domain_id", "") or artifact_state.get("artifact_type") or "general")
         if evaluator_result is None:
-            diagnostics = list(artifact_view.diagnostics)
-            passed = artifact_view.probe_eligible and not bool(policy.get("machine_artifact_required"))
-            status = "artifact_probe_ready" if passed else f"artifact_{artifact_view.status}"
-            metrics = {"schema_cleanliness": artifact_view.schema_cleanliness}
+            diagnostics = list(artifact_state.get("diagnostics") or [])
+            passed = bool(artifact_state.get("probe_eligible")) and not policy.machine_readable_required
+            status = "artifact_probe_ready" if passed else f"artifact_{artifact_state.get('status') or 'unknown'}"
+            metrics = {"schema_cleanliness": artifact_state.get("schema_cleanliness", 0.0)}
+            cost: dict[str, Any] = {}
         else:
-            diagnostics = list(evaluator_result.diagnostics or []) + list(artifact_view.diagnostics or [])
+            diagnostics = list(evaluator_result.diagnostics or []) + list(artifact_state.get("diagnostics") or [])
             passed = bool(evaluator_result.passed)
             status = "passed" if passed else "challenge_failed"
             metrics = dict(evaluator_result.metrics or {})
-            metrics.setdefault("schema_cleanliness", artifact_view.schema_cleanliness)
-        score = _score_from_metrics(metrics, passed=passed, artifact_score=artifact_view.schema_cleanliness)
-        hard_reject = artifact_view.status in {"malformed", "absent"} and bool(policy.get("machine_artifact_required"))
-        final_eligible = artifact_view.final_eligible and passed and str(getattr(spec, "level", "L2") or "L2").upper() == "L4"
-        level = str(getattr(spec, "level", "L2") or "L2").upper()
-        if level not in {"L0", "L1", "L2", "L3", "L4"}:
-            level = "L2"
-        challenge_cases = []
+            metrics.setdefault("schema_cleanliness", artifact_state.get("schema_cleanliness", 0.0))
+            cost = dict(evaluator_result.cost or {})
+        score = _score_from_metrics(metrics, passed=passed, artifact_score=bounded_score(artifact_state.get("schema_cleanliness", 0.0)))
+        terminal_reject = bool(artifact_state.get("status") in {"malformed", "absent"} and policy.machine_readable_required)
+        stage = str(getattr(spec, "level", "probe") or "probe")
+        final_stage = stage.strip().lower() in {"final", "certificate", "certification", "l4"}
+        final_ready = bool(artifact_state.get("final_eligible")) and passed and final_stage
+        if policy.final_requires_certificate:
+            final_ready = final_ready and bool(metrics.get("certificate_passed") or metrics.get("final_certificate_passed"))
+        challenge_items = []
         if not passed:
-            kind = "format_violation" if artifact_view.status in {"malformed", "absent"} else "evaluator_failure"
+            priority = 0.7 if score >= 0.65 else 0.5
             for diagnostic in diagnostics[:8] or [status]:
-                challenge_cases.append(challenge_from_diagnostic(candidate_id=getattr(candidate, "id", ""), domain_id=domain_id, diagnostic=diagnostic, kind=kind, round_index=round_index))
-        repair_hints = _repair_hints(diagnostics, artifact_view.status)
-        return EvidenceResult(
+                challenge_items.append(challenge_from_diagnostic(candidate_id=getattr(candidate, "id", ""), source=source, diagnostic=diagnostic, round_index=round_index, priority=priority))
+        resolved = [str(item) for item in metrics.get("resolved_challenge_ids", [])] if isinstance(metrics.get("resolved_challenge_ids"), list) else []
+        targets = []
+        metadata = getattr(candidate, "metadata", None)
+        if isinstance(metadata, dict) and isinstance(metadata.get("target_challenge_ids"), list):
+            targets = [str(item) for item in metadata.get("target_challenge_ids", []) if item]
+        hints = _repair_hints(diagnostics, str(artifact_state.get("status") or ""))
+        provisional = EvidenceRecord(
             candidate_id=getattr(candidate, "id", ""),
-            domain_id=domain_id,
-            level=level,
-            status="passed" if passed else ("hard_reject" if hard_reject else status),
-            passed=passed,
-            hard_reject=hard_reject,
-            final_eligible=final_eligible,
+            source=source,
+            stage=stage,
             score=score,
-            metrics=metrics,
-            challenge_cases=challenge_cases,
-            resolved_challenge_ids=[str(item) for item in metrics.get("resolved_challenge_ids", [])] if isinstance(metrics.get("resolved_challenge_ids"), list) else [],
-            repair_hints=repair_hints,
+            confidence=0.85 if passed else 0.55,
+            cost=cost,
+            final_blocked=not final_ready,
+            parent_blocked=terminal_reject,
+            terminal_reject=terminal_reject,
+            repair_value=0.0,
+            continuation_value=0.0,
+            novelty_value=bounded_score(getattr(candidate, "multihead_scores", {}).get("novelty", 0.0) if isinstance(getattr(candidate, "multihead_scores", None), dict) else 0.0),
+            target_challenge_ids=targets,
+            resolved_challenge_ids=resolved,
+            emitted_challenge_ids=[str(item.get("id")) for item in challenge_items if item.get("id")],
             diagnostics=diagnostics[:20],
-            artifact_view=artifact_view,
+            hints=hints,
+            metadata={
+                "status": status,
+                "artifact_policy": policy.to_dict(),
+                "artifact_state": artifact_state,
+                "challenge_items": challenge_items,
+                "metrics": metrics,
+                "evaluator_score": metrics.get("score", score),
+                "challenge_pass_rate": metrics.get("challenge_pass_rate", 1.0 if passed else 0.0),
+            },
+        )
+        repair = repair_value_from_record(provisional)
+        return EvidenceRecord(
+            **{**provisional.to_dict(), "repair_value": repair, "continuation_value": repair if not terminal_reject else 0.0}
         )
 
 

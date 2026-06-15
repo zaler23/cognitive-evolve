@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from cognitive_evolve_runtime.candidates.genome import CandidateGenome
-from cognitive_evolve_runtime.evaluators.evidence import apply_evidence_result
+from cognitive_evolve_runtime.evaluators.evidence import apply_evidence_record
 from cognitive_evolve_runtime.evaluators.progressive import ProgressiveEvaluator
 from cognitive_evolve_runtime.evaluators.result import EvaluatorResult
 from cognitive_evolve_runtime.evaluators.spec import EvaluatorSpec
@@ -78,7 +78,7 @@ def apply_evaluator_result(candidate: CandidateGenome, result: EvaluatorResult, 
         runtime_penalty = 0.0
     candidate.multihead_scores["cost_adjusted_fitness"] = max(0.0, float(candidate.multihead_scores.get("objective_score", 0.0) or 0.0) - runtime_penalty)
     evidence = (progressive or ProgressiveEvaluator()).evaluate_result(candidate, result, spec=spec, round_index=round_index)
-    apply_evidence_result(candidate, evidence)
+    apply_evidence_record(candidate, evidence)
     candidate.add_verification_feedback(result.to_feedback())
 
 

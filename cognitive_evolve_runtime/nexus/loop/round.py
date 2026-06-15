@@ -12,10 +12,9 @@ from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateG
 from cognitive_evolve_runtime.candidates.mutation import MutationEngine, MutationOperator, MutationPlan, MutationPlanner
 from cognitive_evolve_runtime.contracts.objective_contract import NexusObjectiveContract
 from cognitive_evolve_runtime.events.progress import EvolutionProgressEvent, PipelineProgressEvent
-from cognitive_evolve_runtime.evaluators import EvaluatorSpec, ExternalEvaluatorRunner, ProgressiveEvaluator, apply_evidence_result, evidence_advisory_features
+from cognitive_evolve_runtime.evaluators import EvaluatorSpec, ExternalEvaluatorRunner, ProgressiveEvaluator, apply_evidence_record, evidence_advisory_features
 from cognitive_evolve_runtime.nexus.critique import CandidateCritique, CritiqueEngine
 from cognitive_evolve_runtime.nexus.adaptive import AdaptiveRuntimeController
-from cognitive_evolve_runtime.nexus.adaptive.mutation_strategy import annotate_mutation_strategies
 from cognitive_evolve_runtime.nexus.activation_reseed import emergency_activation_reseed
 from cognitive_evolve_runtime.nexus._serde import utc_now
 from cognitive_evolve_runtime.nexus.exploration import action_palette_for_round, amplify_population
@@ -137,15 +136,14 @@ class EvolutionRound:
         if not evaluator_results and self.adaptive.enabled:
             progressive = ProgressiveEvaluator()
             for candidate in population.candidates:
-                apply_evidence_result(candidate, progressive.evaluate_result(candidate, None, spec=evaluator_spec, round_index=current_round))
-        annotate_mutation_strategies(population.candidates)
+                apply_evidence_record(candidate, progressive.evaluate_result(candidate, None, spec=evaluator_spec, round_index=current_round))
         if self.adaptive.enabled:
             if evaluator_results:
                 passed = len([item for item in evaluator_results if item.passed])
                 evaluated = len(evaluator_results)
             else:
-                evidence_items = [candidate.metadata.get("progressive_evidence") for candidate in population.candidates if isinstance(candidate.metadata, dict) and candidate.metadata.get("progressive_evidence")]
-                passed = len([item for item in evidence_items if isinstance(item, dict) and item.get("passed")])
+                evidence_items = [candidate.metadata.get("evidence_state") for candidate in population.candidates if isinstance(candidate.metadata, dict) and candidate.metadata.get("evidence_state")]
+                passed = len([item for item in evidence_items if isinstance(item, dict) and not item.get("final_blocked")])
                 evaluated = len(evidence_items)
             self.adaptive.record_evaluator_summary(
                 round_index=current_round,
@@ -392,6 +390,7 @@ class EvolutionRound:
             assert_stage_ready(plan, "plan_mutations", completed_stage_ops)
         plans = _plan_mutations(model=self.model, mutation_planner=self.mutation_planner, parents=parents, actions=actions, archives=archives, diagnosis=diagnosis, policy=policy)
         plans, latent_exploration_plan = apply_latent_exploration_to_mutation_plans(plans, contract, exploration=latent_exploration_plan)
+        plans = self._apply_search_pressure_to_plans(plans, parents=parents)
         if plan is not None:
             completed_stage_ops.append("plan_mutations")
             self.last_generation_plan["mutation_objectives"] = list(actions)
@@ -514,6 +513,34 @@ class EvolutionRound:
             return {}
         representation = build_population_representation(candidates, cycle_id=f"round:{current_round}")
         return self.theory_layer.advisory_features_for_population(representation, config=config)
+
+    def _apply_search_pressure_to_plans(self, plans: list[MutationPlan], *, parents: list[CandidateGenome]) -> list[MutationPlan]:
+        if not plans or not parents or not self.adaptive.enabled:
+            return plans
+        out: list[MutationPlan] = []
+        by_id = {parent.id: parent for parent in parents}
+        for index, plan in enumerate(plans):
+            parent = None
+            for parent_id in plan.parent_ids:
+                parent = by_id.get(parent_id)
+                if parent is not None:
+                    break
+            if parent is None:
+                parent = parents[index % len(parents)]
+            pressure = self.adaptive.compile_search_pressure(parent_id=parent.id, scope="candidate")
+            if pressure is None or not pressure.target_challenge_ids:
+                out.append(plan)
+                continue
+            metadata = dict(plan.metadata or {})
+            metadata["search_pressure"] = pressure.to_dict()
+            metadata["search_pressure_id"] = pressure.id
+            metadata["target_challenge_ids"] = list(pressure.target_challenge_ids)
+            metadata["artifact_policy"] = dict(pressure.artifact_requirements or {})
+            instruction = plan.instruction
+            if pressure.mutation_instruction and pressure.mutation_instruction not in instruction:
+                instruction = (instruction.rstrip() + "\n\n" + pressure.mutation_instruction).strip()
+            out.append(MutationPlan.from_dict({**plan.to_dict(), "instruction": instruction, "metadata": metadata}))
+        return out
 
     def _build_reproduction_offspring(
         self,

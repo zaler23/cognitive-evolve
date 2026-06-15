@@ -1,11 +1,11 @@
-"""Runtime controller for the adaptive evidence layer."""
+"""Runtime controller for the adaptive evidence control plane."""
 from __future__ import annotations
 
 from typing import Any
 
 from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidatePopulation
-from cognitive_evolve_runtime.evaluators.challenge_bank import ChallengeBank
-from cognitive_evolve_runtime.evaluators.evidence import EvidenceResult, progressive_evidence
+from cognitive_evolve_runtime.evaluators.challenge_memory import ChallengeMemory
+from cognitive_evolve_runtime.evaluators.evidence import SearchPressure, latest_evidence_record
 from cognitive_evolve_runtime.nexus.adaptive.config import AdaptiveConfig
 from cognitive_evolve_runtime.nexus.adaptive.spatial_population import SpatialPopulationState, build_or_update_spatial_state
 from cognitive_evolve_runtime.nexus.adaptive.state import AdaptiveRuntimeState
@@ -18,7 +18,7 @@ class AdaptiveRuntimeController:
         self.state = AdaptiveRuntimeState.from_dict(state)
         self.state.enabled_features = dict(config.enabled_features)
         self._spatial_state = SpatialPopulationState.from_dict(self.state.spatial)
-        self.challenge_bank = ChallengeBank.from_dict(self.state.challenge_bank)
+        self.challenge_memory = ChallengeMemory.from_dict(self.state.challenge_memory)
 
     @classmethod
     def from_sources(
@@ -70,30 +70,42 @@ class AdaptiveRuntimeController:
         if not self.enabled:
             return
         for candidate in candidates or []:
-            result = progressive_evidence(candidate)
-            if not isinstance(result, EvidenceResult):
+            record = latest_evidence_record(candidate)
+            if record is None:
                 continue
-            self.challenge_bank.ingest(
-                result,
+            spatial = getattr(candidate, "metadata", {}).get("spatial", {}) if isinstance(getattr(candidate, "metadata", None), dict) else {}
+            self.challenge_memory.ingest(
+                record,
                 round_index=round_index,
                 candidate_fate=CandidateFate.normalize(getattr(candidate, "current_fate", "")),
+                lineage_id=str(getattr(candidate, "lineage", [getattr(candidate, "id", "")])[-1] if getattr(candidate, "lineage", None) else getattr(candidate, "id", "")),
+                region_id=str(spatial.get("region_id") or "") if isinstance(spatial, dict) else "",
             )
-            if result.resolved_challenge_ids:
-                self.challenge_bank.mark_resolved(getattr(candidate, "id", ""), result.resolved_challenge_ids)
-        self.state.challenge_bank = self.challenge_bank.to_dict()
-        challenge_summary = self.challenge_bank.summary(limit=12)
+            if record.target_challenge_ids:
+                self.challenge_memory.mark_targeted(getattr(candidate, "id", ""), record.target_challenge_ids)
+            if record.resolved_challenge_ids:
+                self.challenge_memory.mark_resolved(getattr(candidate, "id", ""), record.resolved_challenge_ids)
+        self.state.challenge_memory = self.challenge_memory.to_dict()
+        challenge_summary = self.challenge_memory.summary(limit=12)
         self.state.evaluator = {
             "enabled": self.evaluator_enabled,
             "last_round": int(round_index or 0),
             "evaluated_candidates": int(evaluated or 0),
             "passed_candidates": int(passed or 0),
             "failed_candidates": int(failed or 0),
-            "challenge_bank": challenge_summary,
+            "challenge_memory": challenge_summary,
         }
         self.state.metrics["evaluator_evaluated_candidates"] = int(evaluated or 0)
         self.state.metrics["evaluator_passed_candidates"] = int(passed or 0)
         self.state.metrics["challenge_case_count"] = int(challenge_summary.get("case_count") or 0)
-        self.state.record_event(adaptive_event("external_evaluator_summary", round=round_index, evaluated=evaluated, passed=passed, failed=failed, challenge_cases=challenge_summary.get("case_count", 0)))
+        self.state.metrics["targeted_challenge_resolution_rate"] = float(challenge_summary.get("targeted_resolution_rate") or 0.0)
+        self.state.record_event(adaptive_event("external_evaluator_summary", round=round_index, evaluated=evaluated, passed=passed, failed=failed, challenge_cases=challenge_summary.get("case_count", 0), targeted_resolution_rate=challenge_summary.get("targeted_resolution_rate", 0.0)))
+
+    def compile_search_pressure(self, *, parent_id: str | None = None, scope: str = "global") -> SearchPressure | None:
+        if not self.enabled:
+            return None
+        requirements = dict(self.config.evidence or {})
+        return self.challenge_memory.compile_search_pressure(parent_id=parent_id, scope=scope, artifact_requirements=requirements)
 
     def attach_final_certificate(self, certificate: dict[str, Any]) -> None:
         if not self.enabled and not certificate:
@@ -103,6 +115,7 @@ class AdaptiveRuntimeController:
             self.state.record_event(adaptive_event("final_certificate", objective_solved=bool(certificate.get("objective_solved")), blocking_reasons=certificate.get("blocking_reasons", [])))
 
     def to_dict(self) -> dict[str, Any]:
+        self.state.challenge_memory = self.challenge_memory.to_dict()
         return self.state.to_dict()
 
 

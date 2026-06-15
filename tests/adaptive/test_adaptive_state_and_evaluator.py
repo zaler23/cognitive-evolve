@@ -29,6 +29,25 @@ def test_adaptive_state_roundtrip_and_old_checkpoint_default() -> None:
     assert NexusCheckpoint.from_dict({"round": 1, "max_rounds": 2, "population": {}, "archives": {}}).adaptive_state == {}
 
 
+def test_adaptive_state_reads_old_challenge_bank_snapshot_as_challenge_memory() -> None:
+    restored = AdaptiveRuntimeState.from_dict(
+        {
+            "challenge_bank": {
+                "cases": {
+                    "case-old": {
+                        "id": "case-old",
+                        "summary": "old snapshot case",
+                        "payload": {"candidate_id": "C1"},
+                    }
+                }
+            }
+        }
+    )
+
+    assert restored.challenge_memory is not None
+    assert "case-old" in restored.challenge_memory["cases"]
+
+
 def test_checkpoint_persists_adaptive_state() -> None:
     population = CandidatePopulation([CandidateGenome(id="C1")])
     checkpoint = build_checkpoint_state(
@@ -118,12 +137,12 @@ def test_runtime_writes_adaptive_artifacts_when_enabled(tmp_path: Path) -> None:
     assert (adaptive_dir / "final-certificate.json").exists()
     assert (adaptive_dir / "final-projection.json").exists()
     final_projection = json.loads((adaptive_dir / "final-projection.json").read_text(encoding="utf-8"))
-    assert final_projection["status"] in {"best_current", "failed_no_candidate", "solved"}
+    assert final_projection["status"] in {"best_current", "no_candidate", "solved"}
     assert "objective_solved" in final_projection
-    assert (tmp_path / "challenge-bank.json").exists()
+    assert (tmp_path / "challenge-memory.json").exists()
     checkpoint = json.loads((tmp_path / "checkpoint.json").read_text(encoding="utf-8"))
     assert checkpoint["adaptive_state"]["enabled_features"]["spatial_observe"] is True
-    assert checkpoint["adaptive_state"]["enabled_features"]["progressive_evidence"] is True
+    assert checkpoint["adaptive_state"]["enabled_features"]["evidence_control_plane"] is True
 
 
 def test_task_adaptive_config_sets_nested_evaluator_cwd(tmp_path: Path) -> None:

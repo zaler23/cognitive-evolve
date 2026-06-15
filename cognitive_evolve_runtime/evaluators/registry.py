@@ -1,4 +1,4 @@
-"""Small in-process adapter registry for progressive evidence."""
+"""Small in-process adapter registry for the Evidence Control Plane."""
 from __future__ import annotations
 
 from typing import Any
