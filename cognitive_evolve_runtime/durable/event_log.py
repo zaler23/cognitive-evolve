@@ -54,6 +54,7 @@ def append_jsonl(path: Path | str, record: dict[str, Any]) -> None:
     record = redact(record)
     with file_lock(target.with_name(target.name + ".lock")):
         with target.open("a", encoding="utf-8") as handle:
+            # codeql[py/clear-text-storage-sensitive-data] record is recursively redacted before persistence.
             handle.write(json.dumps(record, ensure_ascii=False, sort_keys=True, default=str) + "\n")
             handle.flush()
             os.fsync(handle.fileno())

@@ -49,6 +49,7 @@ def test_redact_secret_shaped_key_handles_nested_payloads_without_crashing() -> 
     payload = {
         "type": "latent_metadata",
         "token_metadata": {"nested": {"still": "private"}},
+        "total_tokens": 42,
         "authorization": ["Bearer sk-nested-runtime-key", {"inner": "value"}],
         "session_id": None,
         "api_key": "",
@@ -58,6 +59,7 @@ def test_redact_secret_shaped_key_handles_nested_payloads_without_crashing() -> 
     redacted = redact(payload)
 
     assert redacted["token_metadata"] == "[REDACTED]"
+    assert redacted["total_tokens"] == 42
     assert redacted["authorization"] == "[REDACTED]"
     assert redacted["session_id"] is None
     assert redacted["api_key"] == ""

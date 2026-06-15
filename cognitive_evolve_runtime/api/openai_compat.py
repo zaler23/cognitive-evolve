@@ -264,13 +264,27 @@ def _install_job_routes(app: FastAPI) -> None:
         job = _get_job(job_id)
         if not job:
             raise HTTPException(status_code=404, detail="Unknown CognitiveEvolve job id.")
-        root = Path(str(job.get("artifact_root") or job.get("task_dir") or ""))
+        root = _safe_job_artifact_root(job)
         artifacts: list[dict[str, Any]] = []
         if root.exists():
+            # codeql[py/path-injection] root is resolved and constrained to the configured API task root.
             for path in sorted(root.rglob("*")):
                 if path.is_file():
                     artifacts.append({"path": str(path.relative_to(root)), "bytes": path.stat().st_size})
         return JSONResponse({"id": job_id, "object": "cogev.job.artifacts", "status": job.get("status"), "artifacts": artifacts})
+
+
+def _safe_job_artifact_root(job: dict[str, Any]) -> Path:
+    raw_root = str(job.get("artifact_root") or job.get("task_dir") or "").strip()
+    if not raw_root:
+        raise HTTPException(status_code=404, detail="Job has no artifact root.")
+    root = Path(raw_root).expanduser().resolve()
+    api_root = get_service_config().api_task_root.expanduser().resolve()
+    try:
+        root.relative_to(api_root)
+    except ValueError as exc:
+        raise HTTPException(status_code=403, detail="Job artifact root is outside the configured API task root.") from exc
+    return root
 
 
 def _install_chat_routes(app: FastAPI) -> None:

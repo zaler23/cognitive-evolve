@@ -23,6 +23,17 @@ _SECRET_VALUE_ENV_RE = re.compile(
 _INLINE_SECRET_RE = re.compile(
     r"(?i)(bearer\s+)[A-Za-z0-9._~+/=-]{8,}|(sk-[A-Za-z0-9._-]{6,})|([A-Za-z0-9_-]{24,}\.[A-Za-z0-9._-]{12,})"
 )
+_NON_SECRET_DIAGNOSTIC_KEYS = {
+    "prompt_tokens",
+    "completion_tokens",
+    "total_tokens",
+    "input_tokens",
+    "output_tokens",
+    "max_tokens",
+    "estimated_tokens",
+    "credential_configured",
+    "credential_placeholder",
+}
 
 
 _CIRCULAR_REF = "[CIRCULAR]"
@@ -56,7 +67,9 @@ def _redact(value: Any, *, secrets: tuple[str, ...], parent_key: str, seen: set[
         try:
             for raw_key, raw_value in value.items():
                 key = str(raw_key)
-                if _SENSITIVE_KEY_RE.search(key):
+                if key in _NON_SECRET_DIAGNOSTIC_KEYS:
+                    out[key] = _redact(raw_value, secrets=secrets, parent_key=key, seen=seen)
+                elif _SENSITIVE_KEY_RE.search(key):
                     out[key] = _redacted_sensitive_value(raw_value)
                 else:
                     out[key] = _redact(raw_value, secrets=secrets, parent_key=key, seen=seen)

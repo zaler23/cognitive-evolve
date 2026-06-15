@@ -21,7 +21,8 @@ from typing import Any
 from dotenv import load_dotenv
 
 from cognitive_evolve_runtime.configuration import load_layered_config
-from cognitive_evolve_runtime.llm.env import llm_status
+from cognitive_evolve_runtime.core.redaction import redact, redact_text
+from cognitive_evolve_runtime.llm.env import llm_public_status, llm_status
 from cognitive_evolve_runtime.nexus.loop import EvolutionBudget
 from cognitive_evolve_runtime.nexus.model_adapter import StructuredModelAdapter
 from cognitive_evolve_runtime.nexus.runtime import NexusRuntime
@@ -48,7 +49,7 @@ def utc_now() -> str:
 def write_json(path: Path, data: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(path.suffix + ".tmp")
-    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
+    tmp.write_text(json.dumps(redact(data), ensure_ascii=False, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8")
     tmp.replace(path)
 
 
@@ -109,11 +110,7 @@ def status_payload(*, status: str, run_dir: Path, project_dir: Path, args: argpa
 
 
 def _safe_llm_status() -> dict[str, Any]:
-    status = dict(llm_status())
-    if "api_key_configured" in status:
-        status["api_key_configured"] = bool(status["api_key_configured"])
-    status.pop("api_key", None)
-    return status
+    return llm_public_status(llm_status())
 
 
 def parse_iso_time(value: str) -> datetime | None:
@@ -212,12 +209,12 @@ def main(argv: list[str] | None = None) -> int:
     error_path = run_dir / "self-evolve-error.txt"
     preflight = preflight_status(args)
     if args.dry_run:
-        print(json.dumps(status_payload(status="dry_run", run_dir=run_dir, project_dir=project_dir, args=args, extra={"goal_chars": len(goal), "preflight": preflight}), ensure_ascii=False, indent=2, sort_keys=True))
+        print(json.dumps(redact(status_payload(status="dry_run", run_dir=run_dir, project_dir=project_dir, args=args, extra={"goal_chars": len(goal), "preflight": preflight})), ensure_ascii=False, indent=2, sort_keys=True))
         return 0
     if not preflight.get("ok"):
         run_dir.mkdir(parents=True, exist_ok=True)
         write_json(status_path, status_payload(status="waiting_preflight", run_dir=run_dir, project_dir=project_dir, args=args, extra={"preflight": preflight, "finished_at": utc_now()}))
-        print(json.dumps({"status": "waiting_preflight", "run_dir": str(run_dir), "preflight": preflight}, ensure_ascii=False, sort_keys=True))
+        print(json.dumps(redact({"status": "waiting_preflight", "run_dir": str(run_dir), "preflight": preflight}), ensure_ascii=False, sort_keys=True))
         return 75
     run_dir.mkdir(parents=True, exist_ok=True)
     write_json(status_path, status_payload(status="running", run_dir=run_dir, project_dir=project_dir, args=args, extra={"started_at": utc_now()}))
@@ -252,10 +249,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         if error_path.exists():
             error_path.unlink()
-        print(json.dumps({"status": "completed", "completion_status": completion_status, "run_dir": str(run_dir)}, ensure_ascii=False, sort_keys=True))
+        print(json.dumps(redact({"status": "completed", "completion_status": completion_status, "run_dir": str(run_dir)}), ensure_ascii=False, sort_keys=True))
         return 0
     except Exception as exc:
-        error_path.write_text("".join(traceback.format_exception(exc)), encoding="utf-8")
+        error_path.write_text(redact_text("".join(traceback.format_exception(exc))), encoding="utf-8")
         write_json(
             status_path,
             status_payload(
@@ -266,7 +263,7 @@ def main(argv: list[str] | None = None) -> int:
                 extra={"error": f"{exc.__class__.__name__}: {exc}", "finished_at": utc_now()},
             ),
         )
-        print(f"failed: {exc.__class__.__name__}: {exc}", file=sys.stderr)
+        print(redact_text(f"failed: {exc.__class__.__name__}: {exc}"), file=sys.stderr)
         return 1
 
 
