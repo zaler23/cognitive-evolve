@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 from cognitive_evolve_runtime.candidates.genome import CandidateGenome, CandidatePopulation
-from cognitive_evolve_runtime.evaluators.evidence import progressive_evidence
+from cognitive_evolve_runtime.evaluators.evidence import evidence_final_blocked, evidence_state
 
 
 def build_final_certificate(
@@ -34,7 +34,7 @@ def build_final_certificate(
         "generic_verifier_passed": generic_passed,
         "external_evaluator_required": bool(evaluator_required),
         "external_evaluator_passed": evaluator_passed,
-        "progressive_evidence": progressive_evidence(candidate).to_dict() if candidate is not None and progressive_evidence(candidate) is not None else {},
+        "evidence_state": evidence_state(candidate) if candidate is not None else {},
         "robustness_score": _score(candidate, "robustness") if candidate is not None else None,
         "mdl": dict((candidate.metadata or {}).get("mdl") or {}) if candidate is not None and isinstance(candidate.metadata, dict) else {},
         "judge_quorum": {},
@@ -78,9 +78,9 @@ def _generic_verifier_passed(candidate: CandidateGenome | None) -> bool:
 def _external_evaluator_passed(candidate: CandidateGenome | None) -> bool:
     if candidate is None or not isinstance(candidate.metadata, dict):
         return False
-    evidence = progressive_evidence(candidate)
-    if evidence is not None:
-        return bool(evidence.level == "L4" and evidence.passed and evidence.final_eligible)
+    state = evidence_state(candidate)
+    if state:
+        return not evidence_final_blocked(candidate) and float(state.get("final_score") or 0.0) > 0.0
     evaluator = candidate.metadata.get("evaluator")
     return isinstance(evaluator, dict) and evaluator.get("status") == "passed" and evaluator.get("passed") is True
 

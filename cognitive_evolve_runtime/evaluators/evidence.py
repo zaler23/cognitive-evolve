@@ -1,249 +1,415 @@
-"""Progressive evidence primitives for Nexus evolution.
+"""Evidence Control Plane primitives for Nexus evolution.
 
-The evidence kernel is intentionally domain-neutral: adapters may describe
-sorting networks, patches, prompts, workflows, or mathematical artifacts, but the
-runtime only consumes artifact cleanliness, challenge cases, repair value, and
-final-certification state.
+This module is the single public boundary for candidate evidence.  It keeps the
+runtime domain-neutral: evaluators may inspect patches, prompts, workflows,
+mathematical objects, or machine artifacts, but Nexus consumes only normalized
+control signals for artifact policy, search value, challenge pressure, and final
+projection.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from cognitive_evolve_runtime.nexus._serde import coerce_dict, utc_now
 from cognitive_evolve_runtime.core.scalars import bounded_score
-
-EVIDENCE_LEVELS = ("L0", "L1", "L2", "L3", "L4")
-ARTIFACT_STATUSES = {"clean", "refolded", "malformed", "absent"}
+from cognitive_evolve_runtime.nexus._serde import coerce_dict, utc_now
 
 
 @dataclass(frozen=True)
-class ArtifactView:
+class ArtifactPolicy:
+    """Runtime boundary for whether an artifact may be probed or finalized."""
+
+    machine_readable_required: bool = False
+    allow_text_fallback: bool = True
+    allow_refold_for_probe: bool = True
+    allow_refold_for_final: bool = False
+    final_requires_certificate: bool = False
+    projection_required: bool = True
     artifact_type: str = ""
-    artifact: Any = None
-    normalized_artifact: Any | None = None
-    status: str = "absent"
-    schema_cleanliness: float = 0.0
-    probe_eligible: bool = False
-    final_eligible: bool = False
-    diagnostics: list[str] = field(default_factory=list)
-
-    def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any] | None) -> "ArtifactView | None":
-        if not isinstance(data, dict):
-            return None
-        status = str(data.get("status") or "absent").strip().lower()
-        if status not in ARTIFACT_STATUSES:
-            status = "absent"
-        return cls(
-            artifact_type=str(data.get("artifact_type") or ""),
-            artifact=data.get("artifact"),
-            normalized_artifact=data.get("normalized_artifact"),
-            status=status,
-            schema_cleanliness=bounded_score(data.get("schema_cleanliness", 0.0)),
-            probe_eligible=bool(data.get("probe_eligible")),
-            final_eligible=bool(data.get("final_eligible")),
-            diagnostics=[str(item) for item in data.get("diagnostics", []) if item],
-        )
-
-
-@dataclass(frozen=True)
-class ChallengeCase:
-    id: str
-    domain_id: str = "general"
-    kind: str = "evaluator_failure"
-    payload: dict[str, Any] = field(default_factory=dict)
-    summary: str = ""
-    first_seen_round: int = 0
-    last_seen_round: int = 0
-    kill_count: int = 1
-    frontier_kill_count: int = 0
-    elite_kill_count: int = 0
-    resolved_by_candidate_ids: list[str] = field(default_factory=list)
-    region_ids: list[str] = field(default_factory=list)
-    lineage_ids: list[str] = field(default_factory=list)
-    priority: float = 0.5
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any] | None) -> "ChallengeCase | None":
-        if not isinstance(data, dict):
-            return None
+    def from_mapping(cls, data: dict[str, Any] | None) -> "ArtifactPolicy":
+        cfg = coerce_dict(data)
+        evidence = coerce_dict(cfg.get("evidence"))
+        merged = {**cfg, **evidence}
+        if "machine_artifact_required" in merged and "machine_readable_required" not in merged:
+            merged["machine_readable_required"] = merged.get("machine_artifact_required")
         return cls(
-            id=str(data.get("id") or ""),
-            domain_id=str(data.get("domain_id") or "general"),
-            kind=str(data.get("kind") or "evaluator_failure"),
-            payload=coerce_dict(data.get("payload")),
-            summary=str(data.get("summary") or ""),
-            first_seen_round=_int(data.get("first_seen_round"), 0),
-            last_seen_round=_int(data.get("last_seen_round"), 0),
-            kill_count=max(0, _int(data.get("kill_count"), 0)),
-            frontier_kill_count=max(0, _int(data.get("frontier_kill_count"), 0)),
-            elite_kill_count=max(0, _int(data.get("elite_kill_count"), 0)),
-            resolved_by_candidate_ids=[str(item) for item in data.get("resolved_by_candidate_ids", []) if item],
-            region_ids=[str(item) for item in data.get("region_ids", []) if item],
-            lineage_ids=[str(item) for item in data.get("lineage_ids", []) if item],
-            priority=bounded_score(data.get("priority", 0.5)),
-            metadata=coerce_dict(data.get("metadata")),
+            machine_readable_required=_bool(merged.get("machine_readable_required"), default=False),
+            allow_text_fallback=_bool(merged.get("allow_text_fallback"), default=True),
+            allow_refold_for_probe=_bool(merged.get("allow_refold_for_probe"), default=True),
+            allow_refold_for_final=_bool(merged.get("allow_refold_for_final"), default=False),
+            final_requires_certificate=_bool(merged.get("final_requires_certificate"), default=False),
+            projection_required=_bool(merged.get("projection_required"), default=True),
+            artifact_type=str(merged.get("artifact_type") or ""),
+            metadata={k: v for k, v in coerce_dict(merged.get("metadata")).items() if not _sensitive_key(k)},
         )
 
 
 @dataclass(frozen=True)
-class EvidenceResult:
+class EvidenceRecord:
+    """Canonical candidate evidence record written by evaluators."""
+
     candidate_id: str
-    domain_id: str = "general"
-    level: str = "L2"
-    status: str = "unknown"
-    passed: bool = False
-    hard_reject: bool = False
-    final_eligible: bool = False
+    source: str = "progressive_evaluator"
+    stage: str = "probe"
     score: float = 0.0
-    metrics: dict[str, Any] = field(default_factory=dict)
-    challenge_cases: list[ChallengeCase] = field(default_factory=list)
+    confidence: float = 0.5
+    cost: dict[str, Any] = field(default_factory=dict)
+    final_blocked: bool = True
+    parent_blocked: bool = False
+    terminal_reject: bool = False
+    repair_value: float = 0.0
+    continuation_value: float = 0.0
+    novelty_value: float = 0.0
+    target_challenge_ids: list[str] = field(default_factory=list)
     resolved_challenge_ids: list[str] = field(default_factory=list)
-    repair_hints: list[str] = field(default_factory=list)
+    emitted_challenge_ids: list[str] = field(default_factory=list)
     diagnostics: list[str] = field(default_factory=list)
-    artifact_view: ArtifactView | None = None
+    hints: list[str] = field(default_factory=list)
+    metadata: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=utc_now)
 
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
-        payload["challenge_cases"] = [case.to_dict() for case in self.challenge_cases]
-        payload["artifact_view"] = self.artifact_view.to_dict() if self.artifact_view is not None else None
+        payload["score"] = bounded_score(self.score)
+        payload["confidence"] = bounded_score(self.confidence)
+        payload["repair_value"] = bounded_score(self.repair_value)
+        payload["continuation_value"] = bounded_score(self.continuation_value)
+        payload["novelty_value"] = bounded_score(self.novelty_value)
         return payload
 
     @classmethod
-    def from_dict(cls, data: dict[str, Any] | None) -> "EvidenceResult | None":
+    def from_dict(cls, data: dict[str, Any] | None) -> "EvidenceRecord | None":
         if not isinstance(data, dict):
             return None
-        level = str(data.get("level") or "L2").strip().upper()
-        if level not in EVIDENCE_LEVELS:
-            level = "L2"
+        candidate_id = str(data.get("candidate_id") or "")
+        if not candidate_id:
+            return None
         return cls(
-            candidate_id=str(data.get("candidate_id") or ""),
-            domain_id=str(data.get("domain_id") or "general"),
-            level=level,
-            status=str(data.get("status") or "unknown"),
-            passed=bool(data.get("passed")),
-            hard_reject=bool(data.get("hard_reject")),
-            final_eligible=bool(data.get("final_eligible")),
+            candidate_id=candidate_id,
+            source=str(data.get("source") or "progressive_evaluator"),
+            stage=str(data.get("stage") or data.get("level") or "probe"),
             score=bounded_score(data.get("score", 0.0)),
-            metrics=coerce_dict(data.get("metrics")),
-            challenge_cases=[case for case in (ChallengeCase.from_dict(item) for item in data.get("challenge_cases", [])) if case is not None],
-            resolved_challenge_ids=[str(item) for item in data.get("resolved_challenge_ids", []) if item],
-            repair_hints=[str(item) for item in data.get("repair_hints", []) if item],
-            diagnostics=[str(item) for item in data.get("diagnostics", []) if item],
-            artifact_view=ArtifactView.from_dict(data.get("artifact_view")),
+            confidence=bounded_score(data.get("confidence", 0.5)),
+            cost=coerce_dict(data.get("cost")),
+            final_blocked=bool(data.get("final_blocked", not bool(data.get("final_eligible")))),
+            parent_blocked=bool(data.get("parent_blocked", data.get("hard_reject", False))),
+            terminal_reject=bool(data.get("terminal_reject", data.get("hard_reject", False))),
+            repair_value=bounded_score(data.get("repair_value", 0.0)),
+            continuation_value=bounded_score(data.get("continuation_value", data.get("repair_value", 0.0))),
+            novelty_value=bounded_score(data.get("novelty_value", 0.0)),
+            target_challenge_ids=_str_list(data.get("target_challenge_ids")),
+            resolved_challenge_ids=_str_list(data.get("resolved_challenge_ids")),
+            emitted_challenge_ids=_str_list(data.get("emitted_challenge_ids")),
+            diagnostics=_str_list(data.get("diagnostics")),
+            hints=_str_list(data.get("hints") or data.get("repair_hints")),
+            metadata=_safe_metadata(data.get("metadata")),
             created_at=str(data.get("created_at") or utc_now()),
         )
 
 
-def apply_evidence_result(candidate: Any, result: EvidenceResult) -> None:
-    """Write domain-neutral evidence back to a CandidateGenome-like object."""
+@dataclass(frozen=True)
+class SearchPressure:
+    """Compiled search pressure consumed by mutation planning and selection."""
 
-    metadata = candidate.metadata if isinstance(getattr(candidate, "metadata", None), dict) else {}
-    metadata["progressive_evidence"] = result.to_dict()
-    metadata["challenge_failures"] = [case.to_dict() for case in result.challenge_cases]
-    metadata["terminal_failure"] = bool(result.hard_reject)
-    metadata["repair_value"] = repair_value_from_evidence(result)
+    id: str
+    parent_id: str | None = None
+    scope: str = "global"
+    target_challenge_ids: list[str] = field(default_factory=list)
+    avoid_challenge_ids: list[str] = field(default_factory=list)
+    preserve_refs: list[dict[str, Any]] = field(default_factory=list)
+    mutable_refs: list[dict[str, Any]] = field(default_factory=list)
+    artifact_requirements: dict[str, Any] = field(default_factory=dict)
+    success_criteria: list[dict[str, Any]] = field(default_factory=list)
+    selection_advisory: dict[str, float] = field(default_factory=dict)
+    mutation_instruction: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_parts(
+        cls,
+        *,
+        parent_id: str | None = None,
+        scope: str = "global",
+        target_challenge_ids: list[str] | None = None,
+        avoid_challenge_ids: list[str] | None = None,
+        artifact_requirements: dict[str, Any] | None = None,
+        success_criteria: list[dict[str, Any]] | None = None,
+        selection_advisory: dict[str, float] | None = None,
+        mutation_instruction: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> "SearchPressure":
+        targets = list(dict.fromkeys(_str_list(target_challenge_ids)))
+        avoids = list(dict.fromkeys(_str_list(avoid_challenge_ids)))
+        pressure_id = _stable_id({"parent_id": parent_id or "", "scope": scope, "targets": targets, "avoids": avoids})
+        return cls(
+            id=pressure_id,
+            parent_id=parent_id,
+            scope=str(scope or "global"),
+            target_challenge_ids=targets,
+            avoid_challenge_ids=avoids,
+            artifact_requirements=coerce_dict(artifact_requirements),
+            success_criteria=[dict(item) for item in success_criteria or [] if isinstance(item, dict)],
+            selection_advisory={str(k): bounded_score(v) for k, v in coerce_dict(selection_advisory).items()},
+            mutation_instruction=str(mutation_instruction or ""),
+            metadata=_safe_metadata(metadata),
+        )
+
+
+def apply_evidence_record(candidate: Any, record: EvidenceRecord) -> None:
+    """Write canonical evidence state to a CandidateGenome-like object."""
+
+    metadata = coerce_dict(getattr(candidate, "metadata", {}))
+    migrated = _legacy_records_from_metadata(metadata, fallback_candidate_id=getattr(candidate, "id", ""))
+    existing = [item for item in (EvidenceRecord.from_dict(raw) for raw in metadata.get("evidence_records", [])) if item is not None]
+    records = [*migrated, *existing, record]
+    records = _dedupe_records(records)[-20:]
+    metadata.pop("progressive_evidence", None)
+    metadata.pop("challenge_failures", None)
+    metadata["evidence_records"] = [item.to_dict() for item in records]
+    metadata["evidence_state"] = evidence_state_from_records(records)
+    metadata["target_challenge_ids"] = list(metadata["evidence_state"].get("target_challenge_ids", []))
+    metadata["resolved_challenge_ids"] = list(metadata["evidence_state"].get("resolved_challenge_ids", []))
+    metadata["terminal_failure"] = bool(metadata["evidence_state"].get("terminal_reject"))
+    metadata["repair_value"] = bounded_score(metadata["evidence_state"].get("repair_value", 0.0))
     candidate.metadata = metadata
 
-    scores = candidate.multihead_scores if isinstance(getattr(candidate, "multihead_scores", None), dict) else {}
-    scores["frontier_score"] = result.score
-    scores["challenge_pass_rate"] = bounded_score(result.metrics.get("challenge_pass_rate", 1.0 if result.passed else 0.0))
-    scores["schema_cleanliness"] = result.artifact_view.schema_cleanliness if result.artifact_view is not None else bounded_score(result.metrics.get("schema_cleanliness", 0.0))
-    scores["evaluator_score"] = bounded_score(result.metrics.get("score", result.score))
-    scores["final_verification"] = 1.0 if result.level == "L4" and result.passed and result.final_eligible else 0.0
-    scores["repair_value"] = metadata["repair_value"]
+    scores = coerce_dict(getattr(candidate, "multihead_scores", {}))
+    state = metadata["evidence_state"]
+    scores["frontier_score"] = bounded_score(state.get("search_score", 0.0))
+    scores["repair_value"] = bounded_score(state.get("repair_value", 0.0))
+    scores["continuation_value"] = bounded_score(state.get("continuation_value", 0.0))
+    scores["final_confidence"] = bounded_score(state.get("final_score", 0.0))
+    scores["challenge_resolution"] = bounded_score(state.get("challenge_resolution", 0.0))
+    artifact_state = coerce_dict(record.metadata.get("artifact_state"))
+    scores["schema_cleanliness"] = bounded_score(artifact_state.get("schema_cleanliness", scores.get("schema_cleanliness", 0.0)))
+    scores["evaluator_score"] = bounded_score(record.metadata.get("evaluator_score", record.score))
+    scores["challenge_pass_rate"] = bounded_score(record.metadata.get("challenge_pass_rate", scores.get("challenge_pass_rate", 1.0 if not record.final_blocked else 0.0)))
+    scores["final_verification"] = 0.0 if state.get("final_blocked") else bounded_score(state.get("final_score", 0.0))
     candidate.multihead_scores = scores
 
 
-def repair_value_from_evidence(result: EvidenceResult) -> float:
-    if result.hard_reject:
-        return 0.0
-    if result.passed:
-        return 0.2 if result.level != "L4" else 0.0
-    challenge_value = min(1.0, 0.2 + 0.15 * len(result.challenge_cases) + 0.1 * len(result.repair_hints))
-    return bounded_score(max(challenge_value, result.score * 0.6))
+def evidence_records(candidate: Any) -> list[EvidenceRecord]:
+    metadata = coerce_dict(getattr(candidate, "metadata", {}))
+    records = [item for item in (EvidenceRecord.from_dict(raw) for raw in metadata.get("evidence_records", [])) if item is not None]
+    if records:
+        return records
+    return _legacy_records_from_metadata(metadata, fallback_candidate_id=getattr(candidate, "id", ""))
 
 
-def progressive_evidence(candidate: Any) -> EvidenceResult | None:
-    metadata = getattr(candidate, "metadata", None)
-    if not isinstance(metadata, dict):
-        return None
-    return EvidenceResult.from_dict(metadata.get("progressive_evidence"))
+def latest_evidence_record(candidate: Any) -> EvidenceRecord | None:
+    records = evidence_records(candidate)
+    return records[-1] if records else None
 
 
-def progressive_evidence_blocks_final(candidate: Any) -> bool:
-    evidence = progressive_evidence(candidate)
-    if evidence is None:
-        return False
-    return evidence.hard_reject or not evidence.final_eligible or not (evidence.level == "L4" and evidence.passed)
+def evidence_state(candidate: Any) -> dict[str, Any]:
+    metadata = coerce_dict(getattr(candidate, "metadata", {}))
+    state = coerce_dict(metadata.get("evidence_state"))
+    if state:
+        return state
+    return evidence_state_from_records(evidence_records(candidate))
 
 
-def progressive_evidence_blocks_parent(candidate: Any) -> bool:
-    evidence = progressive_evidence(candidate)
-    if evidence is None:
-        return False
-    if evidence.hard_reject:
-        return True
-    if evidence.artifact_view is not None and evidence.artifact_view.status in {"malformed", "absent"} and not has_repair_value(candidate):
-        return True
-    return False
+def evidence_state_from_records(records: list[EvidenceRecord]) -> dict[str, Any]:
+    if not records:
+        return {
+            "search_score": 0.0,
+            "final_score": 0.0,
+            "final_blocked": False,
+            "parent_blocked": False,
+            "terminal_reject": False,
+            "repair_value": 0.0,
+            "continuation_value": 0.0,
+            "target_challenge_ids": [],
+            "resolved_challenge_ids": [],
+            "emitted_challenge_ids": [],
+            "challenge_resolution": 0.0,
+            "confidence": 0.0,
+        }
+    latest = records[-1]
+    targets = list(dict.fromkeys(item for record in records for item in record.target_challenge_ids))
+    resolved = list(dict.fromkeys(item for record in records for item in record.resolved_challenge_ids))
+    emitted = list(dict.fromkeys(item for record in records for item in record.emitted_challenge_ids))
+    final_candidates = [record for record in records if not record.final_blocked]
+    challenge_resolution = len(set(resolved) & set(targets)) / max(1, len(set(targets))) if targets else bounded_score(len(resolved) / max(1, len(emitted)))
+    return {
+        "search_score": max(bounded_score(record.score) for record in records),
+        "final_score": max([bounded_score(record.score * record.confidence) for record in final_candidates] or [0.0]),
+        "final_blocked": bool(latest.final_blocked),
+        "parent_blocked": bool(latest.parent_blocked),
+        "terminal_reject": any(record.terminal_reject for record in records),
+        "repair_value": max(bounded_score(record.repair_value) for record in records),
+        "continuation_value": max(bounded_score(record.continuation_value) for record in records),
+        "target_challenge_ids": targets,
+        "resolved_challenge_ids": resolved,
+        "emitted_challenge_ids": emitted,
+        "challenge_resolution": bounded_score(challenge_resolution),
+        "confidence": max(bounded_score(record.confidence) for record in records),
+        "stage": latest.stage,
+        "source": latest.source,
+    }
+
+
+def evidence_terminal_reject(candidate: Any) -> bool:
+    return bool(evidence_state(candidate).get("terminal_reject"))
+
+
+def evidence_final_blocked(candidate: Any) -> bool:
+    return bool(evidence_state(candidate).get("final_blocked"))
+
+
+def evidence_parent_blocked(candidate: Any) -> bool:
+    return bool(evidence_state(candidate).get("parent_blocked"))
+
+
+def evidence_repair_value(candidate: Any) -> float:
+    return bounded_score(evidence_state(candidate).get("repair_value", 0.0))
+
+
+def evidence_search_score(candidate: Any) -> float:
+    return bounded_score(evidence_state(candidate).get("search_score", 0.0))
 
 
 def has_repair_value(candidate: Any) -> bool:
-    metadata = getattr(candidate, "metadata", None)
-    if isinstance(metadata, dict):
-        try:
-            return float(metadata.get("repair_value", 0.0) or 0.0) > 0.0
-        except (TypeError, ValueError):
-            return False
-    return False
+    return evidence_repair_value(candidate) > 0.0
 
 
 def evidence_advisory_features(candidates: list[Any]) -> dict[str, Any]:
-    """Build ParentSelector-compatible advisory objects from evidence state."""
+    """Build ParentSelector-compatible advisory objects from canonical evidence state."""
 
     out: dict[str, Any] = {}
     for candidate in candidates:
-        evidence = progressive_evidence(candidate)
-        if evidence is None:
+        state = evidence_state(candidate)
+        if not state:
             continue
-        risk = 1.0 if evidence.hard_reject else (0.3 if not evidence.final_eligible and not has_repair_value(candidate) else 0.0)
+        resolved = len(state.get("resolved_challenge_ids") or [])
+        targets = len(state.get("target_challenge_ids") or [])
+        unresolved_penalty = max(0.0, targets - resolved) / max(1, targets) if targets else 0.0
+        risk = 1.0 if state.get("terminal_reject") else (0.5 if state.get("parent_blocked") else 0.25 * unresolved_penalty)
         out[getattr(candidate, "id", "")] = {
-            "rank_prior": bounded_score(evidence.score),
-            "plan_value": bounded_score(getattr(candidate, "metadata", {}).get("repair_value", 0.0) if isinstance(getattr(candidate, "metadata", None), dict) else 0.0),
+            "rank_prior": bounded_score(state.get("search_score", 0.0)),
+            "plan_value": bounded_score(float(state.get("repair_value", 0.0) or 0.0) + 0.2 * resolved),
             "diversity": bounded_score(getattr(candidate, "multihead_scores", {}).get("novelty", 0.0) if isinstance(getattr(candidate, "multihead_scores", None), dict) else 0.0),
             "risk": bounded_score(risk),
         }
     return out
 
 
-def _int(value: Any, default: int) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
+def repair_value_from_record(record: EvidenceRecord) -> float:
+    if record.terminal_reject:
+        return 0.0
+    if not record.final_blocked:
+        return 0.1
+    challenge_count = len(record.emitted_challenge_ids)
+    hint_count = len(record.hints)
+    return bounded_score(max(record.repair_value, min(1.0, 0.2 + 0.12 * challenge_count + 0.08 * hint_count), record.score * 0.6))
+
+
+def _legacy_records_from_metadata(metadata: dict[str, Any], *, fallback_candidate_id: str = "") -> list[EvidenceRecord]:
+    """Private one-way reader for older snapshots; callers must not write legacy keys."""
+
+    raw = coerce_dict(metadata.get("progressive_evidence"))
+    if not raw:
+        return []
+    challenge_items = [coerce_dict(item) for item in raw.get("challenge_cases", []) if isinstance(item, dict)]
+    emitted = [str(item.get("id")) for item in challenge_items if item.get("id")]
+    artifact_state = coerce_dict(raw.get("artifact_view"))
+    record = EvidenceRecord(
+        candidate_id=str(raw.get("candidate_id") or fallback_candidate_id),
+        source="legacy_progressive_evidence_migration",
+        stage=str(raw.get("stage") or raw.get("level") or "probe"),
+        score=bounded_score(raw.get("score", 0.0)),
+        confidence=0.5,
+        final_blocked=not bool(raw.get("final_eligible")) or not bool(raw.get("passed")),
+        parent_blocked=bool(raw.get("hard_reject")),
+        terminal_reject=bool(raw.get("hard_reject")),
+        repair_value=bounded_score(metadata.get("repair_value", 0.0)),
+        continuation_value=bounded_score(metadata.get("repair_value", 0.0)),
+        target_challenge_ids=_str_list(metadata.get("target_challenge_ids")),
+        resolved_challenge_ids=_str_list(raw.get("resolved_challenge_ids") or metadata.get("resolved_challenge_ids")),
+        emitted_challenge_ids=emitted,
+        diagnostics=_str_list(raw.get("diagnostics")),
+        hints=_str_list(raw.get("repair_hints")),
+        metadata={
+            "artifact_state": artifact_state,
+            "challenge_items": challenge_items,
+            "legacy_status": str(raw.get("status") or ""),
+            "metrics": coerce_dict(raw.get("metrics")),
+        },
+        created_at=str(raw.get("created_at") or utc_now()),
+    )
+    return [record]
+
+
+def _dedupe_records(records: list[EvidenceRecord]) -> list[EvidenceRecord]:
+    out: list[EvidenceRecord] = []
+    seen: set[str] = set()
+    for record in records:
+        key = _stable_id({"candidate_id": record.candidate_id, "source": record.source, "stage": record.stage, "created_at": record.created_at, "diagnostics": record.diagnostics})
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(record)
+    return out
+
+
+def _stable_id(payload: dict[str, Any]) -> str:
+    raw = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    return "pressure-" + hashlib.sha256(raw.encode("utf-8")).hexdigest()[:16]
+
+
+def _safe_metadata(value: Any) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key, item in coerce_dict(value).items():
+        if _sensitive_key(key):
+            continue
+        out[str(key)] = item
+    return out
+
+
+def _sensitive_key(key: Any) -> bool:
+    return any(token in str(key).lower() for token in ("key", "secret", "token", "password", "prompt"))
+
+
+def _str_list(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return [str(item) for item in value if str(item or "").strip()]
+
+
+def _bool(value: Any, *, default: bool) -> bool:
+    if value is None:
         return default
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() in {"1", "true", "yes", "on", "enabled", "required"}
 
 
 __all__ = [
-    "ARTIFACT_STATUSES",
-    "EVIDENCE_LEVELS",
-    "ArtifactView",
-    "ChallengeCase",
-    "EvidenceResult",
-    "apply_evidence_result",
+    "ArtifactPolicy",
+    "EvidenceRecord",
+    "SearchPressure",
+    "apply_evidence_record",
     "evidence_advisory_features",
+    "evidence_final_blocked",
+    "evidence_parent_blocked",
+    "evidence_records",
+    "evidence_repair_value",
+    "evidence_search_score",
+    "evidence_state",
+    "evidence_state_from_records",
+    "evidence_terminal_reject",
     "has_repair_value",
-    "progressive_evidence",
-    "progressive_evidence_blocks_final",
-    "progressive_evidence_blocks_parent",
-    "repair_value_from_evidence",
+    "latest_evidence_record",
+    "repair_value_from_record",
 ]

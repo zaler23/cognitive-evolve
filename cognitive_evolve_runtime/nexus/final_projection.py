@@ -5,7 +5,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from cognitive_evolve_runtime.candidates.genome import CandidateGenome, CandidatePopulation
-from cognitive_evolve_runtime.evaluators.evidence import progressive_evidence
+from cognitive_evolve_runtime.evaluators.evidence import evidence_state, latest_evidence_record
 from cognitive_evolve_runtime.evaluators.registry import get_adapter
 from cognitive_evolve_runtime.core.scalars import bounded_score
 
@@ -60,7 +60,7 @@ def build_final_projection(*, population: CandidatePopulation, synthesis: Any, f
     if best is not None:
         return _projection_for_candidate(best, status="best_current", objective_solved=False, certificate=certificate)
     return FinalProjection(
-        status="failed_no_candidate",
+        status="no_candidate",
         title="No displayable candidate was available.",
         blocking_issues=[str(item) for item in certificate.get("blocking_reasons", [])] or ["no_candidate"],
         continuation_plan=["resume evolution with broader seeding or refined contract"],
@@ -70,28 +70,32 @@ def build_final_projection(*, population: CandidatePopulation, synthesis: Any, f
 
 def _projection_for_candidate(candidate: CandidateGenome | None, *, status: str, objective_solved: bool, certificate: dict[str, Any]) -> FinalProjection:
     if candidate is None:
-        return FinalProjection(status="failed_no_candidate", objective_solved=False, blocking_issues=["candidate_not_found"])
-    evidence = progressive_evidence(candidate)
-    evidence_summary = evidence.to_dict() if evidence is not None else {}
-    artifact = evidence.artifact_view.normalized_artifact if evidence is not None and evidence.artifact_view is not None and evidence.artifact_view.normalized_artifact is not None else candidate.artifact
-    adapter = get_adapter(evidence.domain_id if evidence is not None else None)
+        return FinalProjection(status="no_candidate", objective_solved=False, blocking_issues=["candidate_not_found"])
+    evidence = latest_evidence_record(candidate)
+    state = evidence_state(candidate)
+    evidence_summary = evidence.to_dict() if evidence is not None else state
+    artifact_state = evidence.metadata.get("artifact_state", {}) if evidence is not None and isinstance(evidence.metadata, dict) else {}
+    artifact = artifact_state.get("normalized_artifact") if isinstance(artifact_state, dict) and artifact_state.get("normalized_artifact") is not None else candidate.artifact
+    adapter = get_adapter(evidence.source if evidence is not None else None)
     rendered_artifact = adapter.project_artifact_for_user(artifact, evidence=evidence_summary)
     blocking = [str(item) for item in certificate.get("blocking_reasons", []) if item]
     if evidence is not None:
-        blocking.extend(case.summary for case in evidence.challenge_cases[:8] if case.summary)
-        continuation = list(evidence.repair_hints[:6]) or ["continue challenge-guided repair"]
+        for challenge in (evidence.metadata.get("challenge_items", []) if isinstance(evidence.metadata, dict) else [])[:8]:
+            if isinstance(challenge, dict) and challenge.get("summary"):
+                blocking.append(str(challenge.get("summary")))
+        continuation = list(evidence.hints[:6]) or ["continue challenge-guided repair"]
     else:
-        continuation = ["collect progressive evidence for this candidate"]
+        continuation = ["collect evidence for this candidate"]
     return FinalProjection(
         status=status,
         candidate_id=candidate.id,
         title="Final artifact is certified." if objective_solved else "Best current artifact; not certified as solved.",
         artifact=rendered_artifact,
         evidence_summary={
-            "level": evidence.level if evidence is not None else "none",
-            "status": evidence.status if evidence is not None else "no_progressive_evidence",
+            "stage": evidence.stage if evidence is not None else "none",
+            "source": evidence.source if evidence is not None else "none",
             "score": round(float(evidence.score), 4) if evidence is not None else 0.0,
-            "final_eligible": bool(evidence.final_eligible) if evidence is not None else False,
+            "final_blocked": bool(state.get("final_blocked", True)),
         },
         blocking_issues=blocking or (["not_final_certified"] if not objective_solved else []),
         continuation_plan=continuation,

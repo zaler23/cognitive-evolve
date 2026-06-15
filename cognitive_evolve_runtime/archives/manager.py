@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome, candidate_from_dict
-from cognitive_evolve_runtime.evaluators.evidence import has_repair_value, progressive_evidence, progressive_evidence_blocks_final, progressive_evidence_blocks_parent
+from cognitive_evolve_runtime.evaluators.evidence import evidence_final_blocked, evidence_parent_blocked, evidence_terminal_reject, has_repair_value, latest_evidence_record
 from cognitive_evolve_runtime.nexus._serde import coerce_dict, coerce_str_list, utc_now
 from cognitive_evolve_runtime.nexus.adaptive_signals import in_bottom_band, in_top_band, observed_frontier_signal, score
 from cognitive_evolve_runtime.nexus.obligations import HARD_EVIDENCE_FAILURES, HARD_PROOF_FAILURES, candidate_has_obligation_or_evidence_delta
@@ -137,13 +137,13 @@ class ArchiveManager:
             )
             if decision is not None:
                 decisions[candidate.id] = decision
-            evidence = progressive_evidence(candidate)
-            evidence_blocks_final = progressive_evidence_blocks_final(candidate)
-            evidence_blocks_parent = progressive_evidence_blocks_parent(candidate)
+            evidence = latest_evidence_record(candidate)
+            evidence_blocks_final = evidence_final_blocked(candidate)
+            evidence_blocks_parent = evidence_parent_blocked(candidate)
             evidence_repairable = has_repair_value(candidate)
             if current_fate in TERMINAL_FAILURE_FATES:
                 fate = current_fate
-            elif evidence is not None and evidence.hard_reject and not evidence_repairable:
+            elif evidence_terminal_reject(candidate) and not evidence_repairable:
                 fate = CandidateFate.FAILED.value
             elif _candidate_verification_blocks_final(candidate) or evidence_blocks_final:
                 if evidence is not None and evidence_repairable and not evidence_blocks_parent:
@@ -164,7 +164,7 @@ class ArchiveManager:
                 fate = CandidateFate.ACTIVE.value
             assignment = FateAssignment(candidate.id, fate)
             if _candidate_verification_blocks_final(candidate) or evidence_blocks_final:
-                assignment.failure_signature = _verification_failure_signature(candidate) if _candidate_verification_blocks_final(candidate) else _progressive_failure_signature(candidate)
+                assignment.failure_signature = _verification_failure_signature(candidate) if _candidate_verification_blocks_final(candidate) else _evidence_failure_signature(candidate)
                 assignment.future_reactivation_condition = (
                     (decision.reactivation_condition or "repair_lane_requires_concrete_formal_artifact_obligation_delta_or_verified_evidence")
                     if fate == CandidateFate.INCUBATING.value and decision is not None
@@ -559,9 +559,9 @@ __all__ = [
 ]
 
 
-def _progressive_failure_signature(candidate: CandidateGenome) -> str:
-    evidence = progressive_evidence(candidate)
+def _evidence_failure_signature(candidate: CandidateGenome) -> str:
+    evidence = latest_evidence_record(candidate)
     if evidence is None:
-        return "progressive_evidence_absent"
-    challenge_ids = ",".join(case.id for case in evidence.challenge_cases[:4])
-    return f"progressive:{evidence.level}:{evidence.status}:{challenge_ids}"
+        return "evidence_absent"
+    challenge_ids = ",".join(evidence.emitted_challenge_ids[:4])
+    return f"evidence:{evidence.stage}:{evidence.source}:{challenge_ids}"

@@ -32,7 +32,7 @@ class EvaluatorSpec:
     deterministic: bool = True
     metrics: tuple[EvaluatorMetricSpec, ...] = field(default_factory=tuple)
     cwd: str = ""
-    level: str = "L2"
+    level: str = "probe"
     domain_id: str = ""
     progressive: dict[str, Any] = field(default_factory=dict)
 
@@ -44,7 +44,7 @@ class EvaluatorSpec:
             "timeout_seconds": self.timeout_seconds,
             "deterministic": self.deterministic,
             "metrics": [item.to_dict() for item in self.metrics],
-            "level": self.level,
+            "stage": self.level,
             "domain_id": self.domain_id,
             "progressive": _safe_progressive_config(self.progressive),
         }
@@ -67,9 +67,7 @@ class EvaluatorSpec:
             progressive["machine_artifact_required"] = data.get("machine_artifact_required")
         if "artifact_type" in data:
             progressive["artifact_type"] = data.get("artifact_type")
-        level = str(data.get("level") or progressive.get("level") or "L2").strip().upper()
-        if level not in {"L0", "L1", "L2", "L3", "L4"}:
-            level = "L2"
+        level = str(data.get("stage") or data.get("level") or progressive.get("stage") or progressive.get("level") or "probe").strip() or "probe"
         return cls(
             enabled=enabled and bool(command),
             command=command,

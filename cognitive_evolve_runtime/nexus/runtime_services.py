@@ -105,8 +105,8 @@ class NexusPersistenceService:
         final_projection: dict[str, Any] | None = None
         if adaptive_state:
             candidates = getattr(result.population, "candidates", []) if result.population is not None else []
-            has_progressive = any(isinstance(getattr(candidate, "metadata", None), dict) and candidate.metadata.get("progressive_evidence") for candidate in candidates)
-            if final_certificate or has_progressive:
+            has_evidence = any(isinstance(getattr(candidate, "metadata", None), dict) and (candidate.metadata.get("evidence_state") or candidate.metadata.get("evidence_records")) for candidate in candidates)
+            if final_certificate or has_evidence:
                 final_projection = build_final_projection(
                     population=result.population,
                     synthesis=result.synthesis,
@@ -129,7 +129,7 @@ class NexusPersistenceService:
                     "adaptive_events": str(adaptive_dir / "adaptive-events.jsonl"),
                     "final_certificate": str(adaptive_dir / "final-certificate.json"),
                     "final_projection": str(adaptive_dir / "final-projection.json"),
-                    "challenge_bank": str(self.output_dir / "challenge-bank.json"),
+                    "challenge_memory": str(self.output_dir / "challenge-memory.json"),
                     "challenge_events": str(self.output_dir / "challenge-events.jsonl"),
                 }
             )
@@ -200,8 +200,8 @@ def final_answer_artifact_text(result: EvolutionLoopResult) -> str:
     final_certificate = dict((getattr(result.synthesis, "closure_certificate", {}) or {}).get("final_certificate") or {})
     population = getattr(result, "population", None)
     candidates = getattr(population, "candidates", []) if population is not None else []
-    has_progressive = any(isinstance(getattr(candidate, "metadata", None), dict) and candidate.metadata.get("progressive_evidence") for candidate in candidates)
-    if population is not None and (final_certificate or has_progressive):
+    has_evidence = any(isinstance(getattr(candidate, "metadata", None), dict) and (candidate.metadata.get("evidence_state") or candidate.metadata.get("evidence_records")) for candidate in candidates)
+    if population is not None and (final_certificate or has_evidence):
         projection = build_final_projection(population=population, synthesis=result.synthesis, final_certificate=final_certificate)
         return "\n".join(header) + projection.to_markdown()
     if reference_candidate_id and result.completion_status != "solved":
@@ -244,10 +244,10 @@ def _adaptive_snapshot_writes(adaptive_state: dict[str, Any], final_certificate:
         SnapshotWrite("adaptive/final-certificate.json", "json", final_certificate or {}),
         SnapshotWrite("adaptive/final-projection.json", "json", final_projection or {}),
     ]
-    challenge_bank = dict(adaptive_state.get("challenge_bank") or {})
-    if challenge_bank:
-        writes.append(SnapshotWrite("challenge-bank.json", "json", challenge_bank))
-        writes.append(SnapshotWrite("challenge-events.jsonl", "text", _challenge_events_jsonl(challenge_bank), sort_keys=False))
+    challenge_memory = dict(adaptive_state.get("challenge_memory") or {})
+    if challenge_memory:
+        writes.append(SnapshotWrite("challenge-memory.json", "json", challenge_memory))
+        writes.append(SnapshotWrite("challenge-events.jsonl", "text", _challenge_events_jsonl(challenge_memory), sort_keys=False))
     if spatial:
         writes.append(SnapshotWrite("adaptive/spatial-topology.json", "json", spatial))
         writes.append(SnapshotWrite("adaptive/spatial-regions.json", "json", regions))
@@ -257,9 +257,9 @@ def _adaptive_snapshot_writes(adaptive_state: dict[str, Any], final_certificate:
     return writes
 
 
-def _challenge_events_jsonl(challenge_bank: dict[str, Any]) -> str:
-    cases = dict(challenge_bank.get("cases") or {})
-    return "".join(json.dumps(case, ensure_ascii=False, sort_keys=True, default=str) + "\n" for case in cases.values() if isinstance(case, dict))
+def _challenge_events_jsonl(challenge_memory: dict[str, Any]) -> str:
+    items = dict(challenge_memory.get("items") or {})
+    return "".join(json.dumps(item, ensure_ascii=False, sort_keys=True, default=str) + "\n" for item in items.values() if isinstance(item, dict))
 
 
 __all__ = [

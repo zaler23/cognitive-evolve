@@ -1,15 +1,21 @@
-"""External and progressive evaluator public boundary."""
+"""External evaluator and Evidence Control Plane public boundary."""
 from .artifact_normalizer import artifact_policy_from_config, normalize_artifact
-from .challenge_bank import ChallengeBank, challenge_from_diagnostic, challenge_id
+from .challenge_memory import ChallengeMemory, ChallengeMemoryItem, challenge_from_diagnostic, challenge_id
 from .evidence import (
-    ArtifactView,
-    ChallengeCase,
-    EvidenceResult,
-    apply_evidence_result,
+    ArtifactPolicy,
+    EvidenceRecord,
+    SearchPressure,
+    apply_evidence_record,
     evidence_advisory_features,
-    progressive_evidence,
-    progressive_evidence_blocks_final,
-    progressive_evidence_blocks_parent,
+    evidence_final_blocked,
+    evidence_parent_blocked,
+    evidence_records,
+    evidence_repair_value,
+    evidence_search_score,
+    evidence_state,
+    evidence_terminal_reject,
+    has_repair_value,
+    latest_evidence_record,
 )
 from .progressive import ProgressiveEvaluator
 from .result import EvaluatorResult
@@ -17,23 +23,30 @@ from .runner import ExternalEvaluatorRunner, apply_evaluator_result
 from .spec import EvaluatorMetricSpec, EvaluatorSpec
 
 __all__ = [
-    "ArtifactView",
-    "ChallengeBank",
-    "ChallengeCase",
+    "ArtifactPolicy",
+    "ChallengeMemory",
+    "ChallengeMemoryItem",
     "EvaluatorMetricSpec",
     "EvaluatorResult",
     "EvaluatorSpec",
-    "EvidenceResult",
+    "EvidenceRecord",
     "ExternalEvaluatorRunner",
     "ProgressiveEvaluator",
+    "SearchPressure",
     "apply_evaluator_result",
-    "apply_evidence_result",
+    "apply_evidence_record",
     "artifact_policy_from_config",
     "challenge_from_diagnostic",
     "challenge_id",
     "evidence_advisory_features",
+    "evidence_final_blocked",
+    "evidence_parent_blocked",
+    "evidence_records",
+    "evidence_repair_value",
+    "evidence_search_score",
+    "evidence_state",
+    "evidence_terminal_reject",
+    "has_repair_value",
+    "latest_evidence_record",
     "normalize_artifact",
-    "progressive_evidence",
-    "progressive_evidence_blocks_final",
-    "progressive_evidence_blocks_parent",
 ]

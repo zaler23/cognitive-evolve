@@ -89,7 +89,7 @@ class AdaptiveConfig:
         evaluator_enabled = _bool(self.evaluator.get("enabled"), default=bool(str(self.evaluator.get("command") or "").strip()))
         return {
             "adaptive": self.enabled,
-            "progressive_evidence": self.enabled,
+            "evidence_control_plane": self.enabled,
             "external_evaluator": self.enabled and evaluator_enabled,
             "spatial_observe": self.enabled and self.spatial.enabled and self.spatial.mode == "observe",
             "spatial_selection": self.enabled and self.spatial.enabled and self.spatial.mode in {"selection", "local_evaluation"},
