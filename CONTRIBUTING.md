@@ -24,7 +24,7 @@ The source project has a small Python runtime dependency set plus explicit test 
 
 ```bash
 python3 -m pip install -e ".[test]"
-PYTHONPYCACHEPREFIX=/tmp/cogev-pycache PYTHONDONTWRITEBYTECODE=1 python3 -B -m compileall -q cognitive_evolve_runtime scripts tests
+PYTHONPYCACHEPREFIX="${TMPDIR:-/tmp}/cogev-pycache" PYTHONDONTWRITEBYTECODE=1 python3 -B -m compileall -q cognitive_evolve_runtime scripts tests
 PYTHONDONTWRITEBYTECODE=1 python3 -B -m pytest -q -p no:cacheprovider
 ```
 

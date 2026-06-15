@@ -118,3 +118,22 @@ def test_runtime_writes_adaptive_artifacts_when_enabled(tmp_path: Path) -> None:
     assert (adaptive_dir / "final-certificate.json").exists()
     checkpoint = json.loads((tmp_path / "checkpoint.json").read_text(encoding="utf-8"))
     assert checkpoint["adaptive_state"]["enabled_features"]["spatial_observe"] is True
+
+
+def test_task_adaptive_config_sets_nested_evaluator_cwd(tmp_path: Path) -> None:
+    from cognitive_evolve_runtime.runtime import _task_adaptive_config
+
+    (tmp_path / "task.yaml").write_text(
+        "adaptive:\n"
+        "  enabled: true\n"
+        "  evaluator:\n"
+        "    enabled: true\n"
+        "    command: python3 evaluator.py {candidate_path}\n",
+        encoding="utf-8",
+    )
+
+    config = _task_adaptive_config(tmp_path)
+
+    assert config["enabled"] is True
+    assert config["evaluator"]["command"] == "python3 evaluator.py {candidate_path}"
+    assert config["evaluator"]["cwd"] == str(tmp_path)

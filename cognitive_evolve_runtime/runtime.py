@@ -143,6 +143,12 @@ def _task_adaptive_config(task_dir: Path) -> dict[str, object]:
     config: dict[str, object] = {}
     if isinstance(adaptive, dict):
         config.update(adaptive)
+        nested_evaluator = config.get("evaluator")
+        if isinstance(nested_evaluator, dict):
+            evaluator_config = dict(nested_evaluator)
+            evaluator_config.setdefault("cwd", str(task_dir))
+            config["evaluator"] = evaluator_config
+            config.setdefault("enabled", True)
     if isinstance(evaluator, dict):
         evaluator_config = dict(evaluator)
         evaluator_config.setdefault("cwd", str(task_dir))
