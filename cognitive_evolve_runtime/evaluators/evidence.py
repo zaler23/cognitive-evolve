@@ -28,6 +28,10 @@ class ArtifactPolicy:
     final_requires_certificate: bool = False
     projection_required: bool = True
     artifact_type: str = ""
+    artifact_type_aliases: dict[str, str] = field(default_factory=dict)
+    field_aliases: dict[str, str] = field(default_factory=dict)
+    required_fields: list[str] = field(default_factory=list)
+    final_requires_clean_schema: bool = True
     metadata: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
@@ -48,6 +52,10 @@ class ArtifactPolicy:
             final_requires_certificate=_bool(merged.get("final_requires_certificate"), default=False),
             projection_required=_bool(merged.get("projection_required"), default=True),
             artifact_type=str(merged.get("artifact_type") or ""),
+            artifact_type_aliases={str(k): str(v) for k, v in coerce_dict(merged.get("artifact_type_aliases")).items() if str(k or "").strip() and str(v or "").strip()},
+            field_aliases={str(k): str(v) for k, v in coerce_dict(merged.get("field_aliases")).items() if str(k or "").strip() and str(v or "").strip()},
+            required_fields=_str_list(merged.get("required_fields")),
+            final_requires_clean_schema=_bool(merged.get("final_requires_clean_schema"), default=True),
             metadata={k: v for k, v in coerce_dict(merged.get("metadata")).items() if not _sensitive_key(k)},
         )
 

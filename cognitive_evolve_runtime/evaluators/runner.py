@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from cognitive_evolve_runtime.candidates.genome import CandidateGenome
+from cognitive_evolve_runtime.evaluators.artifact_normalizer import artifact_policy_from_config, normalize_artifact
 from cognitive_evolve_runtime.evaluators.evidence import apply_evidence_record
 from cognitive_evolve_runtime.evaluators.progressive import ProgressiveEvaluator
 from cognitive_evolve_runtime.evaluators.result import EvaluatorResult
@@ -33,19 +34,41 @@ class ExternalEvaluatorRunner:
     def evaluate_candidate(self, candidate: CandidateGenome, *, spec: EvaluatorSpec) -> EvaluatorResult:
         with tempfile.TemporaryDirectory(prefix="cogev-evaluator-") as temp_dir:
             candidate_path = Path(temp_dir) / "candidate.json"
-            candidate_path.write_text(json.dumps(candidate.to_dict(), ensure_ascii=False, sort_keys=True, default=str), encoding="utf-8")
+            policy = artifact_policy_from_config(spec.progressive)
+            artifact_view: dict[str, Any] | None = None
+            if _uses_artifact_policy(policy):
+                artifact_view = normalize_artifact(candidate, artifact_type=getattr(candidate, "artifact_type", ""), policy=policy)
+                if not artifact_view.get("probe_eligible"):
+                    return EvaluatorResult(
+                        candidate_id=candidate.id,
+                        status="artifact_not_probe_eligible",
+                        passed=False,
+                        metrics={
+                            "correctness": False,
+                            "schema_cleanliness": artifact_view.get("schema_cleanliness", 0.0),
+                            "artifact_view_status": artifact_view.get("status"),
+                        },
+                        diagnostics=[str(item) for item in artifact_view.get("diagnostics", []) if item][:20],
+                        cost={"seconds": 0.0, "returncode": None, "skipped": True},
+                    )
+            payload = _normalized_candidate_payload(candidate, artifact_view) if artifact_view is not None else candidate.to_dict()
+            candidate_path.write_text(json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str), encoding="utf-8")
             command = _format_command(spec.command, candidate_path)
             runner = self.runner or ToolRunner(timeout_seconds=spec.timeout_seconds)
             feedback = runner.run(command, cwd=spec.cwd_path(), timeout_seconds=spec.timeout_seconds)
             parsed = _parse_evaluator_output(feedback.raw_output_ref)
             passed = _passed_from(parsed, feedback.status)
             status = "passed" if passed else "failed"
-            diagnostics = [str(item) for item in parsed.get("diagnostics", []) if item] if isinstance(parsed.get("diagnostics"), list) else []
-            if not diagnostics:
+            if isinstance(parsed.get("diagnostics"), list):
+                diagnostics = [str(item) for item in parsed.get("diagnostics", []) if item]
+            else:
                 diagnostics = list(feedback.diagnostics[:10])
             metrics = dict(parsed.get("metrics") or {}) if isinstance(parsed.get("metrics"), dict) else {}
             if "correctness" not in metrics:
                 metrics["correctness"] = passed
+            if artifact_view is not None:
+                metrics.setdefault("schema_cleanliness", artifact_view.get("schema_cleanliness", 0.0))
+                metrics.setdefault("artifact_view_status", artifact_view.get("status"))
             return EvaluatorResult(
                 candidate_id=candidate.id,
                 status=status,
@@ -110,6 +133,33 @@ def _passed_from(parsed: dict[str, Any], feedback_status: str) -> bool:
             return bool(parsed.get(key))
     status = str(parsed.get("status") or feedback_status or "").strip().lower()
     return status in {"passed", "pass", "ok", "success"}
+
+
+def _normalized_candidate_payload(candidate: CandidateGenome, artifact_view: dict[str, Any]) -> dict[str, Any]:
+    payload = candidate.to_dict()
+    normalized = artifact_view.get("normalized_artifact")
+    if normalized is not None:
+        payload["artifact"] = normalized
+    payload["artifact_type"] = str(artifact_view.get("artifact_type") or payload.get("artifact_type") or "")
+    metadata = dict(payload.get("metadata") or {})
+    metadata["artifact_view"] = {
+        key: value
+        for key, value in artifact_view.items()
+        if key not in {"artifact", "normalized_artifact"}
+    }
+    metadata["original_artifact_type"] = candidate.artifact_type
+    payload["metadata"] = metadata
+    return payload
+
+
+def _uses_artifact_policy(policy: Any) -> bool:
+    return bool(
+        getattr(policy, "machine_readable_required", False)
+        or getattr(policy, "artifact_type", "")
+        or getattr(policy, "required_fields", [])
+        or getattr(policy, "artifact_type_aliases", {})
+        or getattr(policy, "field_aliases", {})
+    )
 
 
 __all__ = ["ExternalEvaluatorRunner", "apply_evaluator_result"]

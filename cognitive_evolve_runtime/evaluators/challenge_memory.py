@@ -11,6 +11,9 @@ from cognitive_evolve_runtime.nexus._serde import coerce_dict, utc_now
 from cognitive_evolve_runtime.core.scalars import bounded_score
 
 
+SCHEMA_CHALLENGE_CATEGORIES = {"artifact_type_mismatch", "missing_required_field", "machine_parse_failure", "field_alias"}
+
+
 @dataclass
 class ChallengeMemoryItem:
     id: str
@@ -124,14 +127,44 @@ class ChallengeMemory:
         if changed:
             self.updated_at = utc_now()
 
+    def mark_schema_resolved_from_record(self, record: EvidenceRecord) -> list[str]:
+        """Conservatively resolve targeted schema challenges no longer present."""
+
+        target_ids = list(record.target_challenge_ids or [])
+        if not target_ids:
+            return []
+        current_categories = {classify_diagnostic(diagnostic) for diagnostic in record.diagnostics}
+        metrics = coerce_dict(record.metadata.get("metrics"))
+        artifact_state = coerce_dict(record.metadata.get("artifact_state"))
+        schema_clean = _float(metrics.get("schema_cleanliness"), 0.0) >= 1.0 or _float(artifact_state.get("schema_cleanliness"), 0.0) >= 1.0
+        evaluator_passed = str(record.metadata.get("status") or "").strip().lower() == "passed" or bool(metrics.get("correctness") is True)
+        if not (schema_clean or evaluator_passed):
+            return []
+        resolved: list[str] = []
+        for challenge_id_ in target_ids:
+            item = ChallengeMemoryItem.from_dict(self.items.get(challenge_id_))
+            if item is None:
+                continue
+            category = str(item.metadata.get("category") or classify_diagnostic(item.summary))
+            if category not in SCHEMA_CHALLENGE_CATEGORIES:
+                continue
+            if category in current_categories:
+                continue
+            item.resolved_by_candidate_ids = _append_unique(item.resolved_by_candidate_ids, record.candidate_id)
+            self.items[item.id] = item.to_dict()
+            resolved.append(item.id)
+        if resolved:
+            self.updated_at = utc_now()
+        return resolved
+
     def compile_search_pressure(self, *, parent_id: str | None = None, scope: str = "global", limit: int = 3, artifact_requirements: dict[str, Any] | None = None) -> SearchPressure | None:
         unresolved = [item for item in (ChallengeMemoryItem.from_dict(raw) for raw in self.items.values()) if item is not None and not item.resolved_by_candidate_ids]
         if not unresolved:
             return None
         ranked = sorted(unresolved, key=_pressure_score, reverse=True)[: max(1, int(limit or 1))]
         target_ids = [item.id for item in ranked]
-        summaries = "; ".join(item.summary for item in ranked if item.summary)[:600]
         success = [{"kind": "resolve_challenge", "challenge_id": item.id, "summary": item.summary} for item in ranked]
+        schema_focus = any(str(item.metadata.get("category") or classify_diagnostic(item.summary)) in SCHEMA_CHALLENGE_CATEGORIES for item in ranked)
         return SearchPressure.from_parts(
             parent_id=parent_id,
             scope=scope,
@@ -139,8 +172,8 @@ class ChallengeMemory:
             artifact_requirements=artifact_requirements or {},
             success_criteria=success,
             selection_advisory={item.id: _pressure_score(item) for item in ranked},
-            mutation_instruction="Generate a child candidate that directly addresses these unresolved challenges: " + summaries,
-            metadata={"challenge_count": len(self.items), "selected_count": len(target_ids)},
+            mutation_instruction=_mutation_instruction(ranked, artifact_requirements or {}, schema_focus=schema_focus),
+            metadata={"challenge_count": len(self.items), "selected_count": len(target_ids), "schema_repair_focus": schema_focus},
         )
 
     def targeted_resolution_rate(self) -> float:
@@ -195,6 +228,7 @@ def challenge_from_diagnostic(*, candidate_id: str, source: str, diagnostic: str
     summary = str(diagnostic or source or "challenge").strip()[:240] or "challenge"
     payload = {"diagnostic": summary, "candidate_id": str(candidate_id or "")}
     case_id = challenge_id(source=source, payload=payload)
+    category = classify_diagnostic(summary)
     return ChallengeMemoryItem(
         id=case_id,
         payload=payload,
@@ -204,7 +238,7 @@ def challenge_from_diagnostic(*, candidate_id: str, source: str, diagnostic: str
         first_seen_round=int(round_index or 0),
         last_seen_round=int(round_index or 0),
         emitted_by_candidate_ids=[str(candidate_id or "")] if candidate_id else [],
-        metadata={"source": source},
+        metadata={"source": source, "category": category},
     ).to_dict()
 
 
@@ -226,6 +260,45 @@ def _pressure_score(item: ChallengeMemoryItem) -> float:
     return bounded_score((item.priority * max(0.1, item.confidence)) / max(1.0, cost) + min(0.2, reuse) + min(0.2, 0.03 * item.kill_count))
 
 
+def classify_diagnostic(diagnostic: str) -> str:
+    text = str(diagnostic or "").strip().lower()
+    if "artifact_type_alias_normalized" in text or "artifact_type_mismatch" in text or "artifact_type must be" in text or "artifact type" in text:
+        return "artifact_type_mismatch"
+    if "missing_required_fields" in text or "missing required" in text or "missing required cache policy sections" in text:
+        return "missing_required_field"
+    if "machine_parse_failure" in text or "not_machine_parseable" in text or "must be a json object" in text or "artifact must be a json object" in text:
+        return "machine_parse_failure"
+    if "field_alias_normalized" in text or "forbidden alias" in text or "eviction_scoring" in text or "state_update" in text:
+        return "field_alias"
+    return "generic"
+
+
+def _mutation_instruction(items: list[ChallengeMemoryItem], artifact_requirements: dict[str, Any], *, schema_focus: bool) -> str:
+    summaries = "; ".join(item.summary for item in items if item.summary)[:600]
+    if not schema_focus:
+        return "Generate a child candidate that directly addresses these unresolved challenges: " + summaries
+    required_type = str(artifact_requirements.get("artifact_type") or "").strip()
+    required_fields = _str_list(artifact_requirements.get("required_fields"))
+    artifact_type_aliases = coerce_dict(artifact_requirements.get("artifact_type_aliases"))
+    field_aliases = coerce_dict(artifact_requirements.get("field_aliases"))
+    forbidden_type_aliases = ", ".join(str(key) for key in artifact_type_aliases.keys() if str(key).strip())
+    forbidden_field_aliases = ", ".join(str(key) for key in field_aliases.keys() if str(key).strip())
+    parts = [
+        "Schema repair has priority over semantic innovation for this child candidate.",
+        "Emit a clean machine-readable artifact, not a string-wrapped JSON object.",
+    ]
+    if required_type:
+        parts.append(f"Use exactly artifact_type={required_type}.")
+    if required_fields:
+        parts.append("Include exactly these required top-level fields: " + ", ".join(required_fields) + ".")
+    if forbidden_type_aliases:
+        parts.append("Do not use artifact_type aliases: " + forbidden_type_aliases + ".")
+    if forbidden_field_aliases:
+        parts.append("Do not use field aliases: " + forbidden_field_aliases + ".")
+    parts.append("Resolve these targeted schema challenges: " + summaries)
+    return " ".join(parts)
+
+
 def _cost_value(cost: dict[str, Any]) -> float:
     for key in ("seconds", "tool_seconds", "tokens", "estimated"):
         try:
@@ -235,6 +308,13 @@ def _cost_value(cost: dict[str, Any]) -> float:
         if value > 0:
             return value
     return 1.0
+
+
+def _float(value: Any, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def _append_unique(items: list[str], value: str) -> list[str]:
@@ -257,4 +337,4 @@ def _int(value: Any, default: int) -> int:
         return default
 
 
-__all__ = ["ChallengeMemory", "ChallengeMemoryItem", "challenge_from_diagnostic", "challenge_id"]
+__all__ = ["ChallengeMemory", "ChallengeMemoryItem", "challenge_from_diagnostic", "challenge_id", "classify_diagnostic"]

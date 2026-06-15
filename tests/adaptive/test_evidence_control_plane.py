@@ -20,6 +20,7 @@ from cognitive_evolve_runtime.evaluators import (
     SearchPressure,
     apply_evidence_record,
     challenge_from_diagnostic,
+    classify_diagnostic,
     evidence_state,
     latest_evidence_record,
 )
@@ -55,6 +56,42 @@ def test_artifact_normalizer_marks_refolded_artifact_probe_only() -> None:
     assert view["probe_eligible"] is True
     assert view["final_eligible"] is False
     assert isinstance(view["normalized_artifact"], dict)
+
+
+def test_artifact_normalizer_aliases_are_probe_only_not_final() -> None:
+    candidate = CandidateGenome(
+        id="C1",
+        artifact={
+            "admission": {"logic": "accept"},
+            "eviction_scoring": {"logic": "score by frequency"},
+            "parameters": {"frequency_multiplier": 128},
+            "state_update": {"on_hit": "increment frequency"},
+        },
+        artifact_type="cache_policy_json",
+    )
+    policy = ArtifactPolicy.from_mapping(
+        {
+            "machine_artifact_required": True,
+            "artifact_type": "cache_policy",
+            "artifact_type_aliases": {"cache_policy_json": "cache_policy"},
+            "field_aliases": {"eviction_scoring": "eviction", "state_update": "update_or_state_update"},
+            "required_fields": ["admission", "eviction", "parameters", "update_or_state_update"],
+            "final_requires_clean_schema": True,
+        }
+    )
+
+    view = normalize_artifact(candidate, policy=policy, artifact_type=candidate.artifact_type)
+
+    assert view["artifact_type"] == "cache_policy"
+    assert view["status"] == "refolded"
+    assert view["probe_eligible"] is True
+    assert view["final_eligible"] is False
+    assert "eviction" in view["normalized_artifact"]
+    assert "update_or_state_update" in view["normalized_artifact"]
+    assert "eviction_scoring" not in view["normalized_artifact"]
+    assert any("artifact_type_alias_normalized" in item for item in view["diagnostics"])
+    assert any("field_alias_normalized" in item for item in view["diagnostics"])
+    assert "final_requires_clean_schema" in view["diagnostics"]
 
 
 def test_external_evaluator_writes_evidence_record_and_scores(tmp_path: Path) -> None:
@@ -94,6 +131,53 @@ def test_external_evaluator_writes_evidence_record_and_scores(tmp_path: Path) ->
     assert "challenge_failures" not in candidate.metadata
 
 
+def test_external_evaluator_receives_normalized_probe_candidate_without_mutating_original(tmp_path: Path) -> None:
+    evaluator = tmp_path / "evaluator.py"
+    evaluator.write_text(
+        "import json, sys\n"
+        "data=json.load(open(sys.argv[1]))\n"
+        "artifact=data['artifact']\n"
+        "ok=data['artifact_type']=='cache_policy' and all(k in artifact for k in ['admission','eviction','parameters','update_or_state_update'])\n"
+        "print(json.dumps({'passed': ok, 'metrics': {'score': 0.72, 'schema_cleanliness': 1.0}, 'diagnostics': [] if ok else ['normalized input missing']}))\n",
+        encoding="utf-8",
+    )
+    candidate = CandidateGenome(
+        id="C1",
+        artifact={
+            "admission": {"logic": "accept"},
+            "eviction_scoring": {"logic": "score by frequency"},
+            "parameters": {"frequency_multiplier": 128},
+            "state_update": {"on_hit": "increment frequency"},
+        },
+        artifact_type="cache_policy_json",
+    )
+    spec = EvaluatorSpec.from_mapping(
+        {
+            "enabled": True,
+            "command": f"{sys.executable} evaluator.py {{candidate_path}}",
+            "cwd": str(tmp_path),
+            "evidence": {
+                "machine_artifact_required": True,
+                "artifact_type": "cache_policy",
+                "artifact_type_aliases": {"cache_policy_json": "cache_policy"},
+                "field_aliases": {"eviction_scoring": "eviction", "state_update": "update_or_state_update"},
+                "required_fields": ["admission", "eviction", "parameters", "update_or_state_update"],
+            },
+        }
+    )
+
+    result = ExternalEvaluatorRunner().evaluate_population_if_configured([candidate], spec=spec, round_index=1)[0]
+    record = latest_evidence_record(candidate)
+
+    assert result.passed is True
+    assert candidate.artifact_type == "cache_policy_json"
+    assert "eviction_scoring" in candidate.artifact
+    assert record is not None
+    assert record.metadata["artifact_state"]["status"] == "refolded"
+    assert record.final_blocked is True
+    assert record.emitted_challenge_ids
+
+
 def test_challenge_memory_dedupes_tracks_pressure_and_resolution() -> None:
     case = challenge_from_diagnostic(candidate_id="C1", source="combo", diagnostic=json.dumps({"mask": 23}), round_index=1)
     record = EvidenceRecord(
@@ -126,6 +210,36 @@ def test_challenge_memory_dedupes_tracks_pressure_and_resolution() -> None:
     assert memory.targeted_resolution_rate() == 1.0
 
 
+def test_schema_challenge_classification_and_auto_resolution() -> None:
+    assert classify_diagnostic("candidate artifact_type must be cache_policy") == "artifact_type_mismatch"
+    assert classify_diagnostic("missing required cache policy sections: eviction") == "missing_required_field"
+    assert classify_diagnostic("candidate artifact must be a JSON object") == "machine_parse_failure"
+    assert classify_diagnostic("field_alias_normalized: eviction_scoring -> eviction") == "field_alias"
+    assert classify_diagnostic("semantic score too low") == "generic"
+
+    schema_case = challenge_from_diagnostic(candidate_id="C1", source="cache_policy", diagnostic="missing required cache policy sections: eviction", round_index=1)
+    generic_case = challenge_from_diagnostic(candidate_id="C1", source="cache_policy", diagnostic="semantic score too low", round_index=1)
+    memory = ChallengeMemory()
+    memory.ingest(EvidenceRecord(candidate_id="C1", source="cache_policy", emitted_challenge_ids=[schema_case["id"], generic_case["id"]], metadata={"challenge_items": [schema_case, generic_case]}), round_index=1)
+    memory.mark_targeted("C2", [schema_case["id"], generic_case["id"]])
+    fixed_record = EvidenceRecord(
+        candidate_id="C2",
+        source="cache_policy",
+        stage="probe",
+        score=0.9,
+        final_blocked=True,
+        target_challenge_ids=[schema_case["id"], generic_case["id"]],
+        diagnostics=[],
+        metadata={"status": "passed", "metrics": {"schema_cleanliness": 1.0, "correctness": True}, "artifact_state": {"schema_cleanliness": 1.0, "status": "clean"}},
+    )
+
+    resolved = memory.mark_schema_resolved_from_record(fixed_record)
+
+    assert resolved == [schema_case["id"]]
+    assert memory.items[schema_case["id"]]["resolved_by_candidate_ids"] == ["C2"]
+    assert memory.items[generic_case["id"]]["resolved_by_candidate_ids"] == []
+
+
 def test_search_pressure_enters_mutation_plan_and_offspring_metadata() -> None:
     case = challenge_from_diagnostic(candidate_id="P1", source="unit", diagnostic="boundary case failed", round_index=1)
     record = EvidenceRecord(
@@ -152,6 +266,31 @@ def test_search_pressure_enters_mutation_plan_and_offspring_metadata() -> None:
     assert "directly addresses these unresolved challenges" in pressured[0].instruction
     assert child.metadata["target_challenge_ids"] == [case["id"]]
     assert child.metadata["search_pressure_id"] == pressured[0].metadata["search_pressure_id"]
+
+
+def test_schema_search_pressure_generates_strict_repair_instruction() -> None:
+    case = challenge_from_diagnostic(candidate_id="P1", source="cache_policy", diagnostic="candidate artifact_type must be cache_policy", round_index=1)
+    memory = ChallengeMemory()
+    memory.ingest(EvidenceRecord(candidate_id="P1", source="cache_policy", emitted_challenge_ids=[case["id"]], metadata={"challenge_items": [case]}), round_index=1)
+
+    pressure = memory.compile_search_pressure(
+        parent_id="P1",
+        scope="candidate",
+        artifact_requirements={
+            "artifact_type": "cache_policy",
+            "artifact_type_aliases": {"cache_policy_json": "cache_policy"},
+            "field_aliases": {"eviction_scoring": "eviction", "state_update": "update_or_state_update"},
+            "required_fields": ["admission", "eviction", "parameters", "update_or_state_update"],
+        },
+    )
+
+    assert pressure is not None
+    assert pressure.metadata["schema_repair_focus"] is True
+    assert "Schema repair has priority" in pressure.mutation_instruction
+    assert "artifact_type=cache_policy" in pressure.mutation_instruction
+    assert "admission, eviction, parameters, update_or_state_update" in pressure.mutation_instruction
+    assert "cache_policy_json" in pressure.mutation_instruction
+    assert "eviction_scoring" in pressure.mutation_instruction
 
 
 def test_archive_keeps_repairable_challenge_failure_out_of_terminal_cull() -> None:
@@ -232,6 +371,65 @@ def test_final_projection_returns_best_current_without_internal_directives() -> 
     assert "boundary case failed" in markdown
 
 
+def test_final_projection_downgrades_refolded_artifact_even_with_solved_certificate() -> None:
+    candidate = CandidateGenome(
+        id="C1",
+        artifact="{'answer': 1}",
+        artifact_type="machine",
+        multihead_scores={"frontier_score": 0.8, "schema_cleanliness": 0.85},
+    )
+    apply_evidence_record(
+        candidate,
+        EvidenceRecord(
+            candidate_id="C1",
+            source="machine",
+            stage="final",
+            score=0.9,
+            final_blocked=True,
+            metadata={"artifact_state": {"normalized_artifact": {"answer": 1}, "status": "refolded", "final_eligible": False}},
+        ),
+    )
+    synthesis = SynthesizedResult(status="solved", final_answer="solved", best_candidate_id="C1")
+
+    projection = build_final_projection(population=CandidatePopulation([candidate]), synthesis=synthesis, final_certificate={"objective_solved": True, "candidate_id": "C1"})
+
+    assert projection.status == "best_current"
+    assert projection.objective_solved is False
+    assert "candidate_not_clean_final_eligible" in projection.blocking_issues
+
+
+def test_cache_trace_evaluator_fixture_scores_clean_policy() -> None:
+    candidate = CandidateGenome(
+        id="C1",
+        artifact={
+            "admission": {"logic": "if object.size > cache.average_size * size_threshold_ratio deny else accept"},
+            "eviction": {"logic": "score = frequency_multiplier * frequency - base_recency_weight * age"},
+            "parameters": {"size_threshold_ratio": 2.5, "frequency_multiplier": 128, "base_recency_weight": 4},
+            "update_or_state_update": {"on_hit": "frequency += 1; last_tick = current_tick"},
+        },
+        artifact_type="cache_policy",
+    )
+    fixture = Path(__file__).parents[1] / "fixtures" / "evaluators" / "cache_trace_evaluator.py"
+    spec = EvaluatorSpec.from_mapping(
+        {
+            "enabled": True,
+            "command": f"{sys.executable} {fixture} {{candidate_path}}",
+            "evidence": {
+                "machine_artifact_required": True,
+                "artifact_type": "cache_policy",
+                "required_fields": ["admission", "eviction", "parameters", "update_or_state_update"],
+            },
+        }
+    )
+
+    result = ExternalEvaluatorRunner().evaluate_population_if_configured([candidate], spec=spec, round_index=1)[0]
+
+    assert result.passed is True
+    assert result.metrics["schema_cleanliness"] == 1.0
+    assert result.metrics["hit_rate"] > 0.0
+    assert latest_evidence_record(candidate).metadata["status"] == "passed"
+
+
 def test_old_snapshot_evidence_is_migrated_once_and_not_rewritten() -> None:
     candidate = CandidateGenome(id="C1", artifact={"answer": 1}, artifact_type="machine")
     candidate.metadata["progressive_evidence"] = {
@@ -264,3 +462,34 @@ def test_artifact_policy_from_mapping_accepts_machine_artifact_alias() -> None:
 
     assert policy.machine_readable_required is True
     assert policy.allow_refold_for_final is False
+
+
+def test_evaluator_empty_parsed_diagnostics_do_not_fallback_to_raw_stdout(tmp_path: Path) -> None:
+    script = tmp_path / "eval.py"
+    script.write_text(
+        "import json, sys\n"
+        "print(json.dumps({'passed': True, 'metrics': {'score': 0.7}, 'diagnostics': []}))\n",
+        encoding="utf-8",
+    )
+    candidate = CandidateGenome(
+        id="clean",
+        artifact_type="cache_policy",
+        artifact={"admission": {}, "eviction": {}, "parameters": {}, "update_or_state_update": {}},
+    )
+    spec = EvaluatorSpec.from_mapping(
+        {
+            "enabled": True,
+            "command": f"python {script} {{candidate_path}}",
+            "evidence": {
+                "machine_artifact_required": True,
+                "artifact_type": "cache_policy",
+                "required_fields": ["admission", "eviction", "parameters", "update_or_state_update"],
+            },
+        }
+    )
+
+    result = ExternalEvaluatorRunner().evaluate_population_if_configured([candidate], spec=spec, round_index=1)[0]
+
+    assert result.passed is True
+    assert result.diagnostics == []
+    assert candidate.metadata["evaluator"]["diagnostics"] == []

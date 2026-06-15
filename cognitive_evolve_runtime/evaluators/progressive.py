@@ -31,14 +31,17 @@ class ProgressiveEvaluator:
             metrics.setdefault("schema_cleanliness", artifact_state.get("schema_cleanliness", 0.0))
             cost = dict(evaluator_result.cost or {})
         score = _score_from_metrics(metrics, passed=passed, artifact_score=bounded_score(artifact_state.get("schema_cleanliness", 0.0)))
-        terminal_reject = bool(artifact_state.get("status") in {"malformed", "absent"} and policy.machine_readable_required)
+        artifact_status = str(artifact_state.get("status") or "")
+        probe_blocked = bool(artifact_status in {"malformed", "absent"} and policy.machine_readable_required)
+        terminal_reject = bool(artifact_status == "absent" and policy.machine_readable_required)
         stage = str(getattr(spec, "level", "probe") or "probe")
         final_stage = stage.strip().lower() in {"final", "certificate", "certification", "l4"}
         final_ready = bool(artifact_state.get("final_eligible")) and passed and final_stage
         if policy.final_requires_certificate:
             final_ready = final_ready and bool(metrics.get("certificate_passed") or metrics.get("final_certificate_passed"))
         challenge_items = []
-        if not passed:
+        artifact_blocks_final = artifact_status and artifact_status != "clean"
+        if not passed or artifact_blocks_final:
             priority = 0.7 if score >= 0.65 else 0.5
             for diagnostic in diagnostics[:8] or [status]:
                 challenge_items.append(challenge_from_diagnostic(candidate_id=getattr(candidate, "id", ""), source=source, diagnostic=diagnostic, round_index=round_index, priority=priority))
@@ -56,7 +59,7 @@ class ProgressiveEvaluator:
             confidence=0.85 if passed else 0.55,
             cost=cost,
             final_blocked=not final_ready,
-            parent_blocked=terminal_reject,
+            parent_blocked=probe_blocked,
             terminal_reject=terminal_reject,
             repair_value=0.0,
             continuation_value=0.0,

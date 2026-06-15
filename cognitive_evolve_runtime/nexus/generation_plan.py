@@ -189,12 +189,20 @@ def validate_generation_plan_history(
     *,
     archive_history: list[dict[str, Any]] | None = None,
 ) -> None:
-    """Replay persisted generation-plan evidence enough to reject corrupt resumes."""
+    """Replay persisted generation-plan evidence enough to reject corrupt resumes.
 
+    Archive history records the state at the archive-update boundary.  A round's
+    persisted generation plan can be completed later by reproduction-stage
+    metadata, which legitimately refreshes the plan id while preserving the same
+    archive transition.  When the exact id is absent, require a compatible
+    archive witness instead of rejecting an otherwise valid checkpoint.
+    """
+
+    history = [dict(item) for item in archive_history or [] if isinstance(item, dict)]
     archive_plan_ids = {
         str(item.get("generation_plan_id") or "")
-        for item in archive_history or []
-        if isinstance(item, dict) and item.get("generation_plan_id")
+        for item in history
+        if item.get("generation_plan_id")
     }
     for record in records:
         if not isinstance(record, dict):
@@ -203,9 +211,32 @@ def validate_generation_plan_history(
         if not isinstance(plan_data, dict) or not plan_data:
             continue
         plan = validate_generation_plan_record(plan_data)
-        if archive_plan_ids and plan.plan_id not in archive_plan_ids:
+        if archive_plan_ids and plan.plan_id not in archive_plan_ids and not _has_compatible_archive_witness(plan, history):
             raise GenerationPlanError(f"persisted generation plan has no matching archive history entry: {plan.plan_id}")
 
+
+
+def _has_compatible_archive_witness(plan: GenerationPlan, archive_history: list[dict[str, Any]]) -> bool:
+    expected_assignments = {_assignment_witness_key(item) for item in plan.fate_assignments}
+    if not expected_assignments:
+        return False
+    for item in archive_history:
+        if int(item.get("generation_plan_round") or -1) != int(plan.round_index or 0):
+            continue
+        if str(item.get("generation_plan_source") or "") != str(plan.source or ""):
+            continue
+        witness_assignments = {_assignment_witness_key(assignment) for assignment in item.get("assignments") or [] if isinstance(assignment, dict)}
+        if expected_assignments == witness_assignments:
+            return True
+    return False
+
+
+def _assignment_witness_key(value: dict[str, Any]) -> tuple[str, str]:
+    data = _coerce_assignment_dict(value)
+    return (
+        str(data.get("candidate_id") or ""),
+        CandidateFate.normalize(data.get("fate"), default=""),
+    )
 
 def expected_generation_plan_id(plan: GenerationPlan) -> str:
     payload = {

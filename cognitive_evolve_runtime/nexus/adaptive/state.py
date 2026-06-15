@@ -19,6 +19,7 @@ class AdaptiveRuntimeState:
     version: str = ADAPTIVE_STATE_VERSION
     round_index: int = 0
     enabled_features: dict[str, bool] = field(default_factory=dict)
+    config: dict[str, Any] = field(default_factory=dict)
     spatial: dict[str, Any] | None = None
     budget: dict[str, Any] | None = None
     immune: dict[str, Any] | None = None
@@ -45,6 +46,7 @@ class AdaptiveRuntimeState:
             version=str(data.get("version") or ADAPTIVE_STATE_VERSION),
             round_index=_int(data.get("round_index"), default=0),
             enabled_features={str(k): bool(v) for k, v in coerce_dict(data.get("enabled_features")).items()},
+            config=coerce_dict(data.get("config")),
             spatial=_optional_dict(data.get("spatial")),
             budget=_optional_dict(data.get("budget")),
             immune=_optional_dict(data.get("immune")),

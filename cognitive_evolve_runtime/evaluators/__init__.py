@@ -1,6 +1,6 @@
 """External evaluator and Evidence Control Plane public boundary."""
 from .artifact_normalizer import artifact_policy_from_config, normalize_artifact
-from .challenge_memory import ChallengeMemory, ChallengeMemoryItem, challenge_from_diagnostic, challenge_id
+from .challenge_memory import ChallengeMemory, ChallengeMemoryItem, challenge_from_diagnostic, challenge_id, classify_diagnostic
 from .evidence import (
     ArtifactPolicy,
     EvidenceRecord,
@@ -38,6 +38,7 @@ __all__ = [
     "artifact_policy_from_config",
     "challenge_from_diagnostic",
     "challenge_id",
+    "classify_diagnostic",
     "evidence_advisory_features",
     "evidence_final_blocked",
     "evidence_parent_blocked",
