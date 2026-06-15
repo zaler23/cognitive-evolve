@@ -165,7 +165,10 @@ nexus-runtime/candidate-journal.jsonl
 nexus-runtime/rounds/round-*.json
 nexus-runtime/adaptive/adaptive-state.json
 nexus-runtime/adaptive/final-certificate.json
+nexus-runtime/adaptive/final-projection.json
 nexus-runtime/adaptive/spatial-topology.json
+nexus-runtime/challenge-bank.json
+nexus-runtime/challenge-events.jsonl
 nexus-runtime/nexus-runtime-self-check.json
 nexus-runtime/nexus-runtime-self-check.md
 evaluations/native-eval-report.json
@@ -181,12 +184,19 @@ sanitized fallback event summaries. These summaries redact local paths and
 secret-shaped text and do not include long prompts or provider credentials.
 
 The optional Adaptive Evidence Layer is disabled unless configured by
-environment, `.cogev/config.yaml`, or a task-local `task.yaml`. Its initial
-public surface is evidence-oriented: external evaluator results, observe-only
-spatial population telemetry, checkpointable adaptive state, and a final
-certificate. A configured external evaluator is treated as objective evidence;
-model self-claims such as "verified" do not by themselves set
-`objective_solved=true`.
+environment, `.cogev/config.yaml`, or a task-local `task.yaml`. Its public
+surface is evidence-oriented: progressive evidence results, optional external
+evaluator feedback, challenge memory, observe/advisory spatial telemetry,
+checkpointable adaptive state, clean final projection, and a final certificate.
+
+Progressive evidence is a wide-entry/narrow-exit funnel. L0 artifact
+normalization and L2 challenge probes can keep repairable hypotheses alive; only
+L4 final certification can set `objective_solved=true`. A configured external
+evaluator is treated as objective evidence, while model self-claims such as
+"verified" do not by themselves solve the objective. Machine-artifact tasks can
+set `adaptive.evidence.machine_artifact_required=true`; natural-language
+fallback artifacts may then be probed but are not final-eligible until re-emitted
+as clean machine-readable artifacts.
 
 ## Testing and validation
 

@@ -32,6 +32,9 @@ class EvaluatorSpec:
     deterministic: bool = True
     metrics: tuple[EvaluatorMetricSpec, ...] = field(default_factory=tuple)
     cwd: str = ""
+    level: str = "L2"
+    domain_id: str = ""
+    progressive: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         # Do not persist cwd because it may be an absolute local path.
@@ -41,6 +44,9 @@ class EvaluatorSpec:
             "timeout_seconds": self.timeout_seconds,
             "deterministic": self.deterministic,
             "metrics": [item.to_dict() for item in self.metrics],
+            "level": self.level,
+            "domain_id": self.domain_id,
+            "progressive": _safe_progressive_config(self.progressive),
         }
 
     @classmethod
@@ -56,6 +62,14 @@ class EvaluatorSpec:
         )
         if not metrics:
             metrics = (EvaluatorMetricSpec("correctness", "pass"),)
+        progressive = coerce_dict(data.get("progressive") or data.get("evidence"))
+        if "machine_artifact_required" in data:
+            progressive["machine_artifact_required"] = data.get("machine_artifact_required")
+        if "artifact_type" in data:
+            progressive["artifact_type"] = data.get("artifact_type")
+        level = str(data.get("level") or progressive.get("level") or "L2").strip().upper()
+        if level not in {"L0", "L1", "L2", "L3", "L4"}:
+            level = "L2"
         return cls(
             enabled=enabled and bool(command),
             command=command,
@@ -63,6 +77,9 @@ class EvaluatorSpec:
             deterministic=_bool(data.get("deterministic"), default=True),
             metrics=metrics,
             cwd=str(data.get("cwd") or ""),
+            level=level,
+            domain_id=str(data.get("domain_id") or progressive.get("domain_id") or ""),
+            progressive=progressive,
         )
 
     def cwd_path(self) -> Path:
@@ -82,6 +99,12 @@ def _float(value: Any, default: float) -> float:
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _safe_progressive_config(data: dict[str, Any]) -> dict[str, Any]:
+    out = dict(data or {})
+    out.pop("cwd", None)
+    return out
 
 
 __all__ = ["EvaluatorMetricSpec", "EvaluatorSpec"]

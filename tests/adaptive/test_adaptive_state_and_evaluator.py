@@ -116,8 +116,14 @@ def test_runtime_writes_adaptive_artifacts_when_enabled(tmp_path: Path) -> None:
     assert (adaptive_dir / "adaptive-state.json").exists()
     assert (adaptive_dir / "spatial-topology.json").exists()
     assert (adaptive_dir / "final-certificate.json").exists()
+    assert (adaptive_dir / "final-projection.json").exists()
+    final_projection = json.loads((adaptive_dir / "final-projection.json").read_text(encoding="utf-8"))
+    assert final_projection["status"] in {"best_current", "failed_no_candidate", "solved"}
+    assert "objective_solved" in final_projection
+    assert (tmp_path / "challenge-bank.json").exists()
     checkpoint = json.loads((tmp_path / "checkpoint.json").read_text(encoding="utf-8"))
     assert checkpoint["adaptive_state"]["enabled_features"]["spatial_observe"] is True
+    assert checkpoint["adaptive_state"]["enabled_features"]["progressive_evidence"] is True
 
 
 def test_task_adaptive_config_sets_nested_evaluator_cwd(tmp_path: Path) -> None:

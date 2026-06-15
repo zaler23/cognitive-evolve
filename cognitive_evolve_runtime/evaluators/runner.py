@@ -8,22 +8,25 @@ from pathlib import Path
 from typing import Any
 
 from cognitive_evolve_runtime.candidates.genome import CandidateGenome
+from cognitive_evolve_runtime.evaluators.evidence import apply_evidence_result
+from cognitive_evolve_runtime.evaluators.progressive import ProgressiveEvaluator
 from cognitive_evolve_runtime.evaluators.result import EvaluatorResult
 from cognitive_evolve_runtime.evaluators.spec import EvaluatorSpec
 from cognitive_evolve_runtime.tools.runner import ToolRunner
 
 
 class ExternalEvaluatorRunner:
-    def __init__(self, *, runner: ToolRunner | None = None) -> None:
+    def __init__(self, *, runner: ToolRunner | None = None, progressive: ProgressiveEvaluator | None = None) -> None:
         self.runner = runner
+        self.progressive = progressive or ProgressiveEvaluator()
 
-    def evaluate_population_if_configured(self, candidates: list[CandidateGenome], *, spec: EvaluatorSpec) -> list[EvaluatorResult]:
+    def evaluate_population_if_configured(self, candidates: list[CandidateGenome], *, spec: EvaluatorSpec, round_index: int = 0) -> list[EvaluatorResult]:
         if not spec.enabled:
             return []
         results: list[EvaluatorResult] = []
         for candidate in candidates:
             result = self.evaluate_candidate(candidate, spec=spec)
-            apply_evaluator_result(candidate, result)
+            apply_evaluator_result(candidate, result, progressive=self.progressive, spec=spec, round_index=round_index)
             results.append(result)
         return results
 
@@ -53,7 +56,7 @@ class ExternalEvaluatorRunner:
             )
 
 
-def apply_evaluator_result(candidate: CandidateGenome, result: EvaluatorResult) -> None:
+def apply_evaluator_result(candidate: CandidateGenome, result: EvaluatorResult, *, progressive: ProgressiveEvaluator | None = None, spec: EvaluatorSpec | None = None, round_index: int = 0) -> None:
     metadata = candidate.metadata if isinstance(candidate.metadata, dict) else {}
     metadata["evaluator"] = result.to_dict()
     candidate.metadata = metadata
@@ -74,6 +77,8 @@ def apply_evaluator_result(candidate: CandidateGenome, result: EvaluatorResult) 
     except (TypeError, ValueError):
         runtime_penalty = 0.0
     candidate.multihead_scores["cost_adjusted_fitness"] = max(0.0, float(candidate.multihead_scores.get("objective_score", 0.0) or 0.0) - runtime_penalty)
+    evidence = (progressive or ProgressiveEvaluator()).evaluate_result(candidate, result, spec=spec, round_index=round_index)
+    apply_evidence_result(candidate, evidence)
     candidate.add_verification_feedback(result.to_feedback())
 
 

@@ -3,7 +3,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from cognitive_evolve_runtime.candidates.genome import CandidatePopulation
+from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidatePopulation
+from cognitive_evolve_runtime.evaluators.challenge_bank import ChallengeBank
+from cognitive_evolve_runtime.evaluators.evidence import EvidenceResult, progressive_evidence
 from cognitive_evolve_runtime.nexus.adaptive.config import AdaptiveConfig
 from cognitive_evolve_runtime.nexus.adaptive.spatial_population import SpatialPopulationState, build_or_update_spatial_state
 from cognitive_evolve_runtime.nexus.adaptive.state import AdaptiveRuntimeState
@@ -16,6 +18,7 @@ class AdaptiveRuntimeController:
         self.state = AdaptiveRuntimeState.from_dict(state)
         self.state.enabled_features = dict(config.enabled_features)
         self._spatial_state = SpatialPopulationState.from_dict(self.state.spatial)
+        self.challenge_bank = ChallengeBank.from_dict(self.state.challenge_bank)
 
     @classmethod
     def from_sources(
@@ -63,19 +66,34 @@ class AdaptiveRuntimeController:
         self.state.metrics["spatial_candidate_count"] = len(self._spatial_state.candidate_to_coord)
         self.state.record_event(adaptive_event("spatial_observe", round=round_index, candidate_count=len(self._spatial_state.candidate_to_coord), region_count=len(self._spatial_state.regions)))
 
-    def record_evaluator_summary(self, *, round_index: int, evaluated: int, passed: int, failed: int) -> None:
+    def record_evaluator_summary(self, *, round_index: int, evaluated: int, passed: int, failed: int, candidates: list[Any] | None = None) -> None:
         if not self.enabled:
             return
+        for candidate in candidates or []:
+            result = progressive_evidence(candidate)
+            if not isinstance(result, EvidenceResult):
+                continue
+            self.challenge_bank.ingest(
+                result,
+                round_index=round_index,
+                candidate_fate=CandidateFate.normalize(getattr(candidate, "current_fate", "")),
+            )
+            if result.resolved_challenge_ids:
+                self.challenge_bank.mark_resolved(getattr(candidate, "id", ""), result.resolved_challenge_ids)
+        self.state.challenge_bank = self.challenge_bank.to_dict()
+        challenge_summary = self.challenge_bank.summary(limit=12)
         self.state.evaluator = {
             "enabled": self.evaluator_enabled,
             "last_round": int(round_index or 0),
             "evaluated_candidates": int(evaluated or 0),
             "passed_candidates": int(passed or 0),
             "failed_candidates": int(failed or 0),
+            "challenge_bank": challenge_summary,
         }
         self.state.metrics["evaluator_evaluated_candidates"] = int(evaluated or 0)
         self.state.metrics["evaluator_passed_candidates"] = int(passed or 0)
-        self.state.record_event(adaptive_event("external_evaluator_summary", round=round_index, evaluated=evaluated, passed=passed, failed=failed))
+        self.state.metrics["challenge_case_count"] = int(challenge_summary.get("case_count") or 0)
+        self.state.record_event(adaptive_event("external_evaluator_summary", round=round_index, evaluated=evaluated, passed=passed, failed=failed, challenge_cases=challenge_summary.get("case_count", 0)))
 
     def attach_final_certificate(self, certificate: dict[str, Any]) -> None:
         if not self.enabled and not certificate:

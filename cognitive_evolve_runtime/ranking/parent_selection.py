@@ -262,11 +262,17 @@ def _advisory_selection_adjustment(candidate: CandidateGenome, advisory_features
     feature = advisory_features.get(candidate.id)
     if feature is None:
         return 0.0
-    rank_prior = _bounded_float(getattr(feature, "rank_prior", 0.0), default=0.0)
-    plan_value = _bounded_float(getattr(feature, "plan_value", 0.0), default=0.0)
-    diversity = _bounded_float(getattr(feature, "diversity", 0.0), default=0.0)
-    risk = _bounded_float(getattr(feature, "risk", 0.0), default=0.0)
+    rank_prior = _bounded_float(_feature_value(feature, "rank_prior"), default=0.0)
+    plan_value = _bounded_float(_feature_value(feature, "plan_value"), default=0.0)
+    diversity = _bounded_float(_feature_value(feature, "diversity"), default=0.0)
+    risk = _bounded_float(_feature_value(feature, "risk"), default=0.0)
     return ((rank_prior + plan_value + diversity) / 3.0) - risk
+
+
+def _feature_value(feature: Any, key: str) -> Any:
+    if isinstance(feature, Mapping):
+        return feature.get(key, 0.0)
+    return getattr(feature, key, 0.0)
 
 
 def _selection_pressure_metadata(candidate: CandidateGenome) -> dict[str, object]:

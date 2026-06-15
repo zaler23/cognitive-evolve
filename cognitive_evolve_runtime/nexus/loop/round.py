@@ -12,9 +12,10 @@ from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateG
 from cognitive_evolve_runtime.candidates.mutation import MutationEngine, MutationOperator, MutationPlan, MutationPlanner
 from cognitive_evolve_runtime.contracts.objective_contract import NexusObjectiveContract
 from cognitive_evolve_runtime.events.progress import EvolutionProgressEvent, PipelineProgressEvent
-from cognitive_evolve_runtime.evaluators import EvaluatorSpec, ExternalEvaluatorRunner
+from cognitive_evolve_runtime.evaluators import EvaluatorSpec, ExternalEvaluatorRunner, ProgressiveEvaluator, apply_evidence_result, evidence_advisory_features
 from cognitive_evolve_runtime.nexus.critique import CandidateCritique, CritiqueEngine
 from cognitive_evolve_runtime.nexus.adaptive import AdaptiveRuntimeController
+from cognitive_evolve_runtime.nexus.adaptive.mutation_strategy import annotate_mutation_strategies
 from cognitive_evolve_runtime.nexus.activation_reseed import emergency_activation_reseed
 from cognitive_evolve_runtime.nexus._serde import utc_now
 from cognitive_evolve_runtime.nexus.exploration import action_palette_for_round, amplify_population
@@ -124,17 +125,34 @@ class EvolutionRound:
             policy=policy,
             contract=contract,
         )
+        evaluator_config = dict(self.adaptive.config.evaluator or {})
+        if self.adaptive.config.evidence:
+            evaluator_config.setdefault("evidence", dict(self.adaptive.config.evidence))
+        evaluator_spec = EvaluatorSpec.from_mapping(evaluator_config)
         evaluator_results = self.evaluator_runner.evaluate_population_if_configured(
             population.candidates,
-            spec=EvaluatorSpec.from_mapping(self.adaptive.config.evaluator),
+            spec=evaluator_spec,
+            round_index=current_round,
         )
-        if self.adaptive.evaluator_enabled:
-            passed = len([item for item in evaluator_results if item.passed])
+        if not evaluator_results and self.adaptive.enabled:
+            progressive = ProgressiveEvaluator()
+            for candidate in population.candidates:
+                apply_evidence_result(candidate, progressive.evaluate_result(candidate, None, spec=evaluator_spec, round_index=current_round))
+        annotate_mutation_strategies(population.candidates)
+        if self.adaptive.enabled:
+            if evaluator_results:
+                passed = len([item for item in evaluator_results if item.passed])
+                evaluated = len(evaluator_results)
+            else:
+                evidence_items = [candidate.metadata.get("progressive_evidence") for candidate in population.candidates if isinstance(candidate.metadata, dict) and candidate.metadata.get("progressive_evidence")]
+                passed = len([item for item in evidence_items if isinstance(item, dict) and item.get("passed")])
+                evaluated = len(evidence_items)
             self.adaptive.record_evaluator_summary(
                 round_index=current_round,
-                evaluated=len(evaluator_results),
+                evaluated=evaluated,
                 passed=passed,
-                failed=len(evaluator_results) - passed,
+                failed=max(0, evaluated - passed),
+                candidates=population.candidates,
             )
         rankings = self.rank(population=population, archives=archives, policy=policy, contract=contract, current_round=current_round)
         self.adaptive.observe_population(population=population, round_index=current_round)
@@ -445,7 +463,7 @@ class EvolutionRound:
         repair_parent_candidates: list[CandidateGenome] | None,
     ) -> list[CandidateGenome]:
         limit = self._branch_limit()
-        advisory_features = self._theory_advisory_features(policy=policy, candidates=population.candidates, current_round=current_round)
+        advisory_features = self._combined_advisory_features(policy=policy, candidates=population.candidates, current_round=current_round)
         parents = self.selector.select(population.candidates, archives, limit=limit, eligibility_policy=_eligibility_policy(policy), advisory_features=advisory_features)
         if parents:
             return parents
@@ -469,6 +487,26 @@ class EvolutionRound:
             limit=max(1, min(2, limit)),
             current_round=current_round,
         )
+
+    def _combined_advisory_features(self, *, policy: EvolutionPolicy, candidates: list[CandidateGenome], current_round: int) -> dict[str, Any]:
+        combined: dict[str, Any] = {}
+        for source in (
+            self._theory_advisory_features(policy=policy, candidates=candidates, current_round=current_round),
+            evidence_advisory_features(candidates),
+        ):
+            for candidate_id, feature in (source or {}).items():
+                current = dict(combined.get(candidate_id) or {})
+                data = dict(feature) if isinstance(feature, dict) else {
+                    "rank_prior": getattr(feature, "rank_prior", 0.0),
+                    "plan_value": getattr(feature, "plan_value", 0.0),
+                    "diversity": getattr(feature, "diversity", 0.0),
+                    "risk": getattr(feature, "risk", 0.0),
+                }
+                for key in ("rank_prior", "plan_value", "diversity"):
+                    current[key] = max(float(current.get(key, 0.0) or 0.0), float(data.get(key, 0.0) or 0.0))
+                current["risk"] = max(float(current.get("risk", 0.0) or 0.0), float(data.get("risk", 0.0) or 0.0))
+                combined[str(candidate_id)] = current
+        return combined
 
     def _theory_advisory_features(self, *, policy: EvolutionPolicy, candidates: list[CandidateGenome], current_round: int) -> dict[str, Any]:
         config = _theory_config_from_policy(policy)

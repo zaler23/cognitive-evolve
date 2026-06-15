@@ -42,6 +42,7 @@ class SpatialAdaptiveConfig:
 class AdaptiveConfig:
     enabled: bool = False
     evaluator: dict[str, Any] = field(default_factory=dict)
+    evidence: dict[str, Any] = field(default_factory=dict)
     spatial: SpatialAdaptiveConfig = field(default_factory=SpatialAdaptiveConfig)
     mdl: dict[str, Any] = field(default_factory=dict)
     elite_gate: dict[str, Any] = field(default_factory=dict)
@@ -77,6 +78,7 @@ class AdaptiveConfig:
         return cls(
             enabled=enabled,
             evaluator=evaluator,
+            evidence=coerce_dict(merged.get("evidence")),
             spatial=spatial,
             mdl=coerce_dict(merged.get("mdl")),
             elite_gate=coerce_dict(merged.get("elite_gate")),
@@ -87,6 +89,7 @@ class AdaptiveConfig:
         evaluator_enabled = _bool(self.evaluator.get("enabled"), default=bool(str(self.evaluator.get("command") or "").strip()))
         return {
             "adaptive": self.enabled,
+            "progressive_evidence": self.enabled,
             "external_evaluator": self.enabled and evaluator_enabled,
             "spatial_observe": self.enabled and self.spatial.enabled and self.spatial.mode == "observe",
             "spatial_selection": self.enabled and self.spatial.enabled and self.spatial.mode in {"selection", "local_evaluation"},
@@ -117,6 +120,10 @@ def _env_config() -> dict[str, Any]:
         out["evaluator"]["command"] = os.environ.get("COGEV_EXTERNAL_EVALUATOR_COMMAND")
     if os.environ.get("COGEV_EXTERNAL_EVALUATOR_TIMEOUT"):
         out.setdefault("evaluator", {})["timeout_seconds"] = os.environ.get("COGEV_EXTERNAL_EVALUATOR_TIMEOUT")
+    if os.environ.get("COGEV_MACHINE_ARTIFACT_REQUIRED"):
+        out.setdefault("evidence", {})["machine_artifact_required"] = os.environ.get("COGEV_MACHINE_ARTIFACT_REQUIRED")
+    if os.environ.get("COGEV_ARTIFACT_TYPE"):
+        out.setdefault("evidence", {})["artifact_type"] = os.environ.get("COGEV_ARTIFACT_TYPE")
     if os.environ.get("COGEV_SPATIAL_MODE"):
         out.setdefault("spatial", {})["enabled"] = True
         out["spatial"]["mode"] = os.environ.get("COGEV_SPATIAL_MODE")

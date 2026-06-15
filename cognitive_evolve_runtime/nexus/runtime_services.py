@@ -14,6 +14,7 @@ from typing import Any
 from cognitive_evolve_runtime.inputs.project_snapshot import ProjectSnapshot
 from cognitive_evolve_runtime.nexus.consistency import assert_runtime_consistency
 from cognitive_evolve_runtime.nexus.loop import EvolutionBudget, EvolutionLoopResult
+from cognitive_evolve_runtime.nexus.final_projection import build_final_projection
 from cognitive_evolve_runtime.nexus.project_verification import ProjectCandidateVerifier, ProjectVerificationSummary
 from cognitive_evolve_runtime.persistence.checkpoint import build_checkpoint_state
 from cognitive_evolve_runtime.persistence.event_store import EventStore
@@ -101,6 +102,16 @@ class NexusPersistenceService:
         )
         adaptive_dir = self.output_dir / "adaptive"
         final_certificate = dict((result.synthesis.closure_certificate or {}).get("final_certificate") or adaptive_state.get("final_certificate") or {})
+        final_projection: dict[str, Any] | None = None
+        if adaptive_state:
+            candidates = getattr(result.population, "candidates", []) if result.population is not None else []
+            has_progressive = any(isinstance(getattr(candidate, "metadata", None), dict) and candidate.metadata.get("progressive_evidence") for candidate in candidates)
+            if final_certificate or has_progressive:
+                final_projection = build_final_projection(
+                    population=result.population,
+                    synthesis=result.synthesis,
+                    final_certificate=final_certificate,
+                ).to_dict()
 
         artifacts = {
             "population": str(population_path),
@@ -117,6 +128,9 @@ class NexusPersistenceService:
                     "adaptive_state": str(adaptive_dir / "adaptive-state.json"),
                     "adaptive_events": str(adaptive_dir / "adaptive-events.jsonl"),
                     "final_certificate": str(adaptive_dir / "final-certificate.json"),
+                    "final_projection": str(adaptive_dir / "final-projection.json"),
+                    "challenge_bank": str(self.output_dir / "challenge-bank.json"),
+                    "challenge_events": str(self.output_dir / "challenge-events.jsonl"),
                 }
             )
         run.artifacts = dict(artifacts)
@@ -128,7 +142,7 @@ class NexusPersistenceService:
             SnapshotWrite("run-result.json", "json", run.to_dict()),
         ]
         if adaptive_state:
-            writes.extend(_adaptive_snapshot_writes(adaptive_state, final_certificate))
+            writes.extend(_adaptive_snapshot_writes(adaptive_state, final_certificate, final_projection=final_projection))
         NexusSnapshotTransaction(self.output_dir).commit(writes)
         if adaptive_events:
             adaptive_events_path = adaptive_dir / "adaptive-events.jsonl"
@@ -183,6 +197,13 @@ def final_answer_artifact_text(result: EvolutionLoopResult) -> str:
         f"- reference_candidate_id: {reference_candidate_id or 'none'}",
         "",
     ]
+    final_certificate = dict((getattr(result.synthesis, "closure_certificate", {}) or {}).get("final_certificate") or {})
+    population = getattr(result, "population", None)
+    candidates = getattr(population, "candidates", []) if population is not None else []
+    has_progressive = any(isinstance(getattr(candidate, "metadata", None), dict) and candidate.metadata.get("progressive_evidence") for candidate in candidates)
+    if population is not None and (final_certificate or has_progressive):
+        projection = build_final_projection(population=population, synthesis=result.synthesis, final_certificate=final_certificate)
+        return "\n".join(header) + projection.to_markdown()
     if reference_candidate_id and result.completion_status != "solved":
         header.extend(
             [
@@ -215,13 +236,18 @@ def _sync_budget_width_metadata(evolution: dict[str, Any], budget: EvolutionBudg
     evolution["round_budget_runtime"] = runtime
 
 
-def _adaptive_snapshot_writes(adaptive_state: dict[str, Any], final_certificate: dict[str, Any]) -> list[SnapshotWrite]:
+def _adaptive_snapshot_writes(adaptive_state: dict[str, Any], final_certificate: dict[str, Any], *, final_projection: dict[str, Any] | None = None) -> list[SnapshotWrite]:
     spatial = dict(adaptive_state.get("spatial") or {})
     regions = dict(spatial.get("regions") or {})
     writes = [
         SnapshotWrite("adaptive/adaptive-state.json", "json", adaptive_state),
         SnapshotWrite("adaptive/final-certificate.json", "json", final_certificate or {}),
+        SnapshotWrite("adaptive/final-projection.json", "json", final_projection or {}),
     ]
+    challenge_bank = dict(adaptive_state.get("challenge_bank") or {})
+    if challenge_bank:
+        writes.append(SnapshotWrite("challenge-bank.json", "json", challenge_bank))
+        writes.append(SnapshotWrite("challenge-events.jsonl", "text", _challenge_events_jsonl(challenge_bank), sort_keys=False))
     if spatial:
         writes.append(SnapshotWrite("adaptive/spatial-topology.json", "json", spatial))
         writes.append(SnapshotWrite("adaptive/spatial-regions.json", "json", regions))
@@ -229,6 +255,11 @@ def _adaptive_snapshot_writes(adaptive_state: dict[str, Any], final_certificate:
     if evaluator:
         writes.append(SnapshotWrite("adaptive/evaluator-results.jsonl", "text", json.dumps(evaluator, ensure_ascii=False, sort_keys=True, default=str) + "\n", sort_keys=False))
     return writes
+
+
+def _challenge_events_jsonl(challenge_bank: dict[str, Any]) -> str:
+    cases = dict(challenge_bank.get("cases") or {})
+    return "".join(json.dumps(case, ensure_ascii=False, sort_keys=True, default=str) + "\n" for case in cases.values() if isinstance(case, dict))
 
 
 __all__ = [
