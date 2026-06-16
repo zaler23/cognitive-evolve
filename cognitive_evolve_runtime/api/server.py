@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from ..core.redaction import redact
 from .config import get_service_config, load_service_env, mask_secret
 
 
@@ -50,7 +51,9 @@ def status() -> dict[str, Any]:
 
 
 def status_cli() -> int:
-    print(json.dumps(status(), ensure_ascii=False, indent=2))
+    public_status = dict(status())
+    public_status["configured_service_keys"] = public_status.pop("api_keys", [])
+    print(json.dumps(redact(public_status), ensure_ascii=False, indent=2))
     return 0
 
 

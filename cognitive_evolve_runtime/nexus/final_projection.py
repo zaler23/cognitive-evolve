@@ -1,0 +1,207 @@
+"""Clean user-facing final projection for Nexus runs."""
+from __future__ import annotations
+
+from dataclasses import asdict, dataclass, field
+from typing import Any
+
+from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome, CandidatePopulation
+from cognitive_evolve_runtime.evaluators.evidence import evidence_state, latest_evidence_record
+from cognitive_evolve_runtime.evaluators.registry import get_adapter
+from cognitive_evolve_runtime.core.scalars import bounded_score
+
+
+@dataclass(frozen=True)
+class FinalProjection:
+    status: str
+    candidate_id: str = ""
+    title: str = ""
+    artifact_type: str = ""
+    artifact: Any = None
+    evidence_summary: dict[str, Any] = field(default_factory=dict)
+    blocking_issues: list[str] = field(default_factory=list)
+    continuation_plan: list[str] = field(default_factory=list)
+    objective_solved: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    def to_markdown(self) -> str:
+        lines = [f"# CognitiveEvolve projection: {self.status}", ""]
+        if self.candidate_id:
+            lines.append(f"- candidate_id: {self.candidate_id}")
+        if self.artifact_type:
+            lines.append(f"- artifact_type: {self.artifact_type}")
+        lines.append(f"- objective_solved: {str(self.objective_solved).lower()}")
+        lines.append("")
+        if self.title:
+            lines.extend([self.title, ""])
+        if self.artifact not in (None, ""):
+            lines.extend(["## Current artifact", "", _render_artifact(self.artifact), ""])
+        if self.evidence_summary:
+            lines.extend(["## Evidence summary", ""])
+            for key, value in self.evidence_summary.items():
+                lines.append(f"- {key}: `{value}`")
+            lines.append("")
+        if self.blocking_issues:
+            lines.extend(["## Blocking issues", ""])
+            lines.extend(f"- {item}" for item in self.blocking_issues[:12])
+            lines.append("")
+        if self.continuation_plan:
+            lines.extend(["## Continuation plan", ""])
+            lines.extend(f"- {item}" for item in self.continuation_plan[:8])
+            lines.append("")
+        return "\n".join(lines).rstrip() + "\n"
+
+
+def build_final_projection(*, population: CandidatePopulation, synthesis: Any, final_certificate: dict[str, Any] | None = None) -> FinalProjection:
+    certificate = dict(final_certificate or getattr(synthesis, "closure_certificate", {}) or {})
+    solved = bool(certificate.get("objective_solved") or getattr(synthesis, "objective_solved", False))
+    if solved:
+        candidate = _candidate_by_id(population.candidates, str(certificate.get("candidate_id") or getattr(synthesis, "best_candidate_id", "")))
+        if _projection_candidate_final_eligible(candidate):
+            return _projection_for_candidate(candidate, status="solved", objective_solved=True, certificate=certificate)
+        certificate.setdefault("blocking_reasons", [])
+        if isinstance(certificate["blocking_reasons"], list):
+            certificate["blocking_reasons"].append("candidate_not_clean_final_eligible")
+    best = _best_current_candidate(population.candidates)
+    if best is not None:
+        status = "needs_user_decision" if str(certificate.get("final_projection_status") or "") == "needs_user_decision" else "best_current"
+        return _projection_for_candidate(best, status=status, objective_solved=False, certificate=certificate)
+    return FinalProjection(
+        status="no_candidate",
+        title="No displayable candidate was available.",
+        blocking_issues=[str(item) for item in certificate.get("blocking_reasons", [])] or ["no_candidate"],
+        continuation_plan=["resume evolution with broader seeding or refined contract"],
+        objective_solved=False,
+    )
+
+
+def _projection_for_candidate(candidate: CandidateGenome | None, *, status: str, objective_solved: bool, certificate: dict[str, Any]) -> FinalProjection:
+    if candidate is None:
+        return FinalProjection(status="no_candidate", objective_solved=False, blocking_issues=["candidate_not_found"])
+    evidence = latest_evidence_record(candidate)
+    state = evidence_state(candidate)
+    evidence_summary = evidence.to_dict() if evidence is not None else state
+    artifact_state = evidence.metadata.get("artifact_state", {}) if evidence is not None and isinstance(evidence.metadata, dict) else {}
+    artifact = artifact_state.get("normalized_artifact") if isinstance(artifact_state, dict) and artifact_state.get("normalized_artifact") is not None else candidate.artifact
+    artifact_type = _projection_artifact_type(candidate, evidence=evidence, artifact_state=artifact_state, certificate=certificate)
+    projected_artifact = _project_artifact_for_projection(artifact, evidence=evidence, evidence_summary=evidence_summary)
+    blocking = [str(item) for item in certificate.get("blocking_reasons", []) if item]
+    if evidence is not None:
+        for challenge in (evidence.metadata.get("challenge_items", []) if isinstance(evidence.metadata, dict) else [])[:8]:
+            if isinstance(challenge, dict) and challenge.get("summary"):
+                blocking.append(str(challenge.get("summary")))
+        continuation = list(evidence.hints[:6]) or ["continue challenge-guided repair"]
+    else:
+        continuation = ["collect evidence for this candidate"]
+    return FinalProjection(
+        status=status,
+        candidate_id=candidate.id,
+        title="Final artifact is certified." if objective_solved else "Best current artifact; not certified as solved.",
+        artifact_type=artifact_type,
+        artifact=projected_artifact,
+        evidence_summary={
+            "stage": evidence.stage if evidence is not None else "none",
+            "source": evidence.source if evidence is not None else "none",
+            "score": round(float(evidence.score), 4) if evidence is not None else 0.0,
+            "final_blocked": bool(state.get("final_blocked", True)),
+            "artifact_type": artifact_type,
+            "artifact_cleanliness": artifact_state.get("status") if isinstance(artifact_state, dict) else "",
+            "artifact_final_eligible": bool(artifact_state.get("final_eligible", False)) if isinstance(artifact_state, dict) and artifact_state else None,
+            "projection_status": "final" if objective_solved else "best_current",
+        },
+        blocking_issues=blocking or (["not_final_certified"] if not objective_solved else []),
+        continuation_plan=continuation,
+        objective_solved=objective_solved,
+    )
+
+
+def _best_current_candidate(candidates: list[CandidateGenome]) -> CandidateGenome | None:
+    eligible = [candidate for candidate in candidates if not _hard_rejected(candidate) and not _fate_excluded_from_best_current(candidate)]
+    if not eligible:
+        return None
+    return max(eligible, key=_best_current_score)
+
+
+def _best_current_score(candidate: CandidateGenome) -> float:
+    scores = candidate.multihead_scores or {}
+    metadata = candidate.metadata if isinstance(candidate.metadata, dict) else {}
+    hard_penalty = 1.0 if bool(metadata.get("terminal_failure")) else 0.0
+    compactness = 1.0 - min(1.0, len(str(candidate.artifact or "")) / 12000.0)
+    continuation = bounded_score(metadata.get("repair_value", 0.0))
+    return (
+        0.30 * bounded_score(scores.get("frontier_score", 0.0))
+        + 0.20 * bounded_score(scores.get("challenge_pass_rate", 0.0))
+        + 0.15 * bounded_score(scores.get("evidence_progress", 0.0))
+        + 0.10 * bounded_score(scores.get("schema_cleanliness", 0.0))
+        + 0.10 * bounded_score(scores.get("novelty", 0.0))
+        + 0.10 * compactness
+        + 0.05 * continuation
+        - hard_penalty
+    )
+
+
+def _candidate_by_id(candidates: list[CandidateGenome], candidate_id: str) -> CandidateGenome | None:
+    for candidate in candidates:
+        if candidate.id == candidate_id:
+            return candidate
+    return None
+
+
+def _hard_rejected(candidate: CandidateGenome) -> bool:
+    metadata = candidate.metadata if isinstance(candidate.metadata, dict) else {}
+    state = evidence_state(candidate)
+    return bool(metadata.get("terminal_failure") or state.get("terminal_reject"))
+
+
+def _fate_excluded_from_best_current(candidate: CandidateGenome) -> bool:
+    fate = CandidateFate.normalize(getattr(candidate, "current_fate", ""), default="")
+    if not fate and isinstance(getattr(candidate, "metadata", None), dict):
+        fate = CandidateFate.normalize(candidate.metadata.get("fate"), default="")
+    return fate in {CandidateFate.FAILED.value, CandidateFate.CULLED.value}
+
+
+def _projection_candidate_final_eligible(candidate: CandidateGenome | None) -> bool:
+    if candidate is None:
+        return False
+    state = evidence_state(candidate)
+    if state.get("final_blocked", True):
+        return False
+    evidence = latest_evidence_record(candidate)
+    artifact_state = evidence.metadata.get("artifact_state", {}) if evidence is not None and isinstance(evidence.metadata, dict) else {}
+    if isinstance(artifact_state, dict) and artifact_state:
+        return artifact_state.get("status") == "clean" and bool(artifact_state.get("final_eligible", False))
+    return True
+
+
+def _projection_artifact_type(candidate: CandidateGenome, *, evidence: Any, artifact_state: dict[str, Any], certificate: dict[str, Any]) -> str:
+    if isinstance(artifact_state, dict):
+        value = str(artifact_state.get("artifact_type") or "").strip()
+        if value:
+            return value
+    if evidence is not None and isinstance(getattr(evidence, "metadata", None), dict):
+        policy = evidence.metadata.get("artifact_policy")
+        if isinstance(policy, dict):
+            value = str(policy.get("artifact_type") or "").strip()
+            if value:
+                return value
+    value = str(getattr(candidate, "artifact_type", "") or "").strip()
+    if value:
+        return value
+    return str(certificate.get("artifact_type") or "").strip()
+
+
+def _project_artifact_for_projection(artifact: Any, *, evidence: Any, evidence_summary: dict[str, Any]) -> Any:
+    if isinstance(artifact, (dict, list)):
+        return artifact
+    adapter = get_adapter(evidence.source if evidence is not None else None)
+    return adapter.project_artifact_for_user(artifact, evidence=evidence_summary)
+
+
+def _render_artifact(artifact: Any) -> str:
+    if isinstance(artifact, str):
+        return artifact
+    return "```json\n" + __import__("json").dumps(artifact, ensure_ascii=False, indent=2, sort_keys=True, default=str)[:12000] + "\n```"
+
+
+__all__ = ["FinalProjection", "build_final_projection"]

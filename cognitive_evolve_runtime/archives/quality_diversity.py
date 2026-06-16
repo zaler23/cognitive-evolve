@@ -15,8 +15,14 @@ from cognitive_evolve_runtime.core.scalars import bounded_score
 
 
 def candidate_quality(candidate: CandidateGenome) -> float:
+    return candidate_final_quality(candidate)
+
+
+def candidate_final_quality(candidate: CandidateGenome) -> float:
     scores = candidate.multihead_scores
     axes = [
+        "final_verification",
+        "final_confidence",
         "objective_alignment",
         "answer_likelihood",
         "core_mechanism_strength",
@@ -28,6 +34,23 @@ def candidate_quality(candidate: CandidateGenome) -> float:
     ]
     if not scores:
         return 0.0
+    return sum(_score(scores.get(axis, 0.0)) for axis in axes) / max(1, len(axes))
+
+
+def candidate_search_quality(candidate: CandidateGenome) -> float:
+    scores = candidate.multihead_scores
+    axes = [
+        "frontier_score",
+        "challenge_pass_rate",
+        "challenge_resolution",
+        "schema_cleanliness",
+        "continuation_value",
+        "novelty",
+        "rarity",
+        "repair_value",
+    ]
+    if not scores:
+        return candidate_final_quality(candidate)
     return sum(_score(scores.get(axis, 0.0)) for axis in axes) / max(1, len(axes))
 
 
@@ -143,13 +166,18 @@ class QualityDiversityArchive:
 
     def update(self, candidate: CandidateGenome) -> None:
         niches = candidate.niche_memberships or candidate.novelty_descriptors or [candidate.core_mechanism or "general"]
-        quality = candidate_quality(candidate)
+        final_quality = candidate_final_quality(candidate)
+        search_quality = candidate_search_quality(candidate)
+        quality = final_quality
         for niche in niches:
             current = self.elites_by_niche.get(niche)
-            if current is None or quality >= float(current.get("quality", -1.0)):
+            current_score = max(float(current.get("quality", -1.0)), float(current.get("search_quality", -1.0))) if current else -1.0
+            if current is None or max(final_quality, search_quality) >= current_score:
                 self.elites_by_niche[niche] = {
                     "candidate_id": candidate.id,
                     "quality": quality,
+                    "search_quality": search_quality,
+                    "final_quality": final_quality,
                     "bin_key": candidate_bin_key(candidate),
                     "candidate": candidate.to_dict(),
                 }
@@ -200,7 +228,9 @@ def _dedupe_candidates(candidates: list[CandidateGenome]) -> list[CandidateGenom
 __all__ = [
     "QualityDiversityArchive",
     "candidate_bin_key",
+    "candidate_final_quality",
     "candidate_quality",
+    "candidate_search_quality",
     "live_reproductive_candidates",
     "pareto_frontier_ids",
     "quality_diversity_survivors",

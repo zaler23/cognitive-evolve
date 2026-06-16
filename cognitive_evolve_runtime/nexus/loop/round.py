@@ -12,7 +12,9 @@ from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateG
 from cognitive_evolve_runtime.candidates.mutation import MutationEngine, MutationOperator, MutationPlan, MutationPlanner
 from cognitive_evolve_runtime.contracts.objective_contract import NexusObjectiveContract
 from cognitive_evolve_runtime.events.progress import EvolutionProgressEvent, PipelineProgressEvent
+from cognitive_evolve_runtime.evaluators import EvaluatorSpec, ExternalEvaluatorRunner, ProgressiveEvaluator, apply_evidence_record, evidence_advisory_features
 from cognitive_evolve_runtime.nexus.critique import CandidateCritique, CritiqueEngine
+from cognitive_evolve_runtime.nexus.adaptive import AdaptiveRuntimeController
 from cognitive_evolve_runtime.nexus.activation_reseed import emergency_activation_reseed
 from cognitive_evolve_runtime.nexus._serde import utc_now
 from cognitive_evolve_runtime.nexus.exploration import action_palette_for_round, amplify_population
@@ -85,9 +87,10 @@ class EvolutionRound:
     adding a new stage no longer requires editing one giant try-block.
     """
 
-    def __init__(self, *, model: NexusModelLike | None, budget: EvolutionBudget) -> None:
+    def __init__(self, *, model: NexusModelLike | None, budget: EvolutionBudget, adaptive: AdaptiveRuntimeController | None = None) -> None:
         self.model = model
         self.budget = budget
+        self.adaptive = adaptive or AdaptiveRuntimeController.from_sources()
         self.rater = RelativeRater(model=model)
         self.elo = MultiHeadElo()
         self.diagnoser = SearchStateDiagnoser(model=model)
@@ -97,6 +100,7 @@ class EvolutionRound:
         self.mutation_engine = MutationEngine()
         self.critique_engine = CritiqueEngine(model=model)
         self.verifier_stack = NexusVerifierStack()
+        self.evaluator_runner = ExternalEvaluatorRunner()
         self.stop_decider = StopDecisionEngine()
         self.theory_layer = TheoryLayer()
         self.last_generation_plan: dict[str, Any] = {}
@@ -111,6 +115,8 @@ class EvolutionRound:
         policy: EvolutionPolicy,
         contract: NexusObjectiveContract,
     ) -> RoundEvaluation:
+        self.adaptive.begin_round(round_index=current_round)
+        self.adaptive.observe_population(population=population, round_index=current_round)
         critiques, verification_results = self.critique_and_verify(
             current_round=current_round,
             population=population,
@@ -118,7 +124,36 @@ class EvolutionRound:
             policy=policy,
             contract=contract,
         )
+        evaluator_config = dict(self.adaptive.config.evaluator or {})
+        if self.adaptive.config.evidence:
+            evaluator_config.setdefault("evidence", dict(self.adaptive.config.evidence))
+        evaluator_spec = EvaluatorSpec.from_mapping(evaluator_config)
+        evaluator_results = self.evaluator_runner.evaluate_population_if_configured(
+            population.candidates,
+            spec=evaluator_spec,
+            round_index=current_round,
+        )
+        if not evaluator_results and self.adaptive.enabled:
+            progressive = ProgressiveEvaluator()
+            for candidate in population.candidates:
+                apply_evidence_record(candidate, progressive.evaluate_result(candidate, None, spec=evaluator_spec, round_index=current_round))
+        if self.adaptive.enabled:
+            if evaluator_results:
+                passed = len([item for item in evaluator_results if item.passed])
+                evaluated = len(evaluator_results)
+            else:
+                evidence_items = [candidate.metadata.get("evidence_state") for candidate in population.candidates if isinstance(candidate.metadata, dict) and candidate.metadata.get("evidence_state")]
+                passed = len([item for item in evidence_items if isinstance(item, dict) and not item.get("final_blocked")])
+                evaluated = len(evidence_items)
+            self.adaptive.record_evaluator_summary(
+                round_index=current_round,
+                evaluated=evaluated,
+                passed=passed,
+                failed=max(0, evaluated - passed),
+                candidates=population.candidates,
+            )
         rankings = self.rank(population=population, archives=archives, policy=policy, contract=contract, current_round=current_round)
+        self.adaptive.observe_population(population=population, round_index=current_round)
         plan = GenerationPlan.from_dict(self.last_generation_plan)
         completed_stage_ops = list(self.last_completed_stage_ops)
         repair_parent_candidates = list(population.candidates)
@@ -176,6 +211,7 @@ class EvolutionRound:
                 "generation_plan_id": generation_plan.get("plan_id", ""),
                 "incubating_candidates": len([c for c in population.candidates if CandidateFate.normalize(c.current_fate) == CandidateFate.INCUBATING.value]),
                 "population_vitality": vitality_snapshot(population.candidates, branch_factor=self.budget.branch_factor).to_dict(),
+                "adaptive_features": dict(self.adaptive.state.enabled_features),
             },
         ).to_dict()
         stage_count = self.budget.round_limit
@@ -354,6 +390,7 @@ class EvolutionRound:
             assert_stage_ready(plan, "plan_mutations", completed_stage_ops)
         plans = _plan_mutations(model=self.model, mutation_planner=self.mutation_planner, parents=parents, actions=actions, archives=archives, diagnosis=diagnosis, policy=policy)
         plans, latent_exploration_plan = apply_latent_exploration_to_mutation_plans(plans, contract, exploration=latent_exploration_plan)
+        plans = self._apply_search_pressure_to_plans(plans, parents=parents)
         if plan is not None:
             completed_stage_ops.append("plan_mutations")
             self.last_generation_plan["mutation_objectives"] = list(actions)
@@ -425,7 +462,7 @@ class EvolutionRound:
         repair_parent_candidates: list[CandidateGenome] | None,
     ) -> list[CandidateGenome]:
         limit = self._branch_limit()
-        advisory_features = self._theory_advisory_features(policy=policy, candidates=population.candidates, current_round=current_round)
+        advisory_features = self._combined_advisory_features(policy=policy, candidates=population.candidates, current_round=current_round)
         parents = self.selector.select(population.candidates, archives, limit=limit, eligibility_policy=_eligibility_policy(policy), advisory_features=advisory_features)
         if parents:
             return parents
@@ -450,12 +487,62 @@ class EvolutionRound:
             current_round=current_round,
         )
 
+    def _combined_advisory_features(self, *, policy: EvolutionPolicy, candidates: list[CandidateGenome], current_round: int) -> dict[str, Any]:
+        combined: dict[str, Any] = {}
+        for source in (
+            self._theory_advisory_features(policy=policy, candidates=candidates, current_round=current_round),
+            evidence_advisory_features(candidates),
+            self.adaptive.research_advisory_features(candidates=candidates, policy=policy),
+        ):
+            for candidate_id, feature in (source or {}).items():
+                current = dict(combined.get(candidate_id) or {})
+                data = dict(feature) if isinstance(feature, dict) else {
+                    "rank_prior": getattr(feature, "rank_prior", 0.0),
+                    "plan_value": getattr(feature, "plan_value", 0.0),
+                    "diversity": getattr(feature, "diversity", 0.0),
+                    "risk": getattr(feature, "risk", 0.0),
+                }
+                for key in ("rank_prior", "plan_value", "diversity"):
+                    current[key] = max(float(current.get(key, 0.0) or 0.0), float(data.get(key, 0.0) or 0.0))
+                current["risk"] = max(float(current.get("risk", 0.0) or 0.0), float(data.get("risk", 0.0) or 0.0))
+                combined[str(candidate_id)] = current
+        return combined
+
     def _theory_advisory_features(self, *, policy: EvolutionPolicy, candidates: list[CandidateGenome], current_round: int) -> dict[str, Any]:
         config = _theory_config_from_policy(policy)
         if not config.enabled:
             return {}
         representation = build_population_representation(candidates, cycle_id=f"round:{current_round}")
         return self.theory_layer.advisory_features_for_population(representation, config=config)
+
+    def _apply_search_pressure_to_plans(self, plans: list[MutationPlan], *, parents: list[CandidateGenome]) -> list[MutationPlan]:
+        if not plans or not parents or not self.adaptive.enabled:
+            return plans
+        out: list[MutationPlan] = []
+        by_id = {parent.id: parent for parent in parents}
+        for index, plan in enumerate(plans):
+            parent = None
+            for parent_id in plan.parent_ids:
+                parent = by_id.get(parent_id)
+                if parent is not None:
+                    break
+            if parent is None:
+                parent = parents[index % len(parents)]
+            pressure = self.adaptive.compile_search_pressure(parent_id=parent.id, scope="candidate", parent=parent, candidates=parents)
+            if pressure is None or not _search_pressure_has_effect(pressure):
+                out.append(plan)
+                continue
+            metadata = dict(plan.metadata or {})
+            metadata["search_pressure"] = pressure.to_dict()
+            metadata["search_pressure_id"] = pressure.id
+            if pressure.target_challenge_ids:
+                metadata["target_challenge_ids"] = list(pressure.target_challenge_ids)
+            metadata["artifact_policy"] = dict(pressure.artifact_requirements or {})
+            instruction = plan.instruction
+            if pressure.mutation_instruction and pressure.mutation_instruction not in instruction:
+                instruction = (instruction.rstrip() + "\n\n" + pressure.mutation_instruction).strip()
+            out.append(MutationPlan.from_dict({**plan.to_dict(), "instruction": instruction, "metadata": metadata}))
+        return out
 
     def _build_reproduction_offspring(
         self,
@@ -473,6 +560,11 @@ class EvolutionRound:
     ) -> list[CandidateGenome]:
         sync_repair_parent_attempts_to_dormant_archive(archives, parents)
         offspring = _generate_offspring(model=self.model, mutation_engine=self.mutation_engine, parents=parents, plans=plans, world=world, contract=contract, policy=policy)
+        for child in offspring:
+            metadata = child.metadata if isinstance(child.metadata, dict) else {}
+            targets = [str(item) for item in metadata.get("target_challenge_ids", []) if item] if isinstance(metadata.get("target_challenge_ids"), list) else []
+            if targets:
+                self.adaptive.record_generated_targets(candidate_id=child.id, challenge_ids=targets, pressure_id=str(metadata.get("search_pressure_id") or ""), round_index=current_round)
         if len(parents) >= 2 and rankings.crossover_pairs:
             first, second = parents_for_crossover(parents, rankings.crossover_pairs[0])
             offspring.append(crossover(first, second))
@@ -530,6 +622,16 @@ class EvolutionRound:
             self.last_generation_plan["reproduction_archive_updates"] = reproduction_archive_updates
             self._record_generation_stage_progress(completed)
         return "", offspring_verification, reproduction_compaction.to_dict()
+
+
+def _search_pressure_has_effect(pressure: Any) -> bool:
+    return bool(
+        getattr(pressure, "target_challenge_ids", None)
+        or getattr(pressure, "avoid_challenge_ids", None)
+        or getattr(pressure, "artifact_requirements", None)
+        or getattr(pressure, "success_criteria", None)
+        or str(getattr(pressure, "mutation_instruction", "") or "").strip()
+    )
 
 
 __all__ = ["EvolutionRound", "RoundEvaluation"]

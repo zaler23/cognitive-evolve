@@ -143,8 +143,9 @@ def runtime_entry_difficulty(route: object) -> dict[str, object]:
         source = "model_unavailable_or_incomplete"
 
     self_assessment = _model_self_assessment(semantic, raw)
+    topography = _difficulty_topography(semantic=semantic, raw=raw, task_type=task_type, difficulty=difficulty, self_assessment=self_assessment)
     round_estimate = _round_estimate_payload(
-        difficulty=difficulty,
+        difficulty=topography.get("search_difficulty", difficulty),
         suggested_rounds=suggested_rounds,
         self_assessment=self_assessment,
     )
@@ -160,7 +161,55 @@ def runtime_entry_difficulty(route: object) -> dict[str, object]:
         "suggested_rounds": suggested_rounds,
         "model_self_assessment": self_assessment,
         "round_estimate": round_estimate,
+        "difficulty_topography": topography,
     }
+
+
+def _difficulty_topography(*, semantic: dict[str, object], raw: dict[str, object], task_type: str, difficulty: str, self_assessment: dict[str, object]) -> dict[str, object]:
+    tags = set(_string_list(semantic.get("difficulty_topography") or raw.get("difficulty_topography")))
+    tags.update(_string_list(semantic.get("topography_tags") or raw.get("topography_tags")))
+    tags.update(_string_list(self_assessment.get("topography_tags")))
+    task_text = "_".join([task_type, str(self_assessment.get("effort_class") or ""), str(self_assessment.get("target_output_level") or "")]).lower()
+    if any(token in task_text for token in ("combinatorial", "algorithm", "network", "design")):
+        tags.add("combinatorial_design")
+        tags.add("large_discrete_search_space")
+    if any(token in task_text for token in ("proof", "verified", "formal", "exact")):
+        tags.add("final_proof_required")
+    complexity_dimensions = self_assessment.get("complexity_dimensions") if isinstance(self_assessment.get("complexity_dimensions"), dict) else {}
+    try:
+        novelty = float(complexity_dimensions.get("novelty", 0.0) or 0.0)
+        verification = float(complexity_dimensions.get("verification_difficulty", 0.0) or 0.0)
+    except (TypeError, ValueError):
+        novelty = 0.0
+        verification = 0.0
+    if novelty >= 0.7:
+        tags.add("high_false_plausibility")
+    if verification >= 0.7:
+        tags.add("final_proof_required")
+    final_gate_required = "final_proof_required" in tags or "hidden_test_generalization" in tags or difficulty in {"research", "frontier"}
+    search_difficulty = difficulty
+    if tags.intersection({"combinatorial_design", "theoretical_boundary_search", "large_discrete_search_space", "high_false_plausibility"}) and difficulty in {"easy", "standard"}:
+        search_difficulty = "hard"
+    if tags.intersection({"theoretical_boundary_search", "frontier_research"}):
+        search_difficulty = "research" if difficulty != "frontier" else "frontier"
+    verification_cost = "high" if verification >= 0.75 else ("medium" if verification >= 0.35 else "low")
+    return {
+        "tags": sorted(tags),
+        "search_difficulty": search_difficulty,
+        "verification_cost": verification_cost,
+        "final_gate_required": bool(final_gate_required),
+        "low_round_semantics": "direction_discovery" if search_difficulty in {"hard", "research", "frontier"} else "candidate_iteration",
+        "recommended_mode": "evidence_control_plane" if tags or final_gate_required else "standard_evolution",
+        "principle": "verification cheap != search easy",
+    }
+
+
+def _string_list(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [item.strip().lower() for item in value.replace(",", " ").split() if item.strip()]
+    if isinstance(value, (list, tuple, set)):
+        return [str(item).strip().lower() for item in value if str(item).strip()]
+    return []
 
 
 def _difficulty_adjusted_rounds(difficulty_assessment: dict[str, object] | None) -> int | None:

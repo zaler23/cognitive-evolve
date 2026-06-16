@@ -35,8 +35,8 @@ Justification, if applicable:
 
 ## Validation
 
-- [ ] `python3 -m compileall -q cognitive_evolve_runtime scripts tests`
-- [ ] `python3 -m pytest -q`
+- [ ] `PYTHONPYCACHEPREFIX="${TMPDIR:-/tmp}/cogev-pycache" PYTHONDONTWRITEBYTECODE=1 python3 -B -m compileall -q cognitive_evolve_runtime scripts tests`
+- [ ] `PYTHONDONTWRITEBYTECODE=1 python3 -B -m pytest -q -p no:cacheprovider`
 - [ ] `python3 scripts/cogev.py doctor --scope core`
 - [ ] Other:
 

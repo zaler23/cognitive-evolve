@@ -24,8 +24,8 @@ The source project has a small Python runtime dependency set plus explicit test 
 
 ```bash
 python3 -m pip install -e ".[test]"
-python3 -m compileall -q cognitive_evolve_runtime scripts tests
-python3 -m pytest -q
+PYTHONPYCACHEPREFIX="${TMPDIR:-/tmp}/cogev-pycache" PYTHONDONTWRITEBYTECODE=1 python3 -B -m compileall -q cognitive_evolve_runtime scripts tests
+PYTHONDONTWRITEBYTECODE=1 python3 -B -m pytest -q -p no:cacheprovider
 ```
 
 For local development on a machine with a configured standalone runtime, also run:
