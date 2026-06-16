@@ -171,7 +171,8 @@ class ChallengeMemory:
             target_challenge_ids=target_ids,
             artifact_requirements=artifact_requirements or {},
             success_criteria=success,
-            selection_advisory={item.id: _pressure_score(item) for item in ranked},
+            challenge_weights={item.id: _pressure_score(item) for item in ranked},
+            selection_advisory={},
             mutation_instruction=_mutation_instruction(ranked, artifact_requirements or {}, schema_focus=schema_focus),
             metadata={"challenge_count": len(self.items), "selected_count": len(target_ids), "schema_repair_focus": schema_focus},
         )
@@ -188,6 +189,8 @@ class ChallengeMemory:
         return {
             "version": self.version,
             "case_count": len(self.items),
+            "targeted_count": len([item for item in (ChallengeMemoryItem.from_dict(raw) for raw in self.items.values()) if item is not None and item.targeted_by_candidate_ids]),
+            "resolved_count": len([item for item in (ChallengeMemoryItem.from_dict(raw) for raw in self.items.values()) if item is not None and item.resolved_by_candidate_ids]),
             "targeted_resolution_rate": self.targeted_resolution_rate(),
             "top_cases": [
                 {

@@ -8,6 +8,7 @@ from cognitive_evolve_runtime.evaluators.artifact_normalizer import artifact_pol
 from cognitive_evolve_runtime.evaluators.challenge_memory import challenge_from_diagnostic
 from cognitive_evolve_runtime.evaluators.evidence import EvidenceRecord, repair_value_from_record
 from cognitive_evolve_runtime.evaluators.result import EvaluatorResult
+from cognitive_evolve_runtime.evaluators.evidence_authority import stable_artifact_hash, stable_artifact_identity_hash
 from cognitive_evolve_runtime.evaluators.spec import EvaluatorSpec
 
 
@@ -17,6 +18,8 @@ class ProgressiveEvaluator:
         policy = artifact_policy_from_config(getattr(spec, "progressive", {}) if spec is not None else {})
         artifact_state = normalize_artifact(candidate, artifact_type=policy.artifact_type or getattr(candidate, "artifact_type", "") or "", policy=policy)
         source = str(getattr(spec, "domain_id", "") or artifact_state.get("artifact_type") or "general")
+        normalized_artifact_hash = stable_artifact_hash(artifact_state.get("normalized_artifact")) if artifact_state.get("normalized_artifact") is not None else ""
+        artifact_hash = stable_artifact_identity_hash(artifact_state, artifact_policy=policy.to_dict()) if artifact_state.get("normalized_artifact") is not None else ""
         if evaluator_result is None:
             diagnostics = list(artifact_state.get("diagnostics") or [])
             passed = bool(artifact_state.get("probe_eligible")) and not policy.machine_readable_required
@@ -71,6 +74,10 @@ class ProgressiveEvaluator:
             hints=hints,
             metadata={
                 "status": status,
+                "authority": "final" if final_stage and passed else ("verifier" if evaluator_result is not None else "probe"),
+                "artifact_hash": artifact_hash,
+                "artifact_identity_hash": artifact_hash,
+                "normalized_artifact_hash": normalized_artifact_hash,
                 "artifact_policy": policy.to_dict(),
                 "artifact_state": artifact_state,
                 "challenge_items": challenge_items,

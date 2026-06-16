@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from cognitive_evolve_runtime.candidates.genome import CandidateGenome, CandidatePopulation
+from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome, CandidatePopulation
 from cognitive_evolve_runtime.evaluators.evidence import evidence_state, latest_evidence_record
 from cognitive_evolve_runtime.evaluators.registry import get_adapter
 from cognitive_evolve_runtime.core.scalars import bounded_score
@@ -15,6 +15,7 @@ class FinalProjection:
     status: str
     candidate_id: str = ""
     title: str = ""
+    artifact_type: str = ""
     artifact: Any = None
     evidence_summary: dict[str, Any] = field(default_factory=dict)
     blocking_issues: list[str] = field(default_factory=list)
@@ -28,6 +29,8 @@ class FinalProjection:
         lines = [f"# CognitiveEvolve projection: {self.status}", ""]
         if self.candidate_id:
             lines.append(f"- candidate_id: {self.candidate_id}")
+        if self.artifact_type:
+            lines.append(f"- artifact_type: {self.artifact_type}")
         lines.append(f"- objective_solved: {str(self.objective_solved).lower()}")
         lines.append("")
         if self.title:
@@ -62,7 +65,8 @@ def build_final_projection(*, population: CandidatePopulation, synthesis: Any, f
             certificate["blocking_reasons"].append("candidate_not_clean_final_eligible")
     best = _best_current_candidate(population.candidates)
     if best is not None:
-        return _projection_for_candidate(best, status="best_current", objective_solved=False, certificate=certificate)
+        status = "needs_user_decision" if str(certificate.get("final_projection_status") or "") == "needs_user_decision" else "best_current"
+        return _projection_for_candidate(best, status=status, objective_solved=False, certificate=certificate)
     return FinalProjection(
         status="no_candidate",
         title="No displayable candidate was available.",
@@ -80,6 +84,7 @@ def _projection_for_candidate(candidate: CandidateGenome | None, *, status: str,
     evidence_summary = evidence.to_dict() if evidence is not None else state
     artifact_state = evidence.metadata.get("artifact_state", {}) if evidence is not None and isinstance(evidence.metadata, dict) else {}
     artifact = artifact_state.get("normalized_artifact") if isinstance(artifact_state, dict) and artifact_state.get("normalized_artifact") is not None else candidate.artifact
+    artifact_type = _projection_artifact_type(candidate, evidence=evidence, artifact_state=artifact_state, certificate=certificate)
     adapter = get_adapter(evidence.source if evidence is not None else None)
     rendered_artifact = adapter.project_artifact_for_user(artifact, evidence=evidence_summary)
     blocking = [str(item) for item in certificate.get("blocking_reasons", []) if item]
@@ -94,12 +99,14 @@ def _projection_for_candidate(candidate: CandidateGenome | None, *, status: str,
         status=status,
         candidate_id=candidate.id,
         title="Final artifact is certified." if objective_solved else "Best current artifact; not certified as solved.",
+        artifact_type=artifact_type,
         artifact=rendered_artifact,
         evidence_summary={
             "stage": evidence.stage if evidence is not None else "none",
             "source": evidence.source if evidence is not None else "none",
             "score": round(float(evidence.score), 4) if evidence is not None else 0.0,
             "final_blocked": bool(state.get("final_blocked", True)),
+            "artifact_type": artifact_type,
         },
         blocking_issues=blocking or (["not_final_certified"] if not objective_solved else []),
         continuation_plan=continuation,
@@ -108,9 +115,9 @@ def _projection_for_candidate(candidate: CandidateGenome | None, *, status: str,
 
 
 def _best_current_candidate(candidates: list[CandidateGenome]) -> CandidateGenome | None:
-    eligible = [candidate for candidate in candidates if not _hard_rejected(candidate)]
+    eligible = [candidate for candidate in candidates if not _hard_rejected(candidate) and not _fate_excluded_from_best_current(candidate)]
     if not eligible:
-        return candidates[0] if candidates else None
+        return None
     return max(eligible, key=_best_current_score)
 
 
@@ -141,7 +148,15 @@ def _candidate_by_id(candidates: list[CandidateGenome], candidate_id: str) -> Ca
 
 def _hard_rejected(candidate: CandidateGenome) -> bool:
     metadata = candidate.metadata if isinstance(candidate.metadata, dict) else {}
-    return bool(metadata.get("terminal_failure"))
+    state = evidence_state(candidate)
+    return bool(metadata.get("terminal_failure") or state.get("terminal_reject"))
+
+
+def _fate_excluded_from_best_current(candidate: CandidateGenome) -> bool:
+    fate = CandidateFate.normalize(getattr(candidate, "current_fate", ""), default="")
+    if not fate and isinstance(getattr(candidate, "metadata", None), dict):
+        fate = CandidateFate.normalize(candidate.metadata.get("fate"), default="")
+    return fate in {CandidateFate.FAILED.value, CandidateFate.CULLED.value}
 
 
 def _projection_candidate_final_eligible(candidate: CandidateGenome | None) -> bool:
@@ -155,6 +170,23 @@ def _projection_candidate_final_eligible(candidate: CandidateGenome | None) -> b
     if isinstance(artifact_state, dict) and artifact_state:
         return artifact_state.get("status") == "clean" and bool(artifact_state.get("final_eligible", False))
     return True
+
+
+def _projection_artifact_type(candidate: CandidateGenome, *, evidence: Any, artifact_state: dict[str, Any], certificate: dict[str, Any]) -> str:
+    if isinstance(artifact_state, dict):
+        value = str(artifact_state.get("artifact_type") or "").strip()
+        if value:
+            return value
+    if evidence is not None and isinstance(getattr(evidence, "metadata", None), dict):
+        policy = evidence.metadata.get("artifact_policy")
+        if isinstance(policy, dict):
+            value = str(policy.get("artifact_type") or "").strip()
+            if value:
+                return value
+    value = str(getattr(candidate, "artifact_type", "") or "").strip()
+    if value:
+        return value
+    return str(certificate.get("artifact_type") or "").strip()
 
 
 def _render_artifact(artifact: Any) -> str:

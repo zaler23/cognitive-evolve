@@ -23,6 +23,7 @@ from cognitive_evolve_runtime.evaluators import (
     classify_diagnostic,
     evidence_state,
     latest_evidence_record,
+    stable_artifact_identity_hash,
 )
 from cognitive_evolve_runtime.evaluators.artifact_normalizer import normalize_artifact
 from cognitive_evolve_runtime.nexus.adaptive.config import AdaptiveConfig
@@ -268,6 +269,26 @@ def test_search_pressure_enters_mutation_plan_and_offspring_metadata() -> None:
     assert child.metadata["search_pressure_id"] == pressured[0].metadata["search_pressure_id"]
 
 
+def test_instruction_only_search_pressure_enters_mutation_plan_without_target_tracking() -> None:
+    controller = AdaptiveRuntimeController(
+        config=AdaptiveConfig.from_sources(
+            explicit={
+                "enabled": True,
+                "research": {"enabled": True, "mode": "advisory", "extensions": {"context_pruning": {"enabled": True}}},
+            }
+        )
+    )
+    parent = CandidateGenome(id="P1", current_fate=CandidateFate.ACTIVE.value, artifact={"answer": 1})
+    round_driver = EvolutionRound(model=None, budget=EvolutionBudget(max_rounds=2, branch_factor=1), adaptive=controller)
+    plan = MutationPlan(operator=MutationOperator.REPAIR, parent_ids=["P1"], instruction="Repair the candidate.")
+
+    pressured = round_driver._apply_search_pressure_to_plans([plan], parents=[parent])
+
+    assert "search_pressure_id" in pressured[0].metadata
+    assert "target_challenge_ids" not in pressured[0].metadata
+    assert "Prune mutation context" in pressured[0].instruction
+
+
 def test_schema_search_pressure_generates_strict_repair_instruction() -> None:
     case = challenge_from_diagnostic(candidate_id="P1", source="cache_policy", diagnostic="candidate artifact_type must be cache_policy", round_index=1)
     memory = ChallengeMemory()
@@ -366,6 +387,7 @@ def test_final_projection_returns_best_current_without_internal_directives() -> 
 
     assert projection.status == "best_current"
     assert projection.objective_solved is False
+    assert projection.artifact_type == "machine"
     assert "internal repair directive should not be reused" not in markdown
     assert "Best current artifact" in markdown
     assert "boundary case failed" in markdown
@@ -396,6 +418,27 @@ def test_final_projection_downgrades_refolded_artifact_even_with_solved_certific
     assert projection.status == "best_current"
     assert projection.objective_solved is False
     assert "candidate_not_clean_final_eligible" in projection.blocking_issues
+
+
+def test_final_projection_excludes_failed_and_culled_best_current_candidates() -> None:
+    failed = CandidateGenome(id="F1", artifact={"bad": 1}, artifact_type="machine", current_fate=CandidateFate.FAILED.value, multihead_scores={"frontier_score": 0.99})
+    active = CandidateGenome(id="A1", artifact={"ok": 1}, artifact_type="machine", current_fate=CandidateFate.ACTIVE.value, multihead_scores={"frontier_score": 0.4})
+    synthesis = SynthesizedResult(status="best_current_route", final_answer="", best_candidate_id="F1")
+
+    projection = build_final_projection(population=CandidatePopulation([failed, active]), synthesis=synthesis, final_certificate={"blocking_reasons": ["not_final"]})
+
+    assert projection.status == "best_current"
+    assert projection.candidate_id == "A1"
+
+
+def test_artifact_identity_hash_includes_artifact_type_and_policy() -> None:
+    state_a = {"artifact_type": "cache_policy", "normalized_artifact": {"admission": {}}, "status": "clean", "final_eligible": True}
+    state_b = {"artifact_type": "other_policy", "normalized_artifact": {"admission": {}}, "status": "clean", "final_eligible": True}
+    policy_a = {"artifact_type": "cache_policy", "required_fields": ["admission"], "final_requires_clean_schema": True}
+    policy_b = {"artifact_type": "cache_policy", "required_fields": ["admission", "eviction"], "final_requires_clean_schema": True}
+
+    assert stable_artifact_identity_hash(state_a, artifact_policy=policy_a) != stable_artifact_identity_hash(state_b, artifact_policy=policy_a)
+    assert stable_artifact_identity_hash(state_a, artifact_policy=policy_a) != stable_artifact_identity_hash(state_a, artifact_policy=policy_b)
 
 
 def test_cache_trace_evaluator_fixture_scores_clean_policy() -> None:

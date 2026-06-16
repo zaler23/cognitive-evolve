@@ -31,6 +31,9 @@ class AdaptiveRuntimeState:
     warnings: list[str] = field(default_factory=list)
     events: list[dict[str, Any]] = field(default_factory=list)
     final_certificate: dict[str, Any] = field(default_factory=dict)
+    research_extensions: dict[str, Any] = field(default_factory=dict)
+    research_metrics: dict[str, Any] = field(default_factory=dict)
+    research_warnings: list[str] = field(default_factory=list)
     updated_at: str = field(default_factory=utc_now)
 
     def to_dict(self) -> dict[str, Any]:
@@ -58,6 +61,9 @@ class AdaptiveRuntimeState:
             warnings=[str(item) for item in data.get("warnings", []) if item],
             events=[dict(item) for item in data.get("events", []) if isinstance(item, dict)],
             final_certificate=coerce_dict(data.get("final_certificate")),
+            research_extensions=coerce_dict(data.get("research_extensions")),
+            research_metrics=coerce_dict(data.get("research_metrics")),
+            research_warnings=[str(item) for item in data.get("research_warnings", []) if item],
             updated_at=str(data.get("updated_at") or utc_now()),
         )
 
@@ -80,17 +86,28 @@ def sanitize_adaptive_event(event: dict[str, Any]) -> dict[str, Any]:
         key_s = str(key)
         if any(token in key_s.lower() for token in ("key", "secret", "token", "password", "prompt")):
             continue
-        if isinstance(value, str):
-            safe[key_s] = _safe_string(value)
-        elif isinstance(value, (int, float, bool)) or value is None:
-            safe[key_s] = value
-        elif isinstance(value, list):
-            safe[key_s] = [_safe_string(str(item)) if isinstance(item, str) else item for item in value[:20]]
-        elif isinstance(value, dict):
-            safe[key_s] = {str(k): _safe_string(str(v)) for k, v in list(value.items())[:20] if not any(t in str(k).lower() for t in ("key", "secret", "token", "password", "prompt"))}
-        else:
-            safe[key_s] = _safe_string(str(value))
+        safe[key_s] = _sanitize_value(value)
     return safe
+
+
+def _sanitize_value(value: Any, *, depth: int = 0) -> Any:
+    if depth > 4:
+        return "[truncated-depth]"
+    if isinstance(value, str):
+        return _safe_string(value)
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    if isinstance(value, list):
+        return [_sanitize_value(item, depth=depth + 1) for item in value[:20]]
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for key, item in list(value.items())[:20]:
+            key_s = str(key)
+            if any(token in key_s.lower() for token in ("key", "secret", "token", "password", "prompt")):
+                continue
+            out[key_s] = _sanitize_value(item, depth=depth + 1)
+        return out
+    return _safe_string(str(value))
 
 
 def _safe_string(value: str) -> str:

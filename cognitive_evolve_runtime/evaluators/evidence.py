@@ -136,6 +136,7 @@ class SearchPressure:
     mutable_refs: list[dict[str, Any]] = field(default_factory=list)
     artifact_requirements: dict[str, Any] = field(default_factory=dict)
     success_criteria: list[dict[str, Any]] = field(default_factory=list)
+    challenge_weights: dict[str, float] = field(default_factory=dict)
     selection_advisory: dict[str, float] = field(default_factory=dict)
     mutation_instruction: str = ""
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -153,13 +154,14 @@ class SearchPressure:
         avoid_challenge_ids: list[str] | None = None,
         artifact_requirements: dict[str, Any] | None = None,
         success_criteria: list[dict[str, Any]] | None = None,
+        challenge_weights: dict[str, float] | None = None,
         selection_advisory: dict[str, float] | None = None,
         mutation_instruction: str = "",
         metadata: dict[str, Any] | None = None,
     ) -> "SearchPressure":
         targets = list(dict.fromkeys(_str_list(target_challenge_ids)))
         avoids = list(dict.fromkeys(_str_list(avoid_challenge_ids)))
-        pressure_id = _stable_id({"parent_id": parent_id or "", "scope": scope, "targets": targets, "avoids": avoids})
+        pressure_id = _stable_id({"parent_id": parent_id or "", "scope": scope, "targets": targets, "avoids": avoids, "instruction": mutation_instruction, "metadata": coerce_dict(metadata)})
         return cls(
             id=pressure_id,
             parent_id=parent_id,
@@ -168,9 +170,37 @@ class SearchPressure:
             avoid_challenge_ids=avoids,
             artifact_requirements=coerce_dict(artifact_requirements),
             success_criteria=[dict(item) for item in success_criteria or [] if isinstance(item, dict)],
+            challenge_weights={str(k): bounded_score(v) for k, v in coerce_dict(challenge_weights).items()},
             selection_advisory={str(k): bounded_score(v) for k, v in coerce_dict(selection_advisory).items()},
             mutation_instruction=str(mutation_instruction or ""),
             metadata=_safe_metadata(metadata),
+        )
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any] | None) -> "SearchPressure":
+        payload = coerce_dict(data)
+        legacy_advisory = coerce_dict(payload.get("selection_advisory"))
+        challenge_weights = coerce_dict(payload.get("challenge_weights"))
+        if not challenge_weights and legacy_advisory and _looks_like_challenge_map(legacy_advisory):
+            challenge_weights = legacy_advisory
+            legacy_advisory = {}
+            metadata = coerce_dict(payload.get("metadata"))
+            metadata["legacy_selection_advisory_migrated_to_challenge_weights"] = True
+            payload["metadata"] = metadata
+        return cls(
+            id=str(payload.get("id") or _stable_id(payload)),
+            parent_id=str(payload.get("parent_id") or "") or None,
+            scope=str(payload.get("scope") or "global"),
+            target_challenge_ids=_str_list(payload.get("target_challenge_ids")),
+            avoid_challenge_ids=_str_list(payload.get("avoid_challenge_ids")),
+            preserve_refs=[dict(item) for item in payload.get("preserve_refs", []) if isinstance(item, dict)],
+            mutable_refs=[dict(item) for item in payload.get("mutable_refs", []) if isinstance(item, dict)],
+            artifact_requirements=coerce_dict(payload.get("artifact_requirements")),
+            success_criteria=[dict(item) for item in payload.get("success_criteria", []) if isinstance(item, dict)],
+            challenge_weights={str(k): bounded_score(v) for k, v in challenge_weights.items()},
+            selection_advisory={str(k): bounded_score(v) for k, v in legacy_advisory.items()},
+            mutation_instruction=str(payload.get("mutation_instruction") or ""),
+            metadata=_safe_metadata(payload.get("metadata")),
         )
 
 
@@ -229,43 +259,9 @@ def evidence_state(candidate: Any) -> dict[str, Any]:
 
 
 def evidence_state_from_records(records: list[EvidenceRecord]) -> dict[str, Any]:
-    if not records:
-        return {
-            "search_score": 0.0,
-            "final_score": 0.0,
-            "final_blocked": False,
-            "parent_blocked": False,
-            "terminal_reject": False,
-            "repair_value": 0.0,
-            "continuation_value": 0.0,
-            "target_challenge_ids": [],
-            "resolved_challenge_ids": [],
-            "emitted_challenge_ids": [],
-            "challenge_resolution": 0.0,
-            "confidence": 0.0,
-        }
-    latest = records[-1]
-    targets = list(dict.fromkeys(item for record in records for item in record.target_challenge_ids))
-    resolved = list(dict.fromkeys(item for record in records for item in record.resolved_challenge_ids))
-    emitted = list(dict.fromkeys(item for record in records for item in record.emitted_challenge_ids))
-    final_candidates = [record for record in records if not record.final_blocked]
-    challenge_resolution = len(set(resolved) & set(targets)) / max(1, len(set(targets))) if targets else bounded_score(len(resolved) / max(1, len(emitted)))
-    return {
-        "search_score": max(bounded_score(record.score) for record in records),
-        "final_score": max([bounded_score(record.score * record.confidence) for record in final_candidates] or [0.0]),
-        "final_blocked": bool(latest.final_blocked),
-        "parent_blocked": bool(latest.parent_blocked),
-        "terminal_reject": any(record.terminal_reject for record in records),
-        "repair_value": max(bounded_score(record.repair_value) for record in records),
-        "continuation_value": max(bounded_score(record.continuation_value) for record in records),
-        "target_challenge_ids": targets,
-        "resolved_challenge_ids": resolved,
-        "emitted_challenge_ids": emitted,
-        "challenge_resolution": bounded_score(challenge_resolution),
-        "confidence": max(bounded_score(record.confidence) for record in records),
-        "stage": latest.stage,
-        "source": latest.source,
-    }
+    from cognitive_evolve_runtime.evaluators.evidence_authority import aggregate_evidence_state
+
+    return aggregate_evidence_state(records)
 
 
 def evidence_terminal_reject(candidate: Any) -> bool:
@@ -358,6 +354,12 @@ def _legacy_records_from_metadata(metadata: dict[str, Any], *, fallback_candidat
     )
     return [record]
 
+
+def _looks_like_challenge_map(value: dict[str, Any]) -> bool:
+    if not value:
+        return False
+    keys = [str(key) for key in value.keys()]
+    return sum(1 for key in keys if key.startswith("case-") or key.startswith("challenge-")) >= max(1, len(keys) // 2)
 
 def _dedupe_records(records: list[EvidenceRecord]) -> list[EvidenceRecord]:
     out: list[EvidenceRecord] = []

@@ -492,6 +492,7 @@ class EvolutionRound:
         for source in (
             self._theory_advisory_features(policy=policy, candidates=candidates, current_round=current_round),
             evidence_advisory_features(candidates),
+            self.adaptive.research_advisory_features(candidates=candidates, policy=policy),
         ):
             for candidate_id, feature in (source or {}).items():
                 current = dict(combined.get(candidate_id) or {})
@@ -527,14 +528,15 @@ class EvolutionRound:
                     break
             if parent is None:
                 parent = parents[index % len(parents)]
-            pressure = self.adaptive.compile_search_pressure(parent_id=parent.id, scope="candidate")
-            if pressure is None or not pressure.target_challenge_ids:
+            pressure = self.adaptive.compile_search_pressure(parent_id=parent.id, scope="candidate", parent=parent, candidates=parents)
+            if pressure is None or not _search_pressure_has_effect(pressure):
                 out.append(plan)
                 continue
             metadata = dict(plan.metadata or {})
             metadata["search_pressure"] = pressure.to_dict()
             metadata["search_pressure_id"] = pressure.id
-            metadata["target_challenge_ids"] = list(pressure.target_challenge_ids)
+            if pressure.target_challenge_ids:
+                metadata["target_challenge_ids"] = list(pressure.target_challenge_ids)
             metadata["artifact_policy"] = dict(pressure.artifact_requirements or {})
             instruction = plan.instruction
             if pressure.mutation_instruction and pressure.mutation_instruction not in instruction:
@@ -558,6 +560,11 @@ class EvolutionRound:
     ) -> list[CandidateGenome]:
         sync_repair_parent_attempts_to_dormant_archive(archives, parents)
         offspring = _generate_offspring(model=self.model, mutation_engine=self.mutation_engine, parents=parents, plans=plans, world=world, contract=contract, policy=policy)
+        for child in offspring:
+            metadata = child.metadata if isinstance(child.metadata, dict) else {}
+            targets = [str(item) for item in metadata.get("target_challenge_ids", []) if item] if isinstance(metadata.get("target_challenge_ids"), list) else []
+            if targets:
+                self.adaptive.record_generated_targets(candidate_id=child.id, challenge_ids=targets, pressure_id=str(metadata.get("search_pressure_id") or ""), round_index=current_round)
         if len(parents) >= 2 and rankings.crossover_pairs:
             first, second = parents_for_crossover(parents, rankings.crossover_pairs[0])
             offspring.append(crossover(first, second))
@@ -615,6 +622,16 @@ class EvolutionRound:
             self.last_generation_plan["reproduction_archive_updates"] = reproduction_archive_updates
             self._record_generation_stage_progress(completed)
         return "", offspring_verification, reproduction_compaction.to_dict()
+
+
+def _search_pressure_has_effect(pressure: Any) -> bool:
+    return bool(
+        getattr(pressure, "target_challenge_ids", None)
+        or getattr(pressure, "avoid_challenge_ids", None)
+        or getattr(pressure, "artifact_requirements", None)
+        or getattr(pressure, "success_criteria", None)
+        or str(getattr(pressure, "mutation_instruction", "") or "").strip()
+    )
 
 
 __all__ = ["EvolutionRound", "RoundEvaluation"]

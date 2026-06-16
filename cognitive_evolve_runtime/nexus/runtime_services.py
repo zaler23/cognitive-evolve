@@ -15,6 +15,7 @@ from cognitive_evolve_runtime.inputs.project_snapshot import ProjectSnapshot
 from cognitive_evolve_runtime.nexus.consistency import assert_runtime_consistency
 from cognitive_evolve_runtime.nexus.loop import EvolutionBudget, EvolutionLoopResult
 from cognitive_evolve_runtime.nexus.final_projection import build_final_projection
+from cognitive_evolve_runtime.nexus.adaptive.research.persistence import safe_research_payload
 from cognitive_evolve_runtime.nexus.project_verification import ProjectCandidateVerifier, ProjectVerificationSummary
 from cognitive_evolve_runtime.persistence.checkpoint import build_checkpoint_state
 from cognitive_evolve_runtime.persistence.event_store import EventStore
@@ -104,9 +105,7 @@ class NexusPersistenceService:
         final_certificate = dict((result.synthesis.closure_certificate or {}).get("final_certificate") or adaptive_state.get("final_certificate") or {})
         final_projection: dict[str, Any] | None = None
         if adaptive_state:
-            candidates = getattr(result.population, "candidates", []) if result.population is not None else []
-            has_evidence = any(isinstance(getattr(candidate, "metadata", None), dict) and (candidate.metadata.get("evidence_state") or candidate.metadata.get("evidence_records")) for candidate in candidates)
-            if final_certificate or has_evidence:
+            if result.population is not None:
                 final_projection = build_final_projection(
                     population=result.population,
                     synthesis=result.synthesis,
@@ -123,6 +122,7 @@ class NexusPersistenceService:
             "snapshot_transaction": str(self.output_dir / "snapshot-transaction.json"),
         }
         if adaptive_state:
+            research_dir = self.output_dir / "research"
             artifacts.update(
                 {
                     "adaptive_state": str(adaptive_dir / "adaptive-state.json"),
@@ -131,6 +131,9 @@ class NexusPersistenceService:
                     "final_projection": str(adaptive_dir / "final-projection.json"),
                     "challenge_memory": str(self.output_dir / "challenge-memory.json"),
                     "challenge_events": str(self.output_dir / "challenge-events.jsonl"),
+                    "research_state": str(research_dir / "research-state.json"),
+                    "research_events": str(research_dir / "research-events.jsonl"),
+                    "research_metrics": str(research_dir / "research-metrics.json"),
                 }
             )
         run.artifacts = dict(artifacts)
@@ -254,6 +257,12 @@ def _adaptive_snapshot_writes(adaptive_state: dict[str, Any], final_certificate:
     evaluator = dict(adaptive_state.get("evaluator") or {})
     if evaluator:
         writes.append(SnapshotWrite("adaptive/evaluator-results.jsonl", "text", json.dumps(evaluator, ensure_ascii=False, sort_keys=True, default=str) + "\n", sort_keys=False))
+    research = safe_research_payload(dict(adaptive_state.get("research_extensions") or {}))
+    if research:
+        writes.append(SnapshotWrite("research/research-state.json", "json", research))
+        events = [safe_research_payload(dict(item), max_bytes=8192) for item in research.get("events", []) if isinstance(item, dict)]
+        writes.append(SnapshotWrite("research/research-events.jsonl", "text", "".join(json.dumps(event, ensure_ascii=False, sort_keys=True, default=str) + "\n" for event in events), sort_keys=False))
+        writes.append(SnapshotWrite("research/research-metrics.json", "json", dict(research.get("metrics") or adaptive_state.get("research_metrics") or {})))
     return writes
 
 
