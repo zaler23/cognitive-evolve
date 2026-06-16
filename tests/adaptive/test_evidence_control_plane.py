@@ -21,6 +21,7 @@ from cognitive_evolve_runtime.evaluators import (
     apply_evidence_record,
     challenge_from_diagnostic,
     classify_diagnostic,
+    evidence_advisory_features,
     evidence_state,
     latest_evidence_record,
     stable_artifact_identity_hash,
@@ -318,6 +319,59 @@ def test_schema_search_pressure_generates_strict_repair_instruction() -> None:
     assert "eviction_scoring" in pressure.mutation_instruction
 
 
+def test_search_pressure_prioritizes_contract_schema_over_repeated_generic_final_gate() -> None:
+    contract_case = challenge_from_diagnostic(
+        candidate_id="__contract__",
+        source="artifact_contract_policy",
+        diagnostic="contract_artifact_policy_conflict: artifact_type_missing expected=cache_policy",
+        round_index=1,
+        priority=0.9,
+    )
+    generic_case = challenge_from_diagnostic(
+        candidate_id="C1",
+        source="cache_policy",
+        diagnostic="external_evaluator_not_passed",
+        round_index=1,
+        priority=0.9,
+    )
+    memory = ChallengeMemory()
+    memory.ingest(
+        EvidenceRecord(
+            candidate_id="C1",
+            source="cache_policy",
+            emitted_challenge_ids=[generic_case["id"]],
+            metadata={"challenge_items": [generic_case]},
+        ),
+        round_index=1,
+    )
+    for round_index in range(2, 9):
+        memory.ingest(
+            EvidenceRecord(
+                candidate_id=f"C{round_index}",
+                source="cache_policy",
+                emitted_challenge_ids=[generic_case["id"]],
+                metadata={"challenge_items": [generic_case]},
+            ),
+            round_index=round_index,
+        )
+    memory.ingest(
+        EvidenceRecord(
+            candidate_id="__contract__",
+            source="artifact_contract_policy",
+            emitted_challenge_ids=[contract_case["id"]],
+            metadata={"challenge_items": [contract_case]},
+        ),
+        round_index=2,
+    )
+
+    pressure = memory.compile_search_pressure(limit=1, artifact_requirements={"artifact_type": "cache_policy"})
+
+    assert pressure is not None
+    assert pressure.target_challenge_ids == [contract_case["id"]]
+    assert pressure.metadata["selected_categories"] == ["contract_artifact_policy_conflict"]
+    assert "Schema repair has priority" in pressure.mutation_instruction
+
+
 def test_semantic_drift_blocks_final_and_becomes_search_pressure() -> None:
     candidate = CandidateGenome(
         id="C-drift",
@@ -414,6 +468,51 @@ def test_behavior_diagnostics_are_decomposed_into_behavior_challenges() -> None:
     assert pressure is not None
     assert pressure.metadata["behavior_score_focus"] is True
     assert "improves evaluator behavior" in pressure.mutation_instruction
+
+
+def test_evidence_advisory_rewards_resolved_clean_schema_over_unresolved_semantic_drift() -> None:
+    resolved = CandidateGenome(
+        id="C-resolved",
+        artifact={"admission": {}, "eviction": {}, "parameters": {}, "update_or_state_update": {}},
+        artifact_type="cache_policy",
+        multihead_scores={"schema_cleanliness": 1.0},
+    )
+    unresolved = CandidateGenome(
+        id="C-unresolved",
+        artifact={"admission": {"logic": "checkpoint route"}},
+        artifact_type="cache_policy",
+    )
+    apply_evidence_record(
+        resolved,
+        EvidenceRecord(
+            candidate_id="C-resolved",
+            source="cache_policy",
+            score=0.7,
+            final_blocked=True,
+            repair_value=0.4,
+            target_challenge_ids=["case-schema"],
+            resolved_challenge_ids=["case-schema"],
+            metadata={"artifact_state": {"schema_cleanliness": 1.0, "status": "clean"}},
+        ),
+    )
+    apply_evidence_record(
+        unresolved,
+        EvidenceRecord(
+            candidate_id="C-unresolved",
+            source="cache_policy",
+            score=0.7,
+            final_blocked=True,
+            repair_value=0.4,
+            target_challenge_ids=["case-semantic"],
+            diagnostics=["semantic_drift_detected: forbidden_term=checkpoint"],
+            metadata={"challenge_items": [challenge_from_diagnostic(candidate_id="C-unresolved", source="cache_policy", diagnostic="semantic_drift_detected: forbidden_term=checkpoint")]},
+        ),
+    )
+
+    features = evidence_advisory_features([resolved, unresolved])
+
+    assert features["C-resolved"]["plan_value"] > features["C-unresolved"]["plan_value"]
+    assert features["C-unresolved"]["risk"] > features["C-resolved"]["risk"]
 
 
 def test_archive_keeps_repairable_challenge_failure_out_of_terminal_cull() -> None:

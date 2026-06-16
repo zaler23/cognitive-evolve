@@ -306,15 +306,29 @@ def evidence_advisory_features(candidates: list[Any]) -> dict[str, Any]:
         state = evidence_state(candidate)
         if not state:
             continue
+        records = evidence_records(candidate)
+        latest = records[-1] if records else None
+        category_counts = _record_category_counts(latest)
         resolved = len(state.get("resolved_challenge_ids") or [])
         targets = len(state.get("target_challenge_ids") or [])
         unresolved_penalty = max(0.0, targets - resolved) / max(1, targets) if targets else 0.0
+        semantic_or_behavior_pressure = category_counts.get("semantic_drift", 0) + category_counts.get("behavior_score_failure", 0)
+        schema_pressure = (
+            category_counts.get("contract_artifact_policy_conflict", 0)
+            + category_counts.get("artifact_type_mismatch", 0)
+            + category_counts.get("missing_required_field", 0)
+            + category_counts.get("machine_parse_failure", 0)
+            + category_counts.get("field_alias", 0)
+        )
+        resolved_bonus = 0.15 * resolved
+        clean_schema_bonus = 0.1 if bounded_score(getattr(candidate, "multihead_scores", {}).get("schema_cleanliness", 0.0) if isinstance(getattr(candidate, "multihead_scores", None), dict) else 0.0) >= 1.0 else 0.0
         risk = 1.0 if state.get("terminal_reject") else (0.5 if state.get("parent_blocked") else 0.25 * unresolved_penalty)
+        risk = bounded_score(risk + min(0.35, 0.10 * schema_pressure + 0.08 * semantic_or_behavior_pressure))
         out[getattr(candidate, "id", "")] = {
             "rank_prior": bounded_score(state.get("search_score", 0.0)),
-            "plan_value": bounded_score(float(state.get("repair_value", 0.0) or 0.0) + 0.2 * resolved),
+            "plan_value": bounded_score(float(state.get("repair_value", 0.0) or 0.0) + resolved_bonus + clean_schema_bonus),
             "diversity": bounded_score(getattr(candidate, "multihead_scores", {}).get("novelty", 0.0) if isinstance(getattr(candidate, "multihead_scores", None), dict) else 0.0),
-            "risk": bounded_score(risk),
+            "risk": risk,
         }
     return out
 
@@ -370,6 +384,27 @@ def _looks_like_challenge_map(value: dict[str, Any]) -> bool:
         return False
     keys = [str(key) for key in value.keys()]
     return sum(1 for key in keys if key.startswith("case-") or key.startswith("challenge-")) >= max(1, len(keys) // 2)
+
+
+def _record_category_counts(record: EvidenceRecord | None) -> dict[str, int]:
+    if record is None:
+        return {}
+    try:
+        from cognitive_evolve_runtime.evaluators.challenge_memory import classify_diagnostic
+    except Exception:
+        return {}
+    counts: dict[str, int] = {}
+    for diagnostic in record.diagnostics:
+        category = classify_diagnostic(diagnostic)
+        counts[category] = counts.get(category, 0) + 1
+    challenge_items = record.metadata.get("challenge_items", [])
+    if not isinstance(challenge_items, list):
+        challenge_items = []
+    for item in challenge_items:
+        if isinstance(item, dict):
+            category = str(coerce_dict(item.get("metadata")).get("category") or classify_diagnostic(str(item.get("summary") or "")))
+            counts[category] = counts.get(category, 0) + 1
+    return counts
 
 def _dedupe_records(records: list[EvidenceRecord]) -> list[EvidenceRecord]:
     out: list[EvidenceRecord] = []

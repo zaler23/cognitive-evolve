@@ -4,9 +4,10 @@ from __future__ import annotations
 from typing import Any
 
 from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidatePopulation
+from cognitive_evolve_runtime.contracts.objective_contract import artifact_policy_contract_conflicts
 from cognitive_evolve_runtime.core.scalars import bounded_score
-from cognitive_evolve_runtime.evaluators.challenge_memory import ChallengeMemory
-from cognitive_evolve_runtime.evaluators.evidence import SearchPressure, latest_evidence_record
+from cognitive_evolve_runtime.evaluators.challenge_memory import ChallengeMemory, challenge_from_diagnostic
+from cognitive_evolve_runtime.evaluators.evidence import EvidenceRecord, SearchPressure, latest_evidence_record
 from cognitive_evolve_runtime.nexus.adaptive.research import ResearchContext, ResearchExtensionRegistry
 from cognitive_evolve_runtime.nexus._serde import coerce_dict
 from cognitive_evolve_runtime.nexus.adaptive.config import AdaptiveConfig
@@ -42,7 +43,9 @@ class AdaptiveRuntimeController:
         elif explicit:
             restored_config = coerce_dict(explicit)
         config = AdaptiveConfig.from_sources(explicit=restored_config or None, contract=contract, policy=policy, world=world)
-        return cls(config=config, state=AdaptiveRuntimeState.from_dict(restored_state))
+        controller = cls(config=config, state=AdaptiveRuntimeState.from_dict(restored_state))
+        controller.record_contract_artifact_policy_conflicts(contract=contract)
+        return controller
 
     @property
     def enabled(self) -> bool:
@@ -134,6 +137,46 @@ class AdaptiveRuntimeController:
         pressure = _merge_pressures(base, pressures, parent_id=parent_id, scope=scope)
         self._sync_research_state()
         return pressure
+
+    def record_contract_artifact_policy_conflicts(self, *, contract: Any | None) -> None:
+        if not self.enabled or contract is None or not self.config.evidence:
+            return
+        diagnostics = list(artifact_policy_contract_conflicts(self.config.evidence, contract))
+        metadata = getattr(contract, "metadata", None)
+        if isinstance(metadata, dict):
+            diagnostics.extend(str(item) for item in metadata.get("contract_artifact_policy_conflict_diagnostics", []) if item)
+        diagnostics = list(dict.fromkeys(str(item) for item in diagnostics if str(item).strip()))
+        if not diagnostics:
+            return
+        challenge_items = [
+            challenge_from_diagnostic(
+                candidate_id="__contract__",
+                source="artifact_contract_policy",
+                diagnostic=diagnostic,
+                round_index=int(self.state.round_index or 0),
+                priority=0.95,
+            )
+            for diagnostic in diagnostics[:8]
+        ]
+        record = EvidenceRecord(
+            candidate_id="__contract__",
+            source="artifact_contract_policy",
+            stage="contract",
+            score=0.0,
+            confidence=0.9,
+            final_blocked=True,
+            parent_blocked=False,
+            terminal_reject=False,
+            repair_value=0.8,
+            continuation_value=0.8,
+            emitted_challenge_ids=[str(item.get("id")) for item in challenge_items if item.get("id")],
+            diagnostics=diagnostics,
+            hints=["align the model-generated artifact with the explicit ArtifactPolicy dynamic contract"],
+            metadata={"challenge_items": challenge_items, "category": "contract_artifact_policy_conflict"},
+        )
+        self.challenge_memory.ingest(record, round_index=int(self.state.round_index or 0))
+        self.state.challenge_memory = self.challenge_memory.to_dict()
+        self.state.metrics["contract_artifact_policy_conflict_count"] = len(diagnostics)
 
     def research_advisory_features(self, *, candidates: list[Any], policy: Any | None = None, contract: Any | None = None, world: Any | None = None) -> dict[str, Any]:
         if not self.enabled:

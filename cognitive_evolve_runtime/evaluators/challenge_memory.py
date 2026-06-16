@@ -11,7 +11,8 @@ from cognitive_evolve_runtime.nexus._serde import coerce_dict, utc_now
 from cognitive_evolve_runtime.core.scalars import bounded_score
 
 
-SCHEMA_CHALLENGE_CATEGORIES = {"artifact_type_mismatch", "missing_required_field", "machine_parse_failure", "field_alias"}
+CONTRACT_CHALLENGE_CATEGORIES = {"contract_artifact_policy_conflict"}
+SCHEMA_CHALLENGE_CATEGORIES = {"artifact_type_mismatch", "missing_required_field", "machine_parse_failure", "field_alias", *CONTRACT_CHALLENGE_CATEGORIES}
 SEMANTIC_CHALLENGE_CATEGORIES = {"semantic_drift"}
 BEHAVIOR_CHALLENGE_CATEGORIES = {"behavior_score_failure"}
 
@@ -278,11 +279,26 @@ def _challenge_items_from_record(record: EvidenceRecord) -> list[dict[str, Any]]
 def _pressure_score(item: ChallengeMemoryItem) -> float:
     cost = _cost_value(item.cost_to_retest)
     reuse = 0.05 * len(item.targeted_by_candidate_ids)
-    return bounded_score((item.priority * max(0.1, item.confidence)) / max(1.0, cost) + min(0.2, reuse) + min(0.2, 0.03 * item.kill_count))
+    category = str(item.metadata.get("category") or classify_diagnostic(item.summary))
+    category_bonus = {
+        "contract_artifact_policy_conflict": 0.35,
+        "artifact_type_mismatch": 0.30,
+        "missing_required_field": 0.28,
+        "machine_parse_failure": 0.26,
+        "field_alias": 0.24,
+        "semantic_drift": 0.22,
+        "behavior_score_failure": 0.18,
+        "final_gate": -0.08,
+        "generic": -0.12,
+    }.get(category, 0.0)
+    repeated_generic_penalty = 0.18 if category in {"generic", "final_gate"} and item.kill_count >= 5 else 0.0
+    return bounded_score((item.priority * max(0.1, item.confidence)) / max(1.0, cost) + category_bonus - repeated_generic_penalty + min(0.15, reuse) + min(0.15, 0.025 * item.kill_count))
 
 
 def classify_diagnostic(diagnostic: str) -> str:
     text = str(diagnostic or "").strip().lower()
+    if "contract_artifact_policy_conflict" in text:
+        return "contract_artifact_policy_conflict"
     if "semantic_drift_detected" in text or "forbidden_term=" in text or "out-of-domain" in text or "out of domain" in text:
         return "semantic_drift"
     if "behavior_score_failure" in text or "trace score below threshold" in text or "score_below_threshold" in text or "hit_rate_below_threshold" in text or "byte_hit_rate_below_threshold" in text:

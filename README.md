@@ -199,9 +199,12 @@ evaluator is treated as objective evidence, while model self-claims such as
 set `adaptive.evidence.machine_artifact_required=true`; natural-language
 fallback artifacts may then be probed but are not final-eligible until re-emitted
 as clean machine-readable artifacts. The runtime turns configured artifact
-policy into a bounded prompt hint so model-backed mutation sees the exact
-`artifact_type`, required fields, forbidden aliases, and optional domain
-vocabulary. Artifact normalization, semantic-drift diagnostics, and
+policy into both a bounded prompt hint and the Nexus dynamic artifact contract,
+so model-backed mutation and verifier gates see the same exact `artifact_type`,
+required fields, forbidden aliases, and optional domain vocabulary. If a resumed
+checkpoint predates that binding, the overlay is applied in memory for future
+rounds and recorded in metadata rather than rewriting historical snapshots.
+Artifact normalization, semantic-drift diagnostics, and
 score-component diagnostics become challenge-memory cases rather than final
 claims. When no candidate is certified solved, the final projection still emits
 a best-current candidate when one is available, and its JSON projection preserves
