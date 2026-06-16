@@ -8,10 +8,13 @@ from cognitive_evolve_runtime.archives.manager import ArchiveManager, FateAssign
 from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome, CandidatePopulation
 from cognitive_evolve_runtime.contracts.objective_contract import NexusObjectiveContract
 from cognitive_evolve_runtime.nexus.generation_plan import (
+    GenerationPlan,
     GenerationPlanError,
     apply_generation_plan,
     assert_stage_ready,
     build_generation_plan,
+    expected_generation_plan_id,
+    validate_generation_plan_history,
 )
 from cognitive_evolve_runtime.nexus.loop import EvolutionBudget, EvolutionRound
 from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy
@@ -281,6 +284,67 @@ def test_reproduction_advances_generation_plan_and_records_offspring_archive_upd
     assert plan["offspring_ids"]
     assert plan["reproduction_archive_updates"]
     assert {item["fate"] for item in plan["reproduction_archive_updates"]} == {CandidateFate.FAILED.value}
+
+
+def test_generation_plan_history_accepts_completed_plan_with_archive_update_witness() -> None:
+    candidate = CandidateGenome(id="known")
+    ranking = RelativeRankingResult(best_final_answer_id="known")
+    archive_plan = build_generation_plan(
+        round_index=1,
+        candidates=[candidate],
+        fate_assignments=[FateAssignment("known", CandidateFate.ACTIVE.value)],
+        ranking=ranking,
+        stage_graph=[
+            {"op": "critique_and_verify"},
+            {"op": "rank"},
+            {"op": "archive_assign"},
+            {"op": "generation_plan_validate"},
+            {"op": "archive_update"},
+        ],
+        source="runtime_rank_archive_transition",
+    )
+    archives = ArchiveManager()
+    apply_generation_plan(archive_plan, [candidate], archives)
+    completed_plan = GenerationPlan.from_dict(
+        {
+            **archive_plan.to_dict(),
+            "parent_ids": ["known"],
+            "mutation_objectives": ["continue_search"],
+            "stage_graph": [
+                *archive_plan.stage_graph,
+                {"op": "compact"},
+                {"op": "diagnose"},
+                {"op": "stop_check"},
+                {"op": "select_parents"},
+                {"op": "plan_mutations"},
+                {"op": "generate_offspring"},
+                {"op": "verify_offspring"},
+            ],
+        }
+    )
+    completed_payload = completed_plan.to_dict()
+    completed_payload["plan_id"] = expected_generation_plan_id(completed_plan)
+    completed_payload["completed_stage_ops"] = [
+        "critique_and_verify",
+        "rank",
+        "archive_assign",
+        "generation_plan_validate",
+        "archive_update",
+        "compact",
+        "diagnose",
+        "stop_check",
+        "select_parents",
+        "plan_mutations",
+        "generate_offspring",
+        "verify_offspring",
+    ]
+
+    assert completed_payload["plan_id"] != archives.history[-1]["generation_plan_id"]
+
+    validate_generation_plan_history(
+        [{"generation_plan": completed_payload}],
+        archive_history=archives.history,
+    )
 
 
 def test_checkpoint_restore_allows_legacy_history_without_generation_plan(tmp_path) -> None:

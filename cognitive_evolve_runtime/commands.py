@@ -47,7 +47,7 @@ def config_init(profile: str = "local", output: str = ".env", *, force: bool = F
     print(f"Env template written: {path}")
     print(f"profile: {info.profile}")
     print(f"description: {info.description}")
-    print("boundary: generic model provider only; no local host-app relay configuration")
+    print("boundary: generic model provider only; no local private application relay configuration")
     return 0
 
 def list_capabilities() -> int:

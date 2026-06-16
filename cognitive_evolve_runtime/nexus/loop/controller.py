@@ -13,7 +13,7 @@ from cognitive_evolve_runtime.candidates.mutation import MutationEngine, Mutatio
 from cognitive_evolve_runtime.contracts.objective_contract import NexusObjectiveContract
 from cognitive_evolve_runtime.events.progress import EvolutionProgressEvent, PipelineProgressEvent
 from cognitive_evolve_runtime.nexus.critique import CandidateCritique, CritiqueEngine
-from cognitive_evolve_runtime.nexus.adaptive import AdaptiveRuntimeController, apply_final_certificate_to_closure, build_final_certificate
+from cognitive_evolve_runtime.nexus.adaptive import AdaptiveRuntimeController, apply_final_certificate_to_closure, apply_research_final_gate_directives, build_final_certificate
 from cognitive_evolve_runtime.nexus.activation_reseed import emergency_activation_reseed
 from cognitive_evolve_runtime.nexus._serde import utc_now
 from cognitive_evolve_runtime.nexus.exploration import action_palette_for_round, amplify_population
@@ -312,6 +312,9 @@ class EvolutionLoopController:
             closure_certificate=synthesis.closure_certificate,
             evaluator_required=self.adaptive.evaluator_enabled,
         ) if self.adaptive.enabled else {}
+        self.adaptive.before_final_projection(candidates=self.population.candidates, final_certificate=final_certificate)
+        if final_certificate:
+            final_certificate = apply_research_final_gate_directives(final_certificate, self.adaptive.final_gate_directives())
         if final_certificate:
             synthesis.closure_certificate = apply_final_certificate_to_closure(synthesis.closure_certificate, final_certificate)
             self.adaptive.attach_final_certificate(final_certificate)

@@ -6,6 +6,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from cognitive_evolve_runtime.nexus._serde import coerce_dict
+from cognitive_evolve_runtime.nexus.adaptive.research import ResearchConfig
 
 
 @dataclass(frozen=True)
@@ -42,13 +43,16 @@ class SpatialAdaptiveConfig:
 class AdaptiveConfig:
     enabled: bool = False
     evaluator: dict[str, Any] = field(default_factory=dict)
+    evidence: dict[str, Any] = field(default_factory=dict)
     spatial: SpatialAdaptiveConfig = field(default_factory=SpatialAdaptiveConfig)
     mdl: dict[str, Any] = field(default_factory=dict)
     elite_gate: dict[str, Any] = field(default_factory=dict)
+    research: ResearchConfig = field(default_factory=ResearchConfig)
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["spatial"] = self.spatial.to_dict()
+        data["research"] = self.research.to_dict()
         return data
 
     @classmethod
@@ -73,13 +77,16 @@ class AdaptiveConfig:
         if evaluator_enabled:
             evaluator["enabled"] = True
         spatial = SpatialAdaptiveConfig.from_mapping(merged.get("spatial"))
-        enabled = _bool(merged.get("enabled"), default=evaluator_enabled or spatial.enabled or _bool(merged.get("mdl", {}).get("enabled") if isinstance(merged.get("mdl"), dict) else None, default=False))
+        research = ResearchConfig.from_mapping(merged.get("research"))
+        enabled = _bool(merged.get("enabled"), default=evaluator_enabled or spatial.enabled or research.enabled or _bool(merged.get("mdl", {}).get("enabled") if isinstance(merged.get("mdl"), dict) else None, default=False))
         return cls(
             enabled=enabled,
             evaluator=evaluator,
+            evidence=coerce_dict(merged.get("evidence")),
             spatial=spatial,
             mdl=coerce_dict(merged.get("mdl")),
             elite_gate=coerce_dict(merged.get("elite_gate")),
+            research=research,
         )
 
     @property
@@ -87,11 +94,13 @@ class AdaptiveConfig:
         evaluator_enabled = _bool(self.evaluator.get("enabled"), default=bool(str(self.evaluator.get("command") or "").strip()))
         return {
             "adaptive": self.enabled,
+            "evidence_control_plane": self.enabled,
             "external_evaluator": self.enabled and evaluator_enabled,
             "spatial_observe": self.enabled and self.spatial.enabled and self.spatial.mode == "observe",
             "spatial_selection": self.enabled and self.spatial.enabled and self.spatial.mode in {"selection", "local_evaluation"},
             "mdl": self.enabled and _bool(self.mdl.get("enabled"), default=False),
             "elite_gate": self.enabled,
+            "research_extension_registry": self.enabled and self.research.enabled,
         }
 
 
@@ -117,6 +126,10 @@ def _env_config() -> dict[str, Any]:
         out["evaluator"]["command"] = os.environ.get("COGEV_EXTERNAL_EVALUATOR_COMMAND")
     if os.environ.get("COGEV_EXTERNAL_EVALUATOR_TIMEOUT"):
         out.setdefault("evaluator", {})["timeout_seconds"] = os.environ.get("COGEV_EXTERNAL_EVALUATOR_TIMEOUT")
+    if os.environ.get("COGEV_MACHINE_ARTIFACT_REQUIRED"):
+        out.setdefault("evidence", {})["machine_artifact_required"] = os.environ.get("COGEV_MACHINE_ARTIFACT_REQUIRED")
+    if os.environ.get("COGEV_ARTIFACT_TYPE"):
+        out.setdefault("evidence", {})["artifact_type"] = os.environ.get("COGEV_ARTIFACT_TYPE")
     if os.environ.get("COGEV_SPATIAL_MODE"):
         out.setdefault("spatial", {})["enabled"] = True
         out["spatial"]["mode"] = os.environ.get("COGEV_SPATIAL_MODE")
@@ -148,4 +161,4 @@ def _int(value: Any, *, default: int = 0) -> int:
         return default
 
 
-__all__ = ["AdaptiveConfig", "SpatialAdaptiveConfig"]
+__all__ = ["AdaptiveConfig", "SpatialAdaptiveConfig", "ResearchConfig"]

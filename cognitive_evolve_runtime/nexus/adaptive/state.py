@@ -19,16 +19,21 @@ class AdaptiveRuntimeState:
     version: str = ADAPTIVE_STATE_VERSION
     round_index: int = 0
     enabled_features: dict[str, bool] = field(default_factory=dict)
+    config: dict[str, Any] = field(default_factory=dict)
     spatial: dict[str, Any] | None = None
     budget: dict[str, Any] | None = None
     immune: dict[str, Any] | None = None
     pattern_memory: dict[str, Any] | None = None
     mdl: dict[str, Any] | None = None
     evaluator: dict[str, Any] | None = None
+    challenge_memory: dict[str, Any] | None = None
     metrics: dict[str, Any] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     events: list[dict[str, Any]] = field(default_factory=list)
     final_certificate: dict[str, Any] = field(default_factory=dict)
+    research_extensions: dict[str, Any] = field(default_factory=dict)
+    research_metrics: dict[str, Any] = field(default_factory=dict)
+    research_warnings: list[str] = field(default_factory=list)
     updated_at: str = field(default_factory=utc_now)
 
     def to_dict(self) -> dict[str, Any]:
@@ -44,16 +49,21 @@ class AdaptiveRuntimeState:
             version=str(data.get("version") or ADAPTIVE_STATE_VERSION),
             round_index=_int(data.get("round_index"), default=0),
             enabled_features={str(k): bool(v) for k, v in coerce_dict(data.get("enabled_features")).items()},
+            config=coerce_dict(data.get("config")),
             spatial=_optional_dict(data.get("spatial")),
             budget=_optional_dict(data.get("budget")),
             immune=_optional_dict(data.get("immune")),
             pattern_memory=_optional_dict(data.get("pattern_memory")),
             mdl=_optional_dict(data.get("mdl")),
             evaluator=_optional_dict(data.get("evaluator")),
+            challenge_memory=_optional_dict(data.get("challenge_memory") or data.get("challenge_bank")),
             metrics=coerce_dict(data.get("metrics")),
             warnings=[str(item) for item in data.get("warnings", []) if item],
             events=[dict(item) for item in data.get("events", []) if isinstance(item, dict)],
             final_certificate=coerce_dict(data.get("final_certificate")),
+            research_extensions=coerce_dict(data.get("research_extensions")),
+            research_metrics=coerce_dict(data.get("research_metrics")),
+            research_warnings=[str(item) for item in data.get("research_warnings", []) if item],
             updated_at=str(data.get("updated_at") or utc_now()),
         )
 
@@ -76,17 +86,28 @@ def sanitize_adaptive_event(event: dict[str, Any]) -> dict[str, Any]:
         key_s = str(key)
         if any(token in key_s.lower() for token in ("key", "secret", "token", "password", "prompt")):
             continue
-        if isinstance(value, str):
-            safe[key_s] = _safe_string(value)
-        elif isinstance(value, (int, float, bool)) or value is None:
-            safe[key_s] = value
-        elif isinstance(value, list):
-            safe[key_s] = [_safe_string(str(item)) if isinstance(item, str) else item for item in value[:20]]
-        elif isinstance(value, dict):
-            safe[key_s] = {str(k): _safe_string(str(v)) for k, v in list(value.items())[:20] if not any(t in str(k).lower() for t in ("key", "secret", "token", "password", "prompt"))}
-        else:
-            safe[key_s] = _safe_string(str(value))
+        safe[key_s] = _sanitize_value(value)
     return safe
+
+
+def _sanitize_value(value: Any, *, depth: int = 0) -> Any:
+    if depth > 4:
+        return "[truncated-depth]"
+    if isinstance(value, str):
+        return _safe_string(value)
+    if isinstance(value, (int, float, bool)) or value is None:
+        return value
+    if isinstance(value, list):
+        return [_sanitize_value(item, depth=depth + 1) for item in value[:20]]
+    if isinstance(value, dict):
+        out: dict[str, Any] = {}
+        for key, item in list(value.items())[:20]:
+            key_s = str(key)
+            if any(token in key_s.lower() for token in ("key", "secret", "token", "password", "prompt")):
+                continue
+            out[key_s] = _sanitize_value(item, depth=depth + 1)
+        return out
+    return _safe_string(str(value))
 
 
 def _safe_string(value: str) -> str:

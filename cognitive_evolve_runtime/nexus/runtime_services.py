@@ -14,6 +14,8 @@ from typing import Any
 from cognitive_evolve_runtime.inputs.project_snapshot import ProjectSnapshot
 from cognitive_evolve_runtime.nexus.consistency import assert_runtime_consistency
 from cognitive_evolve_runtime.nexus.loop import EvolutionBudget, EvolutionLoopResult
+from cognitive_evolve_runtime.nexus.final_projection import build_final_projection
+from cognitive_evolve_runtime.nexus.adaptive.research.persistence import safe_research_payload
 from cognitive_evolve_runtime.nexus.project_verification import ProjectCandidateVerifier, ProjectVerificationSummary
 from cognitive_evolve_runtime.persistence.checkpoint import build_checkpoint_state
 from cognitive_evolve_runtime.persistence.event_store import EventStore
@@ -101,6 +103,14 @@ class NexusPersistenceService:
         )
         adaptive_dir = self.output_dir / "adaptive"
         final_certificate = dict((result.synthesis.closure_certificate or {}).get("final_certificate") or adaptive_state.get("final_certificate") or {})
+        final_projection: dict[str, Any] | None = None
+        if adaptive_state:
+            if result.population is not None:
+                final_projection = build_final_projection(
+                    population=result.population,
+                    synthesis=result.synthesis,
+                    final_certificate=final_certificate,
+                ).to_dict()
 
         artifacts = {
             "population": str(population_path),
@@ -112,11 +122,18 @@ class NexusPersistenceService:
             "snapshot_transaction": str(self.output_dir / "snapshot-transaction.json"),
         }
         if adaptive_state:
+            research_dir = self.output_dir / "research"
             artifacts.update(
                 {
                     "adaptive_state": str(adaptive_dir / "adaptive-state.json"),
                     "adaptive_events": str(adaptive_dir / "adaptive-events.jsonl"),
                     "final_certificate": str(adaptive_dir / "final-certificate.json"),
+                    "final_projection": str(adaptive_dir / "final-projection.json"),
+                    "challenge_memory": str(self.output_dir / "challenge-memory.json"),
+                    "challenge_events": str(self.output_dir / "challenge-events.jsonl"),
+                    "research_state": str(research_dir / "research-state.json"),
+                    "research_events": str(research_dir / "research-events.jsonl"),
+                    "research_metrics": str(research_dir / "research-metrics.json"),
                 }
             )
         run.artifacts = dict(artifacts)
@@ -128,7 +145,7 @@ class NexusPersistenceService:
             SnapshotWrite("run-result.json", "json", run.to_dict()),
         ]
         if adaptive_state:
-            writes.extend(_adaptive_snapshot_writes(adaptive_state, final_certificate))
+            writes.extend(_adaptive_snapshot_writes(adaptive_state, final_certificate, final_projection=final_projection))
         NexusSnapshotTransaction(self.output_dir).commit(writes)
         if adaptive_events:
             adaptive_events_path = adaptive_dir / "adaptive-events.jsonl"
@@ -183,6 +200,13 @@ def final_answer_artifact_text(result: EvolutionLoopResult) -> str:
         f"- reference_candidate_id: {reference_candidate_id or 'none'}",
         "",
     ]
+    final_certificate = dict((getattr(result.synthesis, "closure_certificate", {}) or {}).get("final_certificate") or {})
+    population = getattr(result, "population", None)
+    candidates = getattr(population, "candidates", []) if population is not None else []
+    has_evidence = any(isinstance(getattr(candidate, "metadata", None), dict) and (candidate.metadata.get("evidence_state") or candidate.metadata.get("evidence_records")) for candidate in candidates)
+    if population is not None and (final_certificate or has_evidence):
+        projection = build_final_projection(population=population, synthesis=result.synthesis, final_certificate=final_certificate)
+        return "\n".join(header) + projection.to_markdown()
     if reference_candidate_id and result.completion_status != "solved":
         header.extend(
             [
@@ -215,20 +239,36 @@ def _sync_budget_width_metadata(evolution: dict[str, Any], budget: EvolutionBudg
     evolution["round_budget_runtime"] = runtime
 
 
-def _adaptive_snapshot_writes(adaptive_state: dict[str, Any], final_certificate: dict[str, Any]) -> list[SnapshotWrite]:
+def _adaptive_snapshot_writes(adaptive_state: dict[str, Any], final_certificate: dict[str, Any], *, final_projection: dict[str, Any] | None = None) -> list[SnapshotWrite]:
     spatial = dict(adaptive_state.get("spatial") or {})
     regions = dict(spatial.get("regions") or {})
     writes = [
         SnapshotWrite("adaptive/adaptive-state.json", "json", adaptive_state),
         SnapshotWrite("adaptive/final-certificate.json", "json", final_certificate or {}),
+        SnapshotWrite("adaptive/final-projection.json", "json", final_projection or {}),
     ]
+    challenge_memory = dict(adaptive_state.get("challenge_memory") or {})
+    if challenge_memory:
+        writes.append(SnapshotWrite("challenge-memory.json", "json", challenge_memory))
+        writes.append(SnapshotWrite("challenge-events.jsonl", "text", _challenge_events_jsonl(challenge_memory), sort_keys=False))
     if spatial:
         writes.append(SnapshotWrite("adaptive/spatial-topology.json", "json", spatial))
         writes.append(SnapshotWrite("adaptive/spatial-regions.json", "json", regions))
     evaluator = dict(adaptive_state.get("evaluator") or {})
     if evaluator:
         writes.append(SnapshotWrite("adaptive/evaluator-results.jsonl", "text", json.dumps(evaluator, ensure_ascii=False, sort_keys=True, default=str) + "\n", sort_keys=False))
+    research = safe_research_payload(dict(adaptive_state.get("research_extensions") or {}))
+    if research:
+        writes.append(SnapshotWrite("research/research-state.json", "json", research))
+        events = [safe_research_payload(dict(item), max_bytes=8192) for item in research.get("events", []) if isinstance(item, dict)]
+        writes.append(SnapshotWrite("research/research-events.jsonl", "text", "".join(json.dumps(event, ensure_ascii=False, sort_keys=True, default=str) + "\n" for event in events), sort_keys=False))
+        writes.append(SnapshotWrite("research/research-metrics.json", "json", dict(research.get("metrics") or adaptive_state.get("research_metrics") or {})))
     return writes
+
+
+def _challenge_events_jsonl(challenge_memory: dict[str, Any]) -> str:
+    items = dict(challenge_memory.get("items") or {})
+    return "".join(json.dumps(item, ensure_ascii=False, sort_keys=True, default=str) + "\n" for item in items.values() if isinstance(item, dict))
 
 
 __all__ = [

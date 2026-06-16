@@ -69,7 +69,7 @@ def load_runtime_environment(project_dir: Path, env_file: Path | None) -> None:
         load_dotenv(candidate, override=False)
     load_layered_config(override=False)
     # Public release default: use a caller-configured OpenAI-compatible upstream.
-    # Do not inject host-app or provider-specific defaults here.
+    # Do not inject private application or provider-specific defaults here.
     os.environ.setdefault("COGEV_LLM_PROVIDER", "litellm")
     os.environ["COGEV_LLM_TEMPERATURE"] = os.environ.get("COGEV_CORE_SELF_EVOLVE_TEMPERATURE", "0.7")
     os.environ.setdefault("COGEV_LLM_TIMEOUT", "900")

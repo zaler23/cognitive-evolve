@@ -2,8 +2,16 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from cognitive_evolve_runtime.candidates.genome import CandidateGenome
-from cognitive_evolve_runtime.contracts.objective_contract import NexusObjectiveContract, NexusObjectiveContractBuilder, NexusProjectObjectiveContract
+from cognitive_evolve_runtime.candidates.genome import CandidateGenome, CandidatePopulation
+from cognitive_evolve_runtime.contracts.objective_contract import (
+    NexusObjectiveContract,
+    NexusObjectiveContractBuilder,
+    NexusProjectObjectiveContract,
+    apply_artifact_policy_to_contract,
+    artifact_policy_contract_conflicts,
+    dynamic_artifact_contract_from_artifact_policy,
+)
+from cognitive_evolve_runtime.nexus.runtime import _rebase_population_contract_hashes
 from cognitive_evolve_runtime.nexus.model_adapter import StructuredModelAdapter
 from cognitive_evolve_runtime.nexus.artifact_contract import (
     contract_requires_adapter,
@@ -38,6 +46,21 @@ def _contract(**overrides) -> NexusObjectiveContract:
         expected_output_forms=["answer"],
         verification_preferences=[],
     )
+
+
+def _default_generic_contract() -> dict:
+    return {
+        "objective": "generic artifact",
+        "artifact_domain_label": "model_defined_artifact",
+        "required_work_product": {"description": "generic object"},
+        "allowed_artifact_shapes": [{"name": "model_defined_object", "required_fields": ["content_or_structured_object"]}],
+        "minimum_concrete_delta": {"observable_signal": "changed material"},
+        "invalid_outputs": ["empty output", "meta commentary only", "restating objective without artifact"],
+        "evaluation_dimensions": [{"name": "objective_fit", "measurement": "structural comparison"}],
+        "comparison_method": {"method": "relative comparison"},
+        "final_gate": {"check": "structural artifact presence plus evidence"},
+        "adapter_requirements": {},
+    }
 
 
 def _candidate(**overrides) -> CandidateGenome:
@@ -154,6 +177,106 @@ def test_fallback_builder_attaches_non_vacuous_dynamic_artifact_contract() -> No
     assert any(shape.get("name") == "design_candidate" for shape in dac.allowed_artifact_shapes)
     assert contract.dynamic_artifact_contract_hash()
     assert contract.to_dict()["dynamic_artifact_contract_hash"] == dac.stable_hash()
+
+
+def test_artifact_policy_compiles_to_dynamic_artifact_contract() -> None:
+    dac = dynamic_artifact_contract_from_artifact_policy(
+        {
+            "machine_artifact_required": True,
+            "artifact_type": "cache_policy",
+            "required_fields": ["admission", "eviction", "parameters", "update_or_state_update"],
+            "artifact_type_aliases": {"cache_policy_json": "cache_policy"},
+            "field_aliases": {"eviction_scoring": "eviction"},
+            "final_requires_clean_schema": True,
+        },
+        objective="evolve a cache policy",
+    )
+
+    assert dac.artifact_domain_label == "cache_policy"
+    assert dac.allowed_artifact_shapes == [
+        {
+            "name": "cache_policy",
+            "required_fields": ["admission", "eviction", "parameters", "update_or_state_update"],
+            "machine_readable_required": True,
+            "final_eligible": True,
+        }
+    ]
+    assert dac.final_gate["requires_clean_schema"] is True
+    assert dac.adapter_requirements["machine_readable_required"] is True
+    assert validate_dynamic_artifact_contract(dac).valid is True
+
+
+def test_builder_overlays_model_contract_with_artifact_policy() -> None:
+    class GenericContractModel:
+        def build_objective_contract(self, *, user_goal, world):
+            return NexusObjectiveContract(
+                original_user_goal=user_goal,
+                normalized_goal="generic model contract",
+                dynamic_artifact_contract=_default_generic_contract(),
+            ).to_dict()
+
+    contract = NexusObjectiveContractBuilder().build_text_contract(
+        user_goal="Evolve cache admission and eviction policy.",
+        packet={"constraints": []},
+        model=GenericContractModel(),
+        artifact_policy_config={
+            "machine_artifact_required": True,
+            "artifact_type": "cache_policy",
+            "required_fields": ["admission", "eviction", "parameters", "update_or_state_update"],
+        },
+    )
+    dac = dynamic_artifact_contract_from(contract=contract)
+
+    assert dac is not None
+    assert dac.artifact_domain_label == "cache_policy"
+    assert dac.allowed_artifact_shapes[0]["name"] == "cache_policy"
+    assert dac.allowed_artifact_shapes[0]["required_fields"] == ["admission", "eviction", "parameters", "update_or_state_update"]
+    assert contract.metadata["artifact_policy_contract_overlay"]["diagnostics"]
+    assert validate_dynamic_artifact_contract(dac).valid is True
+
+
+def test_artifact_policy_contract_conflict_reports_missing_shape_and_fields() -> None:
+    contract = NexusObjectiveContractBuilder().build_text_contract(user_goal="Improve generic artifact.", packet={})
+
+    diagnostics = artifact_policy_contract_conflicts(
+        {
+            "machine_artifact_required": True,
+            "artifact_type": "cache_policy",
+            "required_fields": ["admission", "eviction"],
+        },
+        contract,
+    )
+
+    assert any("artifact_type_missing expected=cache_policy" in item for item in diagnostics)
+    assert any("required_fields_missing=admission,eviction" in item for item in diagnostics)
+
+
+def test_resume_contract_overlay_rebases_restored_candidate_hashes() -> None:
+    contract = NexusObjectiveContractBuilder().build_text_contract(user_goal="Improve generic artifact.", packet={})
+    previous_hash = contract.contract_hash()
+    previous_dynamic_hash = contract.dynamic_artifact_contract_hash()
+    candidate = CandidateGenome(id="C1", artifact={"content": "x"}, contract_hash=previous_hash)
+    population = CandidatePopulation([candidate])
+
+    apply_artifact_policy_to_contract(
+        contract,
+        {
+            "machine_artifact_required": True,
+            "artifact_type": "cache_policy",
+            "required_fields": ["admission", "eviction"],
+        },
+        source="adaptive_state.resume",
+    )
+    _rebase_population_contract_hashes(
+        population,
+        previous_contract_hash=previous_hash,
+        current_contract_hash=contract.contract_hash(),
+        previous_dynamic_artifact_contract_hash=previous_dynamic_hash,
+        current_dynamic_artifact_contract_hash=contract.dynamic_artifact_contract_hash(),
+    )
+
+    assert candidate.contract_hash == contract.contract_hash()
+    assert candidate.metadata["contract_hash_overlay_rebased"]["previous_contract_hash"] == previous_hash
 
 
 def test_contract_from_dict_lifts_nested_dynamic_artifact_contract_to_first_class_field() -> None:

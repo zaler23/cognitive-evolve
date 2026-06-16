@@ -378,7 +378,8 @@ def ensure_enhanced_task_contract(task_dir: Path, prompt: str, *, print_summary:
         "capability_hints": assessment.capability_hints,
     }
     _write_json(contract_path, contract)
-    (intake_dir / "user-input.md").write_text(prompt, encoding="utf-8")
+    _write_prompt_intake(intake_dir / "user-input.md", prompt, force=force)
+    _write_prompt_intake(intake_dir / "original-user-input.md", prompt, force=force)
     (intake_dir / "enhanced-task-contract.md").write_text(_contract_markdown(contract), encoding="utf-8")
     _write_json(intake_dir / "external-questioning-disabled.json", {"external_question_count": 0, "policy": "nexus_one_shot"})
     _write_json(intake_dir / "internal-resolution-ledger.json", {"items": assessment.hypotheses, "policy": "nexus_internal_resolution"})
@@ -394,6 +395,10 @@ def _write_current_task_artifacts(task_dir: Path, contract: dict[str, Any]) -> N
     objective = str(contract.get("objective") or contract.get("prompt") or "Nexus task")
     route = contract.get("route", {}) if isinstance(contract.get("route"), dict) else {}
     assessment = contract.get("semantic_assessment", {}) if isinstance(contract.get("semantic_assessment"), dict) else {}
+    route_summary = f"# Nexus Route Summary\n\nTask type: `{assessment.get('task_type')}`.\nRoute: `{route.get('level')}` / `{route.get('profile')}`.\n"
+    route_summary_path = task_dir / "intake" / "route-summary.md"
+    route_summary_path.parent.mkdir(parents=True, exist_ok=True)
+    route_summary_path.write_text(route_summary, encoding="utf-8")
     artifact_texts = {
         "problem-contract.md": f"# Problem Contract\n\n## Objective\n{objective}\n\n## Runtime\nNexus-only, one-shot, no external mid-run questions.\n",
         "research-brief.md": f"# Research Brief\n\nTask type: `{assessment.get('task_type')}`.\nRoute: `{route.get('level')}` / `{route.get('profile')}`.\n",
@@ -408,7 +413,38 @@ def _write_current_task_artifacts(task_dir: Path, contract: dict[str, Any]) -> N
     for rel, text in artifact_texts.items():
         path = task_dir / rel
         path.parent.mkdir(parents=True, exist_ok=True)
+        if rel == "research-brief.md" and _is_user_authored_research_brief(path):
+            continue
         path.write_text(text, encoding="utf-8")
+
+
+def _write_prompt_intake(path: Path, prompt: str, *, force: bool) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    incoming = str(prompt or "")
+    if not path.exists():
+        path.write_text(incoming, encoding="utf-8")
+        return
+    existing = path.read_text(encoding="utf-8")
+    if not existing.strip():
+        path.write_text(incoming, encoding="utf-8")
+        return
+    # Preserve a previously captured full task prompt if a later intake pass is
+    # given a short route summary or scaffold.  The newer short text is still
+    # available in enhanced-task-contract.json / route-summary.md.
+    if len(existing.strip()) > max(500, len(incoming.strip()) * 2):
+        return
+    if force or len(incoming.strip()) >= len(existing.strip()):
+        path.write_text(incoming, encoding="utf-8")
+
+
+def _is_user_authored_research_brief(path: Path) -> bool:
+    if not path.exists():
+        return False
+    text = path.read_text(encoding="utf-8").strip()
+    if not text:
+        return False
+    generated_shape = text.startswith("# Research Brief") and "Task type:" in text[:240] and "Route:" in text[:240]
+    return not (generated_shape and len(text) < 500)
 
 def enhance_request(prompt: str, *, path: str | None = None, print_json: bool = False, model: NexusClassifierProtocol | None = None) -> int:
     task_dir = Path(path) if path else Path.cwd()

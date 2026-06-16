@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome, candidate_from_dict
+from cognitive_evolve_runtime.evaluators.evidence import evidence_final_blocked, evidence_parent_blocked, evidence_terminal_reject, has_repair_value, latest_evidence_record
 from cognitive_evolve_runtime.nexus._serde import coerce_dict, coerce_str_list, utc_now
 from cognitive_evolve_runtime.nexus.adaptive_signals import in_bottom_band, in_top_band, observed_frontier_signal, score
 from cognitive_evolve_runtime.nexus.obligations import HARD_EVIDENCE_FAILURES, HARD_PROOF_FAILURES, candidate_has_obligation_or_evidence_delta
@@ -136,10 +137,19 @@ class ArchiveManager:
             )
             if decision is not None:
                 decisions[candidate.id] = decision
+            evidence = latest_evidence_record(candidate)
+            evidence_blocks_final = evidence_final_blocked(candidate)
+            evidence_blocks_parent = evidence_parent_blocked(candidate)
+            evidence_repairable = has_repair_value(candidate)
             if current_fate in TERMINAL_FAILURE_FATES:
                 fate = current_fate
-            elif _candidate_verification_blocks_final(candidate):
-                fate = CandidateFate.INCUBATING.value if decision is not None and decision.incubating else CandidateFate.DORMANT.value
+            elif evidence_terminal_reject(candidate) and not evidence_repairable:
+                fate = CandidateFate.FAILED.value
+            elif _candidate_verification_blocks_final(candidate) or evidence_blocks_final:
+                if evidence is not None and evidence_repairable and not evidence_blocks_parent:
+                    fate = CandidateFate.INCUBATING.value if decision is None or decision.incubating else CandidateFate.DORMANT.value
+                else:
+                    fate = CandidateFate.INCUBATING.value if decision is not None and decision.incubating else CandidateFate.DORMANT.value
             elif candidate.id == best_answer or (score(candidate, "answer_likelihood") > 0 and in_top_band(candidate, candidates, "answer_likelihood") and not candidate.metadata.get("search_seed_not_final")):
                 fate = CandidateFate.ELITE.value
             elif candidate.id in auxiliary_ids or candidate.multihead_scores.get("auxiliary_value", 0.0) > max(candidate.multihead_scores.get("answer_likelihood", 0.0), candidate.multihead_scores.get("objective_alignment", 0.0)):
@@ -149,12 +159,12 @@ class ArchiveManager:
             elif candidate.id in edge_ids or observed_frontier_signal(candidate, candidates):
                 fate = CandidateFate.DORMANT.value
             elif candidate.failure_lessons or (in_bottom_band(candidate, candidates, "objective_alignment") and not candidate_has_obligation_or_evidence_delta(candidate)):
-                fate = CandidateFate.CULLED.value
+                fate = CandidateFate.INCUBATING.value if evidence_repairable else CandidateFate.CULLED.value
             else:
                 fate = CandidateFate.ACTIVE.value
             assignment = FateAssignment(candidate.id, fate)
-            if _candidate_verification_blocks_final(candidate):
-                assignment.failure_signature = _verification_failure_signature(candidate)
+            if _candidate_verification_blocks_final(candidate) or evidence_blocks_final:
+                assignment.failure_signature = _verification_failure_signature(candidate) if _candidate_verification_blocks_final(candidate) else _evidence_failure_signature(candidate)
                 assignment.future_reactivation_condition = (
                     (decision.reactivation_condition or "repair_lane_requires_concrete_formal_artifact_obligation_delta_or_verified_evidence")
                     if fate == CandidateFate.INCUBATING.value and decision is not None
@@ -547,3 +557,11 @@ __all__ = [
     "LatentParetoIntentArchive",
     "TerminalCandidateTombstone",
 ]
+
+
+def _evidence_failure_signature(candidate: CandidateGenome) -> str:
+    evidence = latest_evidence_record(candidate)
+    if evidence is None:
+        return "evidence_absent"
+    challenge_ids = ",".join(evidence.emitted_challenge_ids[:4])
+    return f"evidence:{evidence.stage}:{evidence.source}:{challenge_ids}"

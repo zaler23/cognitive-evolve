@@ -29,6 +29,25 @@ def test_adaptive_state_roundtrip_and_old_checkpoint_default() -> None:
     assert NexusCheckpoint.from_dict({"round": 1, "max_rounds": 2, "population": {}, "archives": {}}).adaptive_state == {}
 
 
+def test_adaptive_state_reads_old_challenge_bank_snapshot_as_challenge_memory() -> None:
+    restored = AdaptiveRuntimeState.from_dict(
+        {
+            "challenge_bank": {
+                "cases": {
+                    "case-old": {
+                        "id": "case-old",
+                        "summary": "old snapshot case",
+                        "payload": {"candidate_id": "C1"},
+                    }
+                }
+            }
+        }
+    )
+
+    assert restored.challenge_memory is not None
+    assert "case-old" in restored.challenge_memory["cases"]
+
+
 def test_checkpoint_persists_adaptive_state() -> None:
     population = CandidatePopulation([CandidateGenome(id="C1")])
     checkpoint = build_checkpoint_state(
@@ -116,8 +135,14 @@ def test_runtime_writes_adaptive_artifacts_when_enabled(tmp_path: Path) -> None:
     assert (adaptive_dir / "adaptive-state.json").exists()
     assert (adaptive_dir / "spatial-topology.json").exists()
     assert (adaptive_dir / "final-certificate.json").exists()
+    assert (adaptive_dir / "final-projection.json").exists()
+    final_projection = json.loads((adaptive_dir / "final-projection.json").read_text(encoding="utf-8"))
+    assert final_projection["status"] in {"best_current", "no_candidate", "solved"}
+    assert "objective_solved" in final_projection
+    assert (tmp_path / "challenge-memory.json").exists()
     checkpoint = json.loads((tmp_path / "checkpoint.json").read_text(encoding="utf-8"))
     assert checkpoint["adaptive_state"]["enabled_features"]["spatial_observe"] is True
+    assert checkpoint["adaptive_state"]["enabled_features"]["evidence_control_plane"] is True
 
 
 def test_task_adaptive_config_sets_nested_evaluator_cwd(tmp_path: Path) -> None:
@@ -137,3 +162,51 @@ def test_task_adaptive_config_sets_nested_evaluator_cwd(tmp_path: Path) -> None:
     assert config["enabled"] is True
     assert config["evaluator"]["command"] == "python3 evaluator.py {candidate_path}"
     assert config["evaluator"]["cwd"] == str(tmp_path)
+
+
+def test_adaptive_state_persists_config_for_resume() -> None:
+    from cognitive_evolve_runtime.nexus.adaptive import AdaptiveRuntimeController
+
+    controller = AdaptiveRuntimeController.from_sources(
+        explicit={
+            "enabled": True,
+            "evaluator": {"enabled": True, "command": "python evaluator.py {candidate_path}", "timeout_seconds": 7},
+            "evidence": {
+                "machine_artifact_required": True,
+                "artifact_type": "cache_policy",
+                "artifact_type_aliases": {"cache_policy_json": "cache_policy"},
+                "required_fields": ["admission"],
+            },
+            "spatial": {"enabled": True, "mode": "observe"},
+        }
+    )
+    payload = controller.to_dict()
+
+    restored = AdaptiveRuntimeController.from_sources(restored_state=payload)
+
+    assert restored.enabled is True
+    assert restored.evaluator_enabled is True
+    assert restored.config.evaluator["command"] == "python evaluator.py {candidate_path}"
+    assert restored.config.evidence["artifact_type"] == "cache_policy"
+    assert restored.config.evidence["artifact_type_aliases"]["cache_policy_json"] == "cache_policy"
+    assert restored.config.spatial.enabled is True
+    assert restored.to_dict()["enabled_features"]["evidence_control_plane"] is True
+
+
+def test_adaptive_resume_explicit_config_overrides_restored_config() -> None:
+    from cognitive_evolve_runtime.nexus.adaptive import AdaptiveRuntimeController
+
+    restored = AdaptiveRuntimeController.from_sources(
+        restored_state={
+            "config": {
+                "enabled": True,
+                "evaluator": {"enabled": True, "command": "old {candidate_path}"},
+                "evidence": {"artifact_type": "old_type"},
+            }
+        },
+        explicit={"evaluator": {"command": "new {candidate_path}"}, "evidence": {"artifact_type": "new_type"}},
+    )
+
+    assert restored.config.evaluator["command"] == "new {candidate_path}"
+    assert restored.config.evidence["artifact_type"] == "new_type"
+    assert restored.evaluator_enabled is True

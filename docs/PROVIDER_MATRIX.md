@@ -9,4 +9,4 @@ CognitiveEvolve requires an explicit model provider for production model calls. 
 | `fixture` | Deterministic tests only | `COGEV_LLM_PROVIDER=fixture`, `COGEV_LLM_FIXTURE=tests/fixtures/llm_fixture.json` | Test-only |
 | Missing/failed provider | Error path | No valid provider configuration or exhausted retries | Explicit failure / partial state |
 
-The public provider boundary is `LLMProviderInterface`; implementations must remain generic provider adapters, not host-app relays. Concurrency and budget settings are controlled by `COGEV_LLM_MAX_CONCURRENT`, `COGEV_LLM_RPM`, `COGEV_LLM_TPM`, and stage-budget settings.
+The public provider boundary is `LLMProviderInterface`; implementations must remain generic provider adapters, not private application relays. Concurrency and budget settings are controlled by `COGEV_LLM_MAX_CONCURRENT`, `COGEV_LLM_RPM`, `COGEV_LLM_TPM`, and stage-budget settings.
