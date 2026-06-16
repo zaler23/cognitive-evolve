@@ -26,6 +26,7 @@ class NexusCheckpoint:
     mode: str = ""
     budget_history: list[dict[str, Any]] = field(default_factory=list)
     budget: dict[str, Any] = field(default_factory=dict)
+    adaptive_state: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=utc_now)
 
     def to_dict(self) -> dict[str, Any]:
@@ -46,6 +47,7 @@ class NexusCheckpoint:
             mode=str(data.get("mode") or ""),
             budget_history=[dict(item) for item in data.get("budget_history", []) if isinstance(item, dict)],
             budget=coerce_dict(data.get("budget")),
+            adaptive_state=coerce_dict(data.get("adaptive_state")),
             created_at=str(data.get("created_at") or utc_now()),
         )
 
@@ -94,6 +96,7 @@ class CheckpointStore:
             "diagnosis": SearchDiagnosis.from_dict(checkpoint.diagnosis) if checkpoint.diagnosis else SearchDiagnosis(),
             "budget_history": list(checkpoint.budget_history),
             "budget": dict(checkpoint.budget),
+            "adaptive_state": dict(checkpoint.adaptive_state),
             "contract": checkpoint.contract,
             "world": checkpoint.world,
             "mode": checkpoint.mode,
@@ -114,6 +117,7 @@ class CheckpointStore:
         mode: str = "",
         budget_history: list[dict[str, Any]] | None = None,
         budget: dict[str, Any] | None = None,
+        adaptive_state: dict[str, Any] | None = None,
         allow_progress_round_repair: bool = False,
     ) -> NexusCheckpoint:
         checkpoint = build_checkpoint_state(
@@ -129,6 +133,7 @@ class CheckpointStore:
             mode=mode,
             budget_history=budget_history,
             budget=budget,
+            adaptive_state=adaptive_state,
             allow_progress_round_repair=allow_progress_round_repair,
         )
         self.save(checkpoint, allow_progress_round_repair=allow_progress_round_repair)
@@ -149,6 +154,7 @@ def build_checkpoint_state(
     mode: str = "",
     budget_history: list[dict[str, Any]] | None = None,
     budget: dict[str, Any] | None = None,
+    adaptive_state: dict[str, Any] | None = None,
     allow_progress_round_repair: bool = False,
 ) -> NexusCheckpoint:
     checkpoint = NexusCheckpoint(
@@ -164,6 +170,7 @@ def build_checkpoint_state(
         mode=mode,
         budget_history=budget_history or [],
         budget=coerce_dict(budget),
+        adaptive_state=coerce_dict(adaptive_state),
     )
     checkpoint = _repair_progress_event_round(checkpoint) if allow_progress_round_repair else checkpoint
     if checkpoint.progress_event:

@@ -94,6 +94,30 @@ def llm_status() -> dict[str, Any]:
     }
 
 
+def llm_public_status(status: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return LLM status safe for logs, reports, and CLI output.
+
+    ``llm_status`` intentionally keeps legacy boolean names such as
+    ``api_key_configured`` for in-process compatibility.  Public diagnostics do
+    not need secret-shaped keys, and avoiding those names prevents downstream
+    log/report sinks from becoming accidental credential carriers.
+    """
+
+    source = dict(status if status is not None else llm_status())
+    public: dict[str, Any] = {}
+    for key, value in source.items():
+        if key == "api_key":
+            continue
+        if key == "api_key_configured":
+            public["credential_configured"] = bool(value)
+            continue
+        if key == "api_key_placeholder":
+            public["credential_placeholder"] = bool(value)
+            continue
+        public[key] = value
+    return public
+
+
 def require_llm_config() -> dict[str, Any]:
     status = llm_status()
     if not status["configured"]:

@@ -4,9 +4,10 @@ import json
 from pathlib import Path
 from typing import Any
 
+from ..core.redaction import redact
 from .inflight import provider_inflight_status
 from .budget import budget_usd
-from .env import llm_status
+from .env import llm_public_status
 from .governor import llm_governor_status
 from .session import current_llm_session
 from .utils import cli_logger, now_iso, write_json
@@ -56,7 +57,7 @@ def _stage_usage(existing_events: list[Any], new_events: list[dict[str, Any]]) -
 
 
 def write_llm_runtime_report(task_dir: Path) -> None:
-    status = llm_status()
+    status = llm_public_status()
     existing_path = task_dir / "evaluations" / "llm-runtime-report.json"
     existing: dict[str, Any] = {}
     if existing_path.exists():
@@ -98,8 +99,8 @@ def write_llm_runtime_report(task_dir: Path) -> None:
         "model": status.get("model"),
         "test_provider_only": status.get("test_provider_only", False),
         "api_base": status.get("api_base", ""),
-        "api_key_configured": status.get("api_key_configured", False),
-        "api_key_placeholder": status.get("api_key_placeholder", False),
+        "credential_configured": status.get("credential_configured", False),
+        "credential_placeholder": status.get("credential_placeholder", False),
         "no_llm_fallback": True,
         "event_count": int(existing.get("event_count") or 0) + len(new_events),
         "request_types": sorted(existing_request_types | current_request_types),
@@ -120,8 +121,8 @@ def write_llm_runtime_report(task_dir: Path) -> None:
         f"- Model: `{report['model']}`\n"
         f"- Test provider only: `{str(report['test_provider_only']).lower()}`\n"
         f"- API base override: `{report.get('api_base', '')}`\n"
-        f"- API key configured: `{str(report.get('api_key_configured', False)).lower()}`\n"
-        f"- API key placeholder: `{str(report.get('api_key_placeholder', False)).lower()}`\n"
+        f"- Credential configured: `{str(report.get('credential_configured', False)).lower()}`\n"
+        f"- Credential placeholder: `{str(report.get('credential_placeholder', False)).lower()}`\n"
         "- No no-LLM fallback: `true`\n"
         f"- LLM event count: `{report['event_count']}`\n"
         f"- Request types: `{', '.join(report['request_types'])}`\n"
@@ -135,9 +136,9 @@ def write_llm_runtime_report(task_dir: Path) -> None:
 
 
 def log_cli_json(event: str, payload: dict[str, Any]) -> None:
-    cli_logger().info(json.dumps({"event": event, **payload}, ensure_ascii=False))
+    cli_logger().info(json.dumps(redact({"event": event, **payload}), ensure_ascii=False))
 
 
 def llm_status_cli() -> int:
-    log_cli_json("llm.status", llm_status())
+    log_cli_json("llm.status", llm_public_status())
     return 0

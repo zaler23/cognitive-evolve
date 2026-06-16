@@ -110,6 +110,7 @@ def _notify_observer(
     progress_event: dict[str, Any],
     budget_history: list[dict[str, Any]],
     error: dict[str, Any] | None = None,
+    adaptive_state: dict[str, Any] | None = None,
 ) -> None:
     if observer is None:
         return
@@ -124,6 +125,7 @@ def _notify_observer(
             "progress_event": progress_event,
             "budget_history": list(budget_history),
             "error": error,
+            "adaptive_state": dict(adaptive_state or {}),
         }
     )
 

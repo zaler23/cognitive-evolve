@@ -10,7 +10,12 @@ from pathlib import Path
 from typing import Any
 
 from cognitive_evolve_runtime.archives.manager import ArchiveManager
-from cognitive_evolve_runtime.contracts.objective_contract import NexusObjectiveContract, NexusObjectiveContractBuilder, NexusProjectObjectiveContract
+from cognitive_evolve_runtime.contracts.objective_contract import (
+    NexusObjectiveContract,
+    NexusObjectiveContractBuilder,
+    NexusProjectObjectiveContract,
+    apply_artifact_policy_to_contract,
+)
 from cognitive_evolve_runtime.inputs.project_map import ProjectWorldModel
 from cognitive_evolve_runtime.inputs.project_snapshot import ProjectSnapshot
 from cognitive_evolve_runtime.inputs.text_packet import TextInputPacket, TextWorldModel
@@ -110,13 +115,21 @@ class NexusRuntime:
         stop_policy: str = "llm_after_minimum",
         min_rounds_before_stop: int = 1,
         runtime_metadata: dict[str, Any] | None = None,
+        adaptive_config: dict[str, Any] | None = None,
         cancellation_callback: Any | None = None,
     ) -> NexusRunResult:
         fallback_token = start_fallback_capture()
         packet = TextInputPacket.from_text(text)
         world = _build_text_world_model(packet, model=self.model)
         goal = user_goal or packet.raw_text[:500] or "text evolution task"
-        contract = self.contract_builder.build_text_contract(user_goal=goal, packet=packet, world=world, model=self.model)
+        artifact_policy_config = _artifact_policy_config_from_adaptive_config(adaptive_config)
+        contract = self.contract_builder.build_text_contract(
+            user_goal=goal,
+            packet=packet,
+            world=world,
+            model=self.model,
+            artifact_policy_config=artifact_policy_config,
+        )
         policy = self.policy_builder.build(contract=contract, world=world, model=self.model)
         budget = budget or evolution_budget_from_params(
             max_rounds=max_rounds,
@@ -141,6 +154,7 @@ class NexusRuntime:
             model=self.model,
             observer=observer,
             cancellation_callback=cancellation_callback,
+            adaptive_config=adaptive_config,
         )
         run = NexusRunResult(
             mode="text",
@@ -172,12 +186,20 @@ class NexusRuntime:
         budget: EvolutionBudget | None = None,
         stop_policy: str = "llm_after_minimum",
         min_rounds_before_stop: int = 1,
+        adaptive_config: dict[str, Any] | None = None,
         cancellation_callback: Any | None = None,
     ) -> NexusRunResult:
         fallback_token = start_fallback_capture()
         snapshot = ProjectSnapshot.from_path(root)
         world = ProjectWorldModel.from_snapshot(snapshot, objective=user_goal)
-        contract = self.contract_builder.build_project_contract(user_goal=user_goal, snapshot=snapshot, world=world, model=self.model)
+        artifact_policy_config = _artifact_policy_config_from_adaptive_config(adaptive_config)
+        contract = self.contract_builder.build_project_contract(
+            user_goal=user_goal,
+            snapshot=snapshot,
+            world=world,
+            model=self.model,
+            artifact_policy_config=artifact_policy_config,
+        )
         policy = self.policy_builder.build(contract=contract, world=world, model=self.model)
         budget = budget or evolution_budget_from_params(
             max_rounds=max_rounds,
@@ -219,6 +241,7 @@ class NexusRuntime:
             observer=observer,
             cancellation_callback=cancellation_callback,
             offspring_verifier=verify_offspring,
+            adaptive_config=adaptive_config,
         )
         run = NexusRunResult(
             mode="project",
@@ -251,6 +274,18 @@ class NexusRuntime:
         archives = restored["archives"]
         policy = restored["policy"]
         contract = _contract_from_checkpoint(mode, restored.get("contract") or {})
+        restored_artifact_policy_config = _artifact_policy_config_from_adaptive_state(restored.get("adaptive_state") or {})
+        if restored_artifact_policy_config:
+            previous_contract_hash = contract.contract_hash()
+            previous_dynamic_hash = contract.dynamic_artifact_contract_hash()
+            apply_artifact_policy_to_contract(contract, restored_artifact_policy_config, source="adaptive_state.resume")
+            _rebase_population_contract_hashes(
+                population,
+                previous_contract_hash=previous_contract_hash,
+                current_contract_hash=contract.contract_hash(),
+                previous_dynamic_artifact_contract_hash=previous_dynamic_hash,
+                current_dynamic_artifact_contract_hash=contract.dynamic_artifact_contract_hash(),
+            )
         world = _world_from_checkpoint(mode, restored.get("world") or {})
         verification_summaries: list[dict[str, Any]] = []
         offspring_verifier = None
@@ -284,7 +319,18 @@ class NexusRuntime:
         budget.max_rounds = target_rounds
         budget.history = list(restored.get("budget_history") or [])
         observer = self._live_observer(mode=mode, contract=contract, world=world, max_rounds=target_rounds, budget=budget.to_dict())
-        result = evolve_once(population=population, archives=archives, policy=policy, contract=contract, world=world, budget=budget, model=self.model, observer=observer, offspring_verifier=offspring_verifier)
+        result = evolve_once(
+            population=population,
+            archives=archives,
+            policy=policy,
+            contract=contract,
+            world=world,
+            budget=budget,
+            model=self.model,
+            observer=observer,
+            offspring_verifier=offspring_verifier,
+            adaptive_state=restored.get("adaptive_state") or {},
+        )
         world_payload = _world_to_dict_with_latent_metadata(world, contract)
         run = NexusRunResult(
             mode=mode,
@@ -421,6 +467,52 @@ def _contract_from_checkpoint(mode: str, data: dict[str, Any]) -> NexusObjective
     if mode == "project" or any(key in data for key in ["allowed_patch_scope", "implementation_files", "test_contracts"]):
         return NexusProjectObjectiveContract.from_dict(data)
     return NexusObjectiveContract.from_dict(data)
+
+
+def _artifact_policy_config_from_adaptive_config(adaptive_config: dict[str, Any] | None) -> dict[str, Any]:
+    data = dict(adaptive_config or {})
+    evidence = data.get("evidence") if isinstance(data.get("evidence"), dict) else {}
+    return dict(evidence or {})
+
+
+def _artifact_policy_config_from_adaptive_state(adaptive_state: dict[str, Any]) -> dict[str, Any]:
+    state = dict(adaptive_state or {})
+    config = state.get("config") if isinstance(state.get("config"), dict) else {}
+    evidence = config.get("evidence") if isinstance(config.get("evidence"), dict) else {}
+    return dict(evidence or {})
+
+
+def _rebase_population_contract_hashes(
+    population: Any,
+    *,
+    previous_contract_hash: str,
+    current_contract_hash: str,
+    previous_dynamic_artifact_contract_hash: str,
+    current_dynamic_artifact_contract_hash: str,
+) -> None:
+    """Keep resumed candidates aligned with a policy overlay applied in memory.
+
+    Historical checkpoint bytes are not rewritten.  Only restored candidates that
+    clearly point at the pre-overlay contract hash are rebased so future
+    verifier checks do not turn an approved ArtifactPolicy overlay into a stale
+    contract failure for the whole population.
+    """
+
+    if not previous_contract_hash or previous_contract_hash == current_contract_hash:
+        return
+    for candidate in getattr(population, "candidates", []) or []:
+        if getattr(candidate, "contract_hash", "") != previous_contract_hash:
+            continue
+        metadata = dict(getattr(candidate, "metadata", {}) or {})
+        metadata["contract_hash_overlay_rebased"] = {
+            "previous_contract_hash": previous_contract_hash,
+            "current_contract_hash": current_contract_hash,
+            "previous_dynamic_artifact_contract_hash": previous_dynamic_artifact_contract_hash,
+            "current_dynamic_artifact_contract_hash": current_dynamic_artifact_contract_hash,
+            "reason": "adaptive_artifact_policy_overlay_on_resume",
+        }
+        candidate.metadata = metadata
+        candidate.contract_hash = current_contract_hash
 
 
 def _world_from_checkpoint(mode: str, data: dict[str, Any]) -> Any:

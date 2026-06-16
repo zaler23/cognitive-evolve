@@ -11,9 +11,10 @@ from .api.config import load_service_env
 from .api.server import serve as api_serve, status_cli as api_status_cli
 from .config_templates import available_env_profiles, env_template_info, render_env_template, write_env_template
 from .artifacts.task_files import check_task, list_tasks, new_task, _slug_from_prompt
+from .core.redaction import redact_text
 from .doctor import doctor
 from .llm.env import LLMConfigurationError, LLMResponseError, require_llm_config
-from .llm import llm_json, llm_status_cli
+from .llm import llm_json, llm_public_status, llm_status_cli
 from .nexus.evaluation import native_eval_run, native_optimize_run
 from .nexus.model_adapter import StructuredModelAdapter
 from .nexus.semantics import (
@@ -46,7 +47,7 @@ def config_init(profile: str = "local", output: str = ".env", *, force: bool = F
     print(f"Env template written: {path}")
     print(f"profile: {info.profile}")
     print(f"description: {info.description}")
-    print("boundary: generic model provider only; no local host-app relay configuration")
+    print("boundary: generic model provider only; no local private application relay configuration")
     return 0
 
 def list_capabilities() -> int:
@@ -110,9 +111,10 @@ def llm_smoke() -> int:
             schema_hint={"type": "object", "properties": {"ok": {"type": "boolean"}}, "required": ["ok"]},
         )
     except Exception as exc:
-        print(f"llm.smoke failed: {exc}", file=sys.stderr)
+        print(redact_text(f"llm.smoke failed: {exc}"), file=sys.stderr)
         return 1
-    print(json.dumps({"event": "llm.smoke", "ok": bool(response.get("ok", True)), "provider": response.get("provider"), "model": response.get("model")}, ensure_ascii=False))
+    status = llm_public_status()
+    print(json.dumps({"event": "llm.smoke", "ok": bool(response.get("ok", True)), "provider": status.get("provider"), "model": status.get("model")}, ensure_ascii=False))
     return 0
 
 

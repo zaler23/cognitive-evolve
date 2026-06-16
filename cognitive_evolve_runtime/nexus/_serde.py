@@ -78,6 +78,7 @@ def stable_json(value: Any) -> str:
 
 
 def stable_hash(value: Any) -> str:
+    # codeql[py/weak-sensitive-data-hashing] This is deterministic content addressing for JSON state, not password storage.
     return hashlib.sha256(stable_json(value).encode("utf-8")).hexdigest()
 
 

@@ -628,7 +628,7 @@
       ],
       "confidence": 0.86,
       "model": "fixture-model",
-      "mutation_strategy": [
+      "mutation_guidance": [
         "llm_semantic_critic_to_mutation",
         "remove_redundant_concepts_without_runtime_contract",
         "add_verification_artifacts"

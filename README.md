@@ -75,7 +75,7 @@ export COGEV_LLM_PROVIDER=fixture
 export COGEV_LLM_FIXTURE="$PWD/tests/fixtures/llm_fixture.json"
 ```
 
-For real model use, configure a generic provider explicitly. Runtime code talks to `llm.provider_interface.LLMProviderInterface`; supported public modes are `litellm`, `direct_http` for OpenAI-compatible `/v1/chat/completions`, and deterministic `fixture` for tests. Tests default to hermetic mode and never read user-home `.env` files. The public project does not ship a host-app model relay or provider-specific local integration.
+For real model use, configure a generic provider explicitly. Runtime code talks to `llm.provider_interface.LLMProviderInterface`; supported public modes are `litellm`, `direct_http` for OpenAI-compatible `/v1/chat/completions`, and deterministic `fixture` for tests. Tests default to hermetic mode and never read user-home `.env` files. The public project does not ship a private application model relay or provider-specific local integration.
 
 ```dotenv
 COGEV_LLM_PROVIDER=litellm
@@ -163,6 +163,12 @@ nexus-runtime/checkpoint.json
 nexus-runtime/events.jsonl
 nexus-runtime/candidate-journal.jsonl
 nexus-runtime/rounds/round-*.json
+nexus-runtime/adaptive/adaptive-state.json
+nexus-runtime/adaptive/final-certificate.json
+nexus-runtime/adaptive/final-projection.json
+nexus-runtime/adaptive/spatial-topology.json
+nexus-runtime/challenge-memory.json
+nexus-runtime/challenge-events.jsonl
 nexus-runtime/nexus-runtime-self-check.json
 nexus-runtime/nexus-runtime-self-check.md
 evaluations/native-eval-report.json
@@ -176,6 +182,56 @@ Fallbacks are auditable runtime events, not silent logger-only behavior.
 `evolution.fallback_event_count`; `nexus-runtime/events.jsonl` stores the same
 sanitized fallback event summaries. These summaries redact local paths and
 secret-shaped text and do not include long prompts or provider credentials.
+
+The optional Adaptive Evidence Layer is disabled unless configured by
+environment, `.cogev/config.yaml`, or a task-local `task.yaml`. Its public
+surface is evidence-oriented: `ArtifactPolicy`, `EvidenceRecord`,
+`ChallengeMemory`, `SearchPressure`, optional external evaluator feedback,
+observe/advisory spatial telemetry, checkpointable adaptive state, clean final
+projection, and a final certificate.
+
+The Evidence Control Plane keeps search and finality separate. Artifact policy
+decides whether a candidate may be probed or finalized; evidence records update
+search value and repair value; challenge memory turns failures and boundaries
+into search pressure for the next mutation round. A configured external
+evaluator is treated as objective evidence, while model self-claims such as
+"verified" do not by themselves solve the objective. Machine-artifact tasks can
+set `adaptive.evidence.machine_artifact_required=true`; natural-language
+fallback artifacts may then be probed but are not final-eligible until re-emitted
+as clean machine-readable artifacts. The runtime turns configured artifact
+policy into both a bounded prompt hint and the Nexus dynamic artifact contract,
+so model-backed mutation and verifier gates see the same exact `artifact_type`,
+required fields, forbidden aliases, and optional domain vocabulary. If a resumed
+checkpoint predates that binding, the overlay is applied in memory for future
+rounds and recorded in metadata rather than rewriting historical snapshots.
+Artifact normalization, semantic-drift diagnostics, and
+score-component diagnostics become challenge-memory cases rather than final
+claims. When no candidate is certified solved, the final projection still emits
+a best-current candidate when one is available, and its JSON projection preserves
+structured machine artifacts instead of string-wrapping them.
+
+Adaptive research extensions are implemented as an internal registry under
+`AdaptiveRuntimeController`, not as a second runtime or a parallel research
+control plane. Extensions emit `ResearchSignal` objects that are applied through
+one deterministic applicator with explicit modes: `observe` keeps only metrics
+and warnings, `advisory` allows search pressure and parent-selection advisory
+without writing extension evidence, and `active` is the only mode that may write
+extension evidence records or blocking final-gate directives. Extensions never
+own candidate fate, challenge truth, archive state, or final solved authority.
+Spatial research selection reuses the existing adaptive spatial population
+state, so there is only one candidate-coordinate authority. The optional
+research snapshot is consolidated under `nexus-runtime/research/` as
+`research-state.json`, `research-events.jsonl`, and `research-metrics.json`.
+
+Research extension authority boundaries are fixed: `NexusRuntime` orchestrates,
+`AdaptiveRuntimeController` owns adaptive/research entry, `ArchiveManager` owns
+candidate fate, `ChallengeMemory` owns challenge relations, `EvidenceRecord`
+helpers own candidate evidence, `ParentSelector` consumes advisory, and
+`FinalProjection` owns user-facing output. Pattern memory, immune/necropsy,
+budget backpressure, MDL compression, parameter sweep, chaos, BFT quorum,
+context pruning, and contract refinement are advisory or gate-directive
+extensions only; none can silently mutate the objective contract or mark an
+objective solved without clean artifact and high-authority evidence.
 
 ## Testing and validation
 

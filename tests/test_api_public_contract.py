@@ -11,6 +11,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from fastapi import HTTPException
 
 from cognitive_evolve_runtime.api.jobs import JobQueue, _get_job, _job_public, _set_job, _task_dir_for_request
 from cognitive_evolve_runtime.api.payloads import _completion_payload, _nexus_verification_passed
@@ -268,6 +269,23 @@ def test_api_status_warns_when_auth_disabled(monkeypatch: pytest.MonkeyPatch, tm
 
     assert status["auth_required"] is False
     assert status["auth_warning"] == "authentication_disabled_on_non_loopback_host"
+
+
+def test_job_artifact_listing_stays_under_api_task_root(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    from cognitive_evolve_runtime.api.openai_compat import _safe_job_artifact_root
+
+    api_root = tmp_path / "api-runs"
+    safe_root = api_root / "job-safe"
+    unsafe_root = tmp_path / "outside"
+    safe_root.mkdir(parents=True)
+    unsafe_root.mkdir()
+    monkeypatch.setenv("COGEV_API_TASK_ROOT", str(api_root))
+    monkeypatch.setenv("COGEV_RUNTIME_ROOT", str(tmp_path / "runtime"))
+
+    assert _safe_job_artifact_root({"artifact_root": str(safe_root)}) == safe_root.resolve()
+    with pytest.raises(HTTPException) as exc:
+        _safe_job_artifact_root({"artifact_root": str(unsafe_root)})
+    assert exc.value.status_code == 403
 
 
 def test_stream_engine_chunks_final_and_error_paths(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:

@@ -541,18 +541,86 @@ class NexusProjectObjectiveContract(NexusObjectiveContract):
         )
 
 
+@dataclass(frozen=True)
+class _ArtifactPolicyView:
+    machine_readable_required: bool = False
+    allow_text_fallback: bool = True
+    allow_refold_for_probe: bool = True
+    allow_refold_for_final: bool = False
+    final_requires_certificate: bool = False
+    projection_required: bool = True
+    artifact_type: str = ""
+    artifact_type_aliases: dict[str, str] = field(default_factory=dict)
+    field_aliases: dict[str, str] = field(default_factory=dict)
+    required_fields: list[str] = field(default_factory=list)
+    final_requires_clean_schema: bool = True
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_any(cls, data: Any) -> "_ArtifactPolicyView":
+        if isinstance(data, cls):
+            return data
+        if data is not None and not isinstance(data, dict):
+            return cls(
+                machine_readable_required=_truthy(getattr(data, "machine_readable_required", False)),
+                allow_text_fallback=_truthy(getattr(data, "allow_text_fallback", True)),
+                allow_refold_for_probe=_truthy(getattr(data, "allow_refold_for_probe", True)),
+                allow_refold_for_final=_truthy(getattr(data, "allow_refold_for_final", False)),
+                final_requires_certificate=_truthy(getattr(data, "final_requires_certificate", False)),
+                projection_required=_truthy(getattr(data, "projection_required", True)),
+                artifact_type=str(getattr(data, "artifact_type", "") or ""),
+                artifact_type_aliases={str(k): str(v) for k, v in coerce_dict(getattr(data, "artifact_type_aliases", {})).items()},
+                field_aliases={str(k): str(v) for k, v in coerce_dict(getattr(data, "field_aliases", {})).items()},
+                required_fields=[str(item) for item in getattr(data, "required_fields", []) if str(item).strip()],
+                final_requires_clean_schema=_truthy(getattr(data, "final_requires_clean_schema", True)),
+                metadata=coerce_dict(getattr(data, "metadata", {})),
+            )
+        cfg = coerce_dict(data)
+        evidence = coerce_dict(cfg.get("evidence"))
+        merged = {**cfg, **evidence}
+        if "machine_artifact_required" in merged and "machine_readable_required" not in merged:
+            merged["machine_readable_required"] = merged.get("machine_artifact_required")
+        return cls(
+            machine_readable_required=_truthy(merged.get("machine_readable_required")),
+            allow_text_fallback=_truthy(merged.get("allow_text_fallback", True)),
+            allow_refold_for_probe=_truthy(merged.get("allow_refold_for_probe", True)),
+            allow_refold_for_final=_truthy(merged.get("allow_refold_for_final", False)),
+            final_requires_certificate=_truthy(merged.get("final_requires_certificate", False)),
+            projection_required=_truthy(merged.get("projection_required", True)),
+            artifact_type=str(merged.get("artifact_type") or ""),
+            artifact_type_aliases={str(k): str(v) for k, v in coerce_dict(merged.get("artifact_type_aliases")).items() if str(k or "").strip() and str(v or "").strip()},
+            field_aliases={str(k): str(v) for k, v in coerce_dict(merged.get("field_aliases")).items() if str(k or "").strip() and str(v or "").strip()},
+            required_fields=[str(item) for item in merged.get("required_fields", []) if str(item).strip()] if isinstance(merged.get("required_fields"), list) else [],
+            final_requires_clean_schema=_truthy(merged.get("final_requires_clean_schema", True)),
+            metadata=coerce_dict(merged.get("metadata")),
+        )
+
+
 class NexusObjectiveContractBuilder:
     """Deterministic fallback builder; production callers may delegate to a model."""
 
-    def build_text_contract(self, *, user_goal: str, packet: Any, world: Any | None = None, model: NexusModelLike | None = None) -> NexusObjectiveContract:
+    def build_text_contract(
+        self,
+        *,
+        user_goal: str,
+        packet: Any,
+        world: Any | None = None,
+        model: NexusModelLike | None = None,
+        artifact_policy_config: dict[str, Any] | None = None,
+    ) -> NexusObjectiveContract:
         if model is not None and hasattr(model, "build_objective_contract"):
             raw = model.build_objective_contract(user_goal=user_goal, world=world if world is not None else packet)
             if isinstance(raw, NexusObjectiveContract):
                 _attach_latent_objective_state(raw, world if world is not None else packet)
+                apply_artifact_policy_to_contract(raw, artifact_policy_config, source="adaptive.evidence")
                 return raw
             if isinstance(raw, dict):
                 contract = NexusObjectiveContract.from_dict(raw)
                 _attach_latent_objective_state(contract, world if world is not None else packet)
+                apply_artifact_policy_to_contract(contract, artifact_policy_config, source="adaptive.evidence")
                 return contract
         constraints = [str(item) for item in getattr(packet, "constraints", [])]
         contract = NexusObjectiveContract(
@@ -564,17 +632,28 @@ class NexusObjectiveContractBuilder:
             verification_preferences=["prefer_input_evidence", "prefer_local_tool_evidence"],
         )
         _attach_latent_objective_state(contract, world if world is not None else packet)
+        apply_artifact_policy_to_contract(contract, artifact_policy_config, source="adaptive.evidence")
         return contract
 
-    def build_project_contract(self, *, user_goal: str, snapshot: Any, world: Any | None = None, model: NexusModelLike | None = None) -> NexusProjectObjectiveContract:
+    def build_project_contract(
+        self,
+        *,
+        user_goal: str,
+        snapshot: Any,
+        world: Any | None = None,
+        model: NexusModelLike | None = None,
+        artifact_policy_config: dict[str, Any] | None = None,
+    ) -> NexusProjectObjectiveContract:
         if model is not None and hasattr(model, "build_project_objective_contract"):
             raw = model.build_project_objective_contract(user_goal=user_goal, snapshot=snapshot, world=world)
             if isinstance(raw, NexusProjectObjectiveContract):
                 _attach_latent_objective_state(raw, world if world is not None else snapshot)
+                apply_artifact_policy_to_contract(raw, artifact_policy_config, source="adaptive.evidence")
                 return raw
             if isinstance(raw, dict):
                 contract = NexusProjectObjectiveContract.from_dict(raw)
                 _attach_latent_objective_state(contract, world if world is not None else snapshot)
+                apply_artifact_policy_to_contract(contract, artifact_policy_config, source="adaptive.evidence")
                 return contract
         manifest = [str(item.get("path")) for item in getattr(snapshot, "file_manifest", []) if isinstance(item, dict)]
         tests = [path for path in manifest if "/test" in f"/{path}" or path.startswith("tests/")]
@@ -593,7 +672,182 @@ class NexusObjectiveContractBuilder:
             unsafe_change_patterns=["load_user_home_env_in_tests", "real_provider_fallback_in_tests"],
         )
         _attach_latent_objective_state(contract, world if world is not None else snapshot)
+        apply_artifact_policy_to_contract(contract, artifact_policy_config, source="adaptive.evidence")
         return contract
+
+
+def apply_artifact_policy_to_contract(
+    contract: NexusObjectiveContract,
+    artifact_policy_config: dict[str, Any] | None,
+    *,
+    source: str = "adaptive.evidence",
+) -> NexusObjectiveContract:
+    """Overlay explicit machine-artifact policy onto the model-defined contract.
+
+    The objective contract remains the single Nexus contract authority.  The
+    Evidence Control Plane may provide stricter artifact requirements for a
+    machine artifact task; those requirements must be compiled into the dynamic
+    artifact contract instead of living only in evaluator metadata.
+    """
+
+    policy = _ArtifactPolicyView.from_any(artifact_policy_config)
+    if not _artifact_policy_requires_contract_overlay(policy):
+        return contract
+    previous_dac = DynamicArtifactContract.from_any(contract.dynamic_artifact_contract, fallback_objective=contract.normalized_goal)
+    diagnostics = artifact_policy_contract_conflicts(policy, contract)
+    previous_hash = previous_dac.stable_hash() if previous_dac is not None else ""
+    overlay = dynamic_artifact_contract_from_artifact_policy(policy, objective=contract.normalized_goal, base=previous_dac)
+    contract.dynamic_artifact_contract = overlay.to_dict()
+    outcome_policy = dict(contract.outcome_policy or {})
+    outcome_policy["dynamic_artifact_contract"] = contract.dynamic_artifact_contract
+    outcome_policy["machine_artifact_policy_bound"] = True
+    if policy.final_requires_clean_schema:
+        outcome_policy["requires_clean_machine_artifact_for_final"] = True
+    contract.outcome_policy = outcome_policy
+    metadata = coerce_dict(contract.metadata)
+    metadata["artifact_policy_contract_overlay"] = {
+        "source": str(source or "adaptive.evidence"),
+        "artifact_type": policy.artifact_type,
+        "required_fields": list(policy.required_fields),
+        "previous_dynamic_artifact_contract_hash": previous_hash,
+        "new_dynamic_artifact_contract_hash": overlay.stable_hash(),
+        "diagnostics": diagnostics,
+    }
+    if diagnostics:
+        metadata["contract_artifact_policy_conflict_diagnostics"] = diagnostics
+    contract.metadata = metadata
+    return contract
+
+
+def dynamic_artifact_contract_from_artifact_policy(
+    policy: Any,
+    *,
+    objective: str,
+    base: DynamicArtifactContract | dict[str, Any] | None = None,
+) -> DynamicArtifactContract:
+    """Compile an ArtifactPolicy-compatible mapping into the Nexus contract."""
+
+    artifact_policy = _ArtifactPolicyView.from_any(policy)
+    base_dac = DynamicArtifactContract.from_any(base, fallback_objective=objective)
+    artifact_type = artifact_policy.artifact_type.strip() or (
+        base_dac.artifact_domain_label if base_dac is not None and base_dac.artifact_domain_label != "model_defined_artifact" else "machine_artifact"
+    )
+    required_fields = list(dict.fromkeys(str(item) for item in artifact_policy.required_fields if str(item).strip()))
+    invalid_outputs = list(dict.fromkeys(
+        [
+            *((base_dac.invalid_outputs if base_dac is not None else []) or []),
+            "empty output",
+            "meta commentary only",
+            "restating objective without artifact",
+            "natural-language wrapper instead of the machine artifact",
+            "string-wrapped JSON object",
+        ]
+        + [f"artifact_type alias: {alias}" for alias in artifact_policy.artifact_type_aliases]
+        + [f"field alias: {alias}" for alias in artifact_policy.field_aliases]
+    ))
+    adapter_requirements = dict(base_dac.adapter_requirements if base_dac is not None else {})
+    adapter_requirements.update(artifact_policy.to_dict())
+    adapter_requirements["artifact_policy_source"] = "evidence_control_plane"
+    final_gate = dict(base_dac.final_gate if base_dac is not None else {})
+    final_gate.update(
+        {
+            "check": "clean machine artifact schema plus evaluator/certificate evidence",
+            "artifact_type": artifact_type,
+            "requires_clean_schema": bool(artifact_policy.final_requires_clean_schema),
+            "allow_refold_for_final": bool(artifact_policy.allow_refold_for_final),
+            "requires_certificate": bool(artifact_policy.final_requires_certificate),
+        }
+    )
+    repair_contract = dict(base_dac.repair_contract if base_dac is not None else {})
+    repair_contract.update(
+        {
+            "on_missing_artifact": f"emit a clean machine-readable {artifact_type} artifact",
+            "on_alias_or_refolded_artifact": "re-emit the artifact with exact artifact_type and exact required field names",
+            "refolded_rule": "refolded artifacts may be probed when policy allows, but are not final eligible unless explicitly allowed",
+        }
+    )
+    evaluation_dimensions = list(base_dac.evaluation_dimensions if base_dac is not None else [])
+    for item in (
+        {"name": "schema_cleanliness", "measurement": "normalized artifact status and required field presence"},
+        {"name": "evaluator_score", "measurement": "task-local evaluator result on the normalized artifact"},
+        {"name": "semantic_drift_absence", "measurement": "absence of forbidden runtime/internal vocabulary in the machine artifact"},
+    ):
+        if not any(str(existing.get("name") or "") == item["name"] for existing in evaluation_dimensions):
+            evaluation_dimensions.append(item)
+    return DynamicArtifactContract(
+        objective=str(objective or (base_dac.objective if base_dac is not None else "") or "user objective"),
+        artifact_domain_label=artifact_type,
+        required_work_product={
+            "artifact_type": artifact_type,
+            "required_fields": required_fields,
+            "description": f"a clean machine-readable {artifact_type} artifact matching the task-local ArtifactPolicy",
+        },
+        allowed_artifact_shapes=[
+            {
+                "name": artifact_type,
+                "required_fields": required_fields,
+                "machine_readable_required": bool(artifact_policy.machine_readable_required),
+                "final_eligible": True,
+            }
+        ],
+        minimum_concrete_delta=dict(base_dac.minimum_concrete_delta if base_dac is not None else {})
+        or {"observable_signal": "specific artifact field, parameter, rule, score, or evaluator behavior changes relative to parent"},
+        invalid_outputs=invalid_outputs,
+        evaluation_dimensions=evaluation_dimensions,
+        comparison_method=dict(base_dac.comparison_method if base_dac is not None else {})
+        or {"method": "schema validation plus evaluator-backed relative comparison under the frozen artifact policy"},
+        final_gate=final_gate,
+        repair_contract=repair_contract,
+        adapter_requirements=adapter_requirements,
+        version=(base_dac.version if base_dac is not None else "dynamic-artifact-contract/v1"),
+    )
+
+
+def artifact_policy_contract_conflicts(policy_or_config: Any, contract: NexusObjectiveContract | dict[str, Any] | None) -> list[str]:
+    """Return policy/contract mismatch diagnostics before overlay is applied."""
+
+    policy = _ArtifactPolicyView.from_any(policy_or_config)
+    if not _artifact_policy_requires_contract_overlay(policy):
+        return []
+    fallback = ""
+    if contract is not None and not isinstance(contract, dict):
+        fallback = str(getattr(contract, "normalized_goal", "") or getattr(contract, "original_user_goal", "") or "")
+        source = getattr(contract, "dynamic_artifact_contract", None)
+    else:
+        data = coerce_dict(contract)
+        fallback = str(data.get("normalized_goal") or data.get("original_user_goal") or "")
+        source = _coerce_dynamic_artifact_contract(data)
+    dac = DynamicArtifactContract.from_any(source, fallback_objective=fallback)
+    if dac is None:
+        return ["contract_artifact_policy_conflict: dynamic_artifact_contract_absent"]
+    diagnostics: list[str] = []
+    artifact_type = policy.artifact_type.strip()
+    shape_names = {str(item.get("name") or item.get("artifact_type") or "").strip() for item in dac.allowed_artifact_shapes if isinstance(item, dict)}
+    if artifact_type:
+        labels = {str(dac.artifact_domain_label or "").strip(), *shape_names}
+        if artifact_type not in labels:
+            diagnostics.append(f"contract_artifact_policy_conflict: artifact_type_missing expected={artifact_type}")
+    available_fields: set[str] = set()
+    for item in dac.allowed_artifact_shapes:
+        if isinstance(item, dict):
+            available_fields.update(str(field) for field in item.get("required_fields", []) if str(field).strip())
+    missing = [field for field in policy.required_fields if field not in available_fields]
+    if missing:
+        diagnostics.append("contract_artifact_policy_conflict: required_fields_missing=" + ",".join(missing))
+    adapter_requirements = coerce_dict(dac.adapter_requirements)
+    if policy.machine_readable_required and not (
+        _truthy(adapter_requirements.get("machine_readable_required"))
+        or _truthy(adapter_requirements.get("machine_artifact_required"))
+        or _truthy(adapter_requirements.get("machine_readable"))
+    ):
+        diagnostics.append("contract_artifact_policy_conflict: machine_readable_requirement_missing")
+    final_gate = coerce_dict(dac.final_gate)
+    if policy.final_requires_clean_schema and not (
+        _truthy(final_gate.get("requires_clean_schema"))
+        or "clean" in json.dumps(final_gate, ensure_ascii=False, sort_keys=True, default=str).lower()
+    ):
+        diagnostics.append("contract_artifact_policy_conflict: final_clean_schema_gate_missing")
+    return diagnostics
 
 
 def _coerce_dynamic_artifact_contract(data: dict[str, Any]) -> dict[str, Any]:
@@ -639,6 +893,27 @@ def _default_dynamic_artifact_contract(objective: str) -> dict[str, Any]:
     ).to_dict()
 
 
+def _artifact_policy_requires_contract_overlay(policy: _ArtifactPolicyView) -> bool:
+    return bool(
+        policy.machine_readable_required
+        or policy.artifact_type.strip()
+        or policy.required_fields
+        or policy.artifact_type_aliases
+        or policy.field_aliases
+        or policy.final_requires_certificate
+    )
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "y", "on", "enabled", "required"}
+    return bool(value)
+
+
 def _attach_latent_objective_state(contract: NexusObjectiveContract, world: Any | None) -> None:
     """Best-effort bridge hook; contract building must not fail on M5.1 metadata."""
 
@@ -652,4 +927,11 @@ def _attach_latent_objective_state(contract: NexusObjectiveContract, world: Any 
         contract.metadata = metadata
 
 
-__all__.extend(["NexusObjectiveContract", "NexusProjectObjectiveContract", "NexusObjectiveContractBuilder"])
+__all__.extend([
+    "NexusObjectiveContract",
+    "NexusProjectObjectiveContract",
+    "NexusObjectiveContractBuilder",
+    "apply_artifact_policy_to_contract",
+    "artifact_policy_contract_conflicts",
+    "dynamic_artifact_contract_from_artifact_policy",
+])
