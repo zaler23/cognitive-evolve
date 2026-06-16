@@ -27,6 +27,8 @@ _TERMINAL_JOB_STATUSES = {
     "cancelled",
     "rejected",
     "interrupted",
+    "interrupted_checkpointed",
+    "best_current_route",
     "needs_continuation",
     "route_incomplete",
     "failed_verification",
@@ -127,8 +129,8 @@ def _durable_resume_snapshot(job: dict[str, Any]) -> dict[str, Any]:
         planner = {"status": "unknown", "actions": []}
     return {
         "status": "snapshot_only",
-        "api_resume_supported": False,
-        "reason": "durable resume planning is recorded for operator diagnostics; public API resume is not implemented yet",
+        "api_resume_supported": True,
+        "reason": "POST /v1/cogev/jobs/{id}/resume can continue from a persisted Nexus checkpoint when one exists",
         "artifact_root": str(root_raw),
         "planner_status": planner.get("status"),
         "planner_actions": list(planner.get("actions") or [])[:8] if isinstance(planner, dict) else [],

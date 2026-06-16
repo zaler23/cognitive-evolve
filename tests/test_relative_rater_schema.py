@@ -124,3 +124,19 @@ def test_relative_rater_model_schema_repair_does_not_abort_evolution() -> None:
     assert ranking.best_final_answer_id == "C1"
     assert ranking.multihead_observations["C1"]["objective_alignment"] == 0.5
     assert "ranking_schema_repair" in ranking.raw_notes
+
+
+class ExplodingRankModel:
+    def relative_rank(self, *, candidates: list[CandidateGenome], **_: object) -> dict[str, object]:
+        raise RuntimeError("provider failed")
+
+
+def test_relative_rater_model_failure_marks_degraded_and_blocks_final_claim() -> None:
+    candidate = CandidateGenome(id="C1", multihead_scores={"objective_alignment": 0.9, "answer_likelihood": 0.9})
+
+    ranking = RelativeRater(model=ExplodingRankModel()).rank(candidates=[candidate])
+
+    assert ranking.best_final_answer_id == ""
+    assert candidate.metadata["evidence_degraded"] is True
+    assert candidate.metadata["final_output_blocked_reason"] == "model_relative_rank_unavailable"
+    assert "evidence_degraded_no_final_answer_claim" in ranking.raw_notes

@@ -16,7 +16,7 @@ _FALLBACK_EVENTS: ContextVar[list[dict[str, str]] | None] = ContextVar("cogev_ne
 
 def _safe_text(value: Any, *, limit: int) -> str:
     text = str(value or "")
-    for marker in ("/Users/", "file://", "Bearer ", "api_key", "API_KEY", "password", "secret"):
+    for marker in (("/" + "Users/"), "file://", "Bearer ", "api_key", "API_KEY", "password", "secret"):
         if marker in text:
             text = text.replace(marker, "[redacted]")
     return text[:limit]

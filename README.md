@@ -1,12 +1,12 @@
-# CognitiveEvolve Agent System
+# CognitiveEvolve
 
-CognitiveEvolve `2.0.0` is a standalone **Nexus-only model-driven offline evolution runtime** with an OpenAI-compatible API surface.
+CognitiveEvolve `2.0.0` is a source-installable **unresolved-problem attack engine** built around the Nexus runtime. It searches, verifies, checkpoints, and grades candidate directions; its HTTP API is OpenAI-shaped for client compatibility, not semantically identical to a raw provider chat endpoint.
 
 ## Project status
 
 CognitiveEvolve is a **source-installable beta / engineering preview**. Users
 can clone the repository, install it from source, run the CLI, and serve the
-OpenAI-compatible API locally. The project does not yet promise a packaged
+OpenAI-shaped API locally. The project does not yet promise a packaged
 public installer, PyPI release, hosted service, or one-click production
 deployment.
 
@@ -106,6 +106,8 @@ python3 scripts/cogev.py run "your task"
 python3 scripts/cogev.py runtime run <task_dir> --all
 python3 scripts/cogev.py runtime run <task_dir> --rounds 3
 python3 scripts/cogev.py runtime status <task_dir>
+python3 scripts/cogev.py attack problem.yaml --budget 3 --out ./attack-out
+python3 scripts/cogev.py attack --resume ./attack-out --budget 6
 python3 scripts/cogev.py eval run <task_dir>
 python3 scripts/cogev.py optimize run <task_dir>
 python3 scripts/cogev.py doctor --scope all
@@ -113,7 +115,7 @@ python3 scripts/cogev.py doctor --scope all
 
 The runtime command has no runtime selector; it always invokes `NexusRuntime`.
 
-## OpenAI-compatible API
+## OpenAI-shaped API
 
 ```bash
 python3 scripts/cogev.py api status
@@ -136,7 +138,7 @@ API Key:  <COGEV_SERVER_API_KEY>
 Model:    cognitive-evolve-one-shot-deep
 ```
 
-For long frontend runs, prefer `/v1/cogev/jobs` over holding one chat-completions request open. Streaming chat completions emit progress metadata while Nexus writes durable progress and checkpoint artifacts. API model tiers now select adaptive Nexus policies rather than fixed round/candidate counts. `cognitive-evolve-one-shot-exhaustive` activates an exhaustive policy with safety checkpoints, dynamic seed batching/deduplication, and wider mutation branching. Reaching a safety checkpoint returns `needs_continuation`. The only allowed early-stop statuses before the safety cap are `candidate_ready_for_external_review` and `diminishing_returns_checkpoint`; both produce reviewable candidate output, not a correctness claim. Only a verifier/model `objective_solved` signal marks the objective solved. Legacy `COGEV_NEXUS_PROFILE_*_ROUNDS`, `*_CANDIDATES`, `COGEV_MUTATION_BRANCH_FACTOR`, and `COGEV_ACTIVE_POOL_LIMIT` are ignored by default to prevent stale local `.env` files from pinning or narrowing adaptive runs. API calls bind Nexus to the configured generic LLM adapter rather than the deterministic offline seed fallback.
+For long frontend runs, prefer `/v1/cogev/jobs` over holding one chat-completions request open. Jobs can be resumed with `POST /v1/cogev/jobs/{id}/resume` when a Nexus checkpoint exists. Streaming chat completions emit progress metadata while Nexus writes durable progress and checkpoint artifacts. API model tiers now select adaptive Nexus policies rather than fixed round/candidate counts. `cognitive-evolve-one-shot-exhaustive` activates an exhaustive policy with safety checkpoints, dynamic seed batching/deduplication, and wider mutation branching. Reaching a safety checkpoint returns `needs_continuation`. The only allowed early-stop statuses before the safety cap are `candidate_ready_for_external_review` and `diminishing_returns_checkpoint`; both produce reviewable candidate output, not a correctness claim. Only a verifier/model `objective_solved` signal marks the objective solved. Legacy `COGEV_NEXUS_PROFILE_*_ROUNDS`, `*_CANDIDATES`, `COGEV_MUTATION_BRANCH_FACTOR`, and `COGEV_ACTIVE_POOL_LIMIT` are ignored by default to prevent stale local `.env` files from pinning or narrowing adaptive runs. API calls bind Nexus to the configured generic LLM adapter rather than the deterministic offline seed fallback.
 
 Compatibility boundary: `/v1/chat/completions` is OpenAI-shaped, not
 token-semantic identical. A single request may run adaptive multi-round

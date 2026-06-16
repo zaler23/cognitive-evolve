@@ -4,6 +4,9 @@ from __future__ import annotations
 from itertools import product
 from typing import Any
 
+from cognitive_evolve_runtime.concepts.contract import contract_for
+from cognitive_evolve_runtime.concepts.effects import CandidateTransform
+
 from cognitive_evolve_runtime.core.scalars import bounded_score
 from cognitive_evolve_runtime.evaluators.evidence import EvidenceRecord, SearchPressure
 from cognitive_evolve_runtime.nexus.adaptive.research.protocol import ResearchContext
@@ -15,10 +18,12 @@ class ParameterSweepExtension:
 
     def __init__(self, config: dict[str, Any] | None = None) -> None:
         self.config = dict(config or {})
+        self.contract = contract_for(self.extension_id)
         self.sweeps: dict[str, dict[str, Any]] = {}
 
     def after_evidence(self, ctx: ResearchContext) -> ResearchSignal:
         records: list[EvidenceRecord] = []
+        transforms: list[CandidateTransform] = []
         max_combinations = int(self.config.get("max_combinations", 32) or 32)
         for candidate in ctx.candidates:
             space = candidate.metadata.get("parameter_space") if isinstance(candidate.metadata, dict) else None
@@ -27,8 +32,9 @@ class ParameterSweepExtension:
             combos = _combinations(space, max_combinations=max_combinations)
             collapsed = combos[0] if combos else {}
             self.sweeps[candidate.id] = {"combination_count": len(combos), "collapsed_assignment": collapsed, "final_eligible": False}
+            transforms.append(CandidateTransform(candidate_id=candidate.id, kind="collapse_params", payload={"assignment": collapsed, "combination_count": len(combos)}, preserve_score_within=float(self.config.get("score_epsilon", 0.0) or 0.0)))
             records.append(EvidenceRecord(candidate_id=candidate.id, source=self.extension_id, stage="probe", score=bounded_score(min(1.0, len(combos) / max(1, max_combinations))), final_blocked=True, parent_blocked=False, repair_value=0.4, continuation_value=0.6, diagnostics=["parametric_candidate_must_collapse_before_final"], metadata={"authority": "probe", "parameter_sweep": self.sweeps[candidate.id]}))
-        return ResearchSignal(source=self.extension_id, round_index=ctx.round_index, evidence_records=records, metrics={"parameter_sweep_candidate_count": len(self.sweeps)})
+        return ResearchSignal(source=self.extension_id, round_index=ctx.round_index, evidence_records=records, candidate_transforms=transforms, metrics={"parameter_sweep_candidate_count": len(self.sweeps)})
 
     def before_parent_selection(self, ctx: ResearchContext) -> ResearchSignal:
         advisory = {cid: {"plan_value": 0.25, "rank_prior": 0.0, "diversity": 0.1, "risk": 0.1} for cid in self.sweeps}

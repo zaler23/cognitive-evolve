@@ -27,6 +27,8 @@ from cognitive_evolve_runtime.nexus.population_control import compact_live_popul
 from cognitive_evolve_runtime.nexus.protocols import NexusModelLike, NexusMutationPlannerModelProtocol, NexusOffspringModelProtocol, NexusSeedModelProtocol, NexusStopModelProtocol
 from cognitive_evolve_runtime.nexus.repair_reactivation import recover_failure_archive_repair_seeds, recover_repairable_dormant_seeds
 from cognitive_evolve_runtime.nexus.synthesis import SynthesizedResult, synthesize_result
+from cognitive_evolve_runtime.verification.ladder import VerificationStrength
+from cognitive_evolve_runtime.verification.types import GradedOutput, VerifiedResult, Direction
 from cognitive_evolve_runtime.nexus.stop_decision import StopDecisionEngine
 from cognitive_evolve_runtime.nexus.semantic_dedupe import CandidateDeduper
 from cognitive_evolve_runtime.outcomes.latent_audit import audit_latent_replay_bundle
@@ -326,6 +328,14 @@ class EvolutionLoopController:
             archives=self.archives,
         )
         _attach_latent_replay_audit_to_closure(synthesis, latent_replay_audit)
+        graded_output = _graded_output_for_final_state(synthesis=synthesis, final_certificate=final_certificate, latent_replay_audit=latent_replay_audit)
+        synthesis.closure_certificate["graded_output"] = graded_output.to_dict()
+        if graded_output.mode != "verified_result":
+            synthesis.closure_certificate["objective_solved"] = False
+            critical = list(synthesis.closure_certificate.get("critical_failures") or [])
+            if completion_status == "solved":
+                critical.append("graded_output_not_formal_verified_result")
+            synthesis.closure_certificate["critical_failures"] = list(dict.fromkeys(str(item) for item in critical if item))
         synthesis.objective_solved = bool(synthesis.closure_certificate.get("objective_solved"))
         final_progress_event = self.progress_events[-1] if self.progress_events else {}
         if self.interrupted:
@@ -349,6 +359,7 @@ class EvolutionLoopController:
             stop_reason=self.budget.stop_reason,
             completion_status=completion_status,
             adaptive_state=self.adaptive.to_dict(),
+            graded_output=graded_output.to_dict(),
         )
 
     def _notify(self, phase: str, round_index: int, progress_event: dict[str, Any], *, error: dict[str, Any] | None = None) -> None:
@@ -366,6 +377,45 @@ class EvolutionLoopController:
             adaptive_state=self.adaptive.to_dict(),
         )
 
+
+
+def _graded_output_for_final_state(*, synthesis: SynthesizedResult, final_certificate: dict[str, Any], latent_replay_audit: dict[str, Any]) -> GradedOutput:
+    closure = dict(synthesis.closure_certificate or {})
+    solved = bool(closure.get("objective_solved"))
+    replay_certificate = _replay_certificate_for_final_state(synthesis=synthesis, final_certificate=final_certificate, latent_replay_audit=latent_replay_audit)
+    if solved:
+        result = VerifiedResult(
+            answer=synthesis.final_answer,
+            replayable=True,
+            evidence_ref=str(replay_certificate.get("evidence_bundle_hash") or ""),
+            verifier_fingerprint=str(replay_certificate.get("verifier_fingerprint") or ""),
+        )
+        return GradedOutput(mode="verified_result", verification_strength=VerificationStrength.FORMAL, result=result, replay_certificate=replay_certificate)
+    direction = Direction(
+        core_insight=str(synthesis.final_answer or synthesis.failure_analysis or "continue search"),
+        key_assumptions=[str(item) for item in synthesis.warnings[:5]],
+        falsification_test="Freeze the referenced candidate artifact and rerun the strongest available verifier; any counterexample rules out this direction.",
+        lineage=[str(synthesis.reference_candidate_id or synthesis.best_candidate_id or "")],
+        why_non_obvious="Returned as a protected portfolio direction because the run did not reach FORMAL replayable verification.",
+    )
+    return GradedOutput(mode="graded_portfolio", verification_strength=VerificationStrength.ADVERSARIAL, portfolio=[direction], ruled_out_map=[], replay_certificate=replay_certificate)
+
+
+def _replay_certificate_for_final_state(*, synthesis: SynthesizedResult, final_certificate: dict[str, Any], latent_replay_audit: dict[str, Any]) -> dict[str, Any]:
+    from cognitive_evolve_runtime.nexus._serde import stable_hash
+
+    frozen_hash = "artifact-" + stable_hash({"answer": synthesis.final_answer, "candidate_id": synthesis.best_candidate_id or synthesis.reference_candidate_id})[:16]
+    evidence_hash = "evidence-" + stable_hash({"final_certificate": final_certificate, "latent_replay_audit": latent_replay_audit})[:16]
+    return {
+        "scope": "verifier_on_frozen_artifact_only",
+        "llm_generation_replayable": False,
+        "frozen_artifact_hash": frozen_hash,
+        "verifier_fingerprint": "closure-final-certificate-v1",
+        "tool_versions": {},
+        "evidence_bundle_hash": evidence_hash,
+        "replay_command": "cogev attack --resume <out-dir> --budget <compute>  # replays verifier state on frozen artifacts only",
+        "verifier_seed": 0,
+    }
 
 def evolve_once(
     *,

@@ -3,6 +3,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from cognitive_evolve_runtime.concepts.contract import contract_for
+from cognitive_evolve_runtime.concepts.effects import ArchiveDirective
+
 from cognitive_evolve_runtime.core.scalars import bounded_score
 from cognitive_evolve_runtime.evaluators.evidence import evidence_state
 from cognitive_evolve_runtime.nexus.adaptive.research.protocol import ResearchContext
@@ -15,12 +18,15 @@ class SpatialSelectionExtension:
 
     def __init__(self, config: dict[str, Any] | None = None) -> None:
         self.config = dict(config or {})
+        self.contract = contract_for(self.extension_id)
         self.metrics: dict[str, Any] = {}
 
     def after_evidence(self, ctx: ResearchContext) -> ResearchSignal:
         state = SpatialPopulationState.from_dict(getattr(ctx.adaptive_state, "spatial", None) if ctx.adaptive_state is not None else None)
-        self.metrics = {"spatial_state_model_count": 1, "spatial_extension_uses_existing_state": True, "spatial_candidate_count": len(state.candidate_to_coord) if state else 0}
-        return ResearchSignal(source=self.extension_id, round_index=ctx.round_index, metrics=self.metrics)
+        count = len(state.candidate_to_coord) if state else 0
+        self.metrics = {"spatial_state_model_count": 1, "spatial_extension_uses_existing_state": True, "spatial_candidate_count": count}
+        directives = [ArchiveDirective(kind="rebalance", descriptor=("spatial_population", count), payload={"candidate_count": count})] if count else []
+        return ResearchSignal(source=self.extension_id, round_index=ctx.round_index, archive_directives=directives, metrics=self.metrics)
 
     def before_parent_selection(self, ctx: ResearchContext) -> ResearchSignal:
         state = SpatialPopulationState.from_dict(getattr(ctx.adaptive_state, "spatial", None) if ctx.adaptive_state is not None else None)

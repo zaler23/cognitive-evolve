@@ -9,6 +9,10 @@ from __future__ import annotations
 from typing import Any, Callable
 
 from cognitive_evolve_runtime.candidates.genome import CandidateGenome, CandidatePopulation
+from cognitive_evolve_runtime.concepts.ablation import ConceptEffectReport
+from cognitive_evolve_runtime.concepts.contract import contract_for
+from cognitive_evolve_runtime.concepts.guard import filter_live_signal, signal_channel_counts
+from cognitive_evolve_runtime.concepts.trace import TraceLedger
 from cognitive_evolve_runtime.evaluators.challenge_memory import ChallengeMemory
 from cognitive_evolve_runtime.evaluators.evidence import EvidenceRecord, SearchPressure, apply_evidence_record
 from cognitive_evolve_runtime.nexus._serde import coerce_dict, utc_now
@@ -26,6 +30,7 @@ class ResearchExtensionRegistry:
         for extension in self.extensions:
             extension.restore(coerce_dict(self.state.extensions.get(extension.extension_id)))
         self._last_advisory: dict[str, dict[str, float]] = {}
+        self._trace = TraceLedger.from_entries(self.state.trace_entries)
 
     @classmethod
     def from_config(cls, config: ResearchConfig, *, restored_state: dict[str, Any] | None = None) -> "ResearchExtensionRegistry":
@@ -66,7 +71,8 @@ class ResearchExtensionRegistry:
         return out
 
     def apply_signal(self, signal: ResearchSignal, *, candidates: list[CandidateGenome] | None = None, challenge_memory: ChallengeMemory | None = None) -> None:
-        self._apply_filtered_signal(self._filter_signal_for_mode(signal), candidates=candidates, challenge_memory=challenge_memory)
+        guarded = self._guard_signal(signal, extension_id=str(signal.source or ""), hook="apply_signal")
+        self._apply_filtered_signal(self._filter_signal_for_mode(guarded), candidates=candidates, challenge_memory=challenge_memory)
 
     def _apply_filtered_signal(self, signal: ResearchSignal, *, candidates: list[CandidateGenome] | None = None, challenge_memory: ChallengeMemory | None = None) -> None:
         by_id = {candidate.id: candidate for candidate in candidates or []}
@@ -84,6 +90,27 @@ class ResearchExtensionRegistry:
         if signal.final_gate_directives:
             self.state.final_gate_directives.extend(dict(item) for item in signal.final_gate_directives if isinstance(item, dict) and item.get("kind"))
             self.state.final_gate_directives = self.state.final_gate_directives[-50:]
+        self._append_effect_channel("verification_obligations", signal.verification_obligations, limit=200)
+        self._append_effect_channel("archive_directives", signal.archive_directives, limit=200)
+        self._append_effect_channel("budget_directives", signal.budget_directives, limit=200)
+        self._append_effect_channel("context_transforms", signal.context_transforms, limit=200)
+        self._append_effect_channel("candidate_transforms", signal.candidate_transforms, limit=200)
+        self._append_effect_channel("contract_delta_proposals", signal.contract_delta_proposals, limit=100)
+        if self.config.trace_enabled:
+            counts = signal_channel_counts(signal)
+            if counts:
+                entry = self._trace.record(
+                    round_index=signal.round_index,
+                    concept_id=signal.source,
+                    consumed_refs=[],
+                    produced_effects=counts,
+                    cost={},
+                    decision_changed=_effective_decision_changed(counts),
+                    replay_hash="research-signal",
+                )
+                self.state.trace_entries = [*self.state.trace_entries, entry][-1000:]
+                if self.config.ablation_enabled:
+                    self.state.concept_effect_report = ConceptEffectReport.from_trace_entries(self.state.trace_entries).to_dict()
         if signal.metrics:
             self.state.metrics.update(signal.metrics)
         if signal.warnings:
@@ -110,6 +137,48 @@ class ResearchExtensionRegistry:
 
     def record_resolved_targets(self, *, candidate_id: str, challenge_ids: list[str], record: EvidenceRecord | None, round_index: int) -> None:
         self._record_target_event("resolved", candidate_id=candidate_id, challenge_ids=challenge_ids, pressure_id="", round_index=round_index)
+
+
+
+    def _record_extension_trace(self, signal: ResearchSignal, *, concept_id: str, hook: str) -> None:
+        if not self.config.trace_enabled:
+            return
+        counts = signal_channel_counts(signal)
+        entry = self._trace.record(
+            round_index=signal.round_index,
+            concept_id=concept_id,
+            consumed_refs=[hook],
+            produced_effects=counts,
+            cost={},
+            decision_changed=_effective_decision_changed(counts),
+            replay_hash="research-extension-signal",
+        )
+        self.state.trace_entries = [*self.state.trace_entries, entry][-1000:]
+        if self.config.ablation_enabled:
+            self.state.concept_effect_report = ConceptEffectReport.from_trace_entries(self.state.trace_entries).to_dict()
+
+    def _guard_signal(self, signal: ResearchSignal, *, extension_id: str, hook: str, contract: Any | None = None) -> ResearchSignal:
+        contract = contract or contract_for(extension_id)
+        result = filter_live_signal(signal, contract, self._trace if self.config.trace_enabled else None)
+        if result.accepted:
+            return signal
+        warning = "research_signal_guard_violation:" + str(extension_id or "unknown") + ":" + ",".join(v.channel for v in result.violations[:6])
+        self.state.warnings = list(dict.fromkeys([*self.state.warnings, warning]))[-100:]
+        for violation in result.violations:
+            self.state.record_event({"event": "research_signal_guard_violation", "hook": hook, **violation.to_dict()})
+        if self.config.trace_enabled:
+            self.state.trace_entries = list(self._trace.entries)[-1000:]
+        return ResearchSignal.empty(source=extension_id or signal.source, round_index=signal.round_index, warnings=[warning])
+
+    def _append_effect_channel(self, channel: str, items: list[Any], *, limit: int) -> None:
+        if not items:
+            return
+        existing = [dict(item) for item in getattr(self.state, channel) if isinstance(item, dict)]
+        for item in items:
+            data = _item_dict(item)
+            if data:
+                existing.append(data)
+        setattr(self.state, channel, _dedupe_dicts(existing)[-limit:])
 
     def _record_target_event(self, kind: str, *, candidate_id: str, challenge_ids: list[str], pressure_id: str, round_index: int) -> None:
         ids = [str(item) for item in challenge_ids if str(item or "").strip()]
@@ -163,7 +232,9 @@ class ResearchExtensionRegistry:
                 signal = fn(ctx)
             except Exception as exc:  # Extensions may not break NexusRuntime.
                 signal = ResearchSignal(source=extension.extension_id, round_index=ctx.round_index, warnings=[f"{hook}_extension_error:{extension.extension_id}:{exc.__class__.__name__}"])
-            signals.append(signal)
+            guarded = self._guard_signal(signal, extension_id=extension.extension_id, hook=hook, contract=getattr(extension, "contract", None))
+            self._record_extension_trace(guarded, concept_id=extension.extension_id, hook=hook)
+            signals.append(guarded)
         merged = merge_research_signals(signals)
         filtered = self._filter_signal_for_mode(merged, hook=hook)
         self._apply_filtered_signal(filtered, candidates=ctx.candidates, challenge_memory=ctx.challenge_memory)
@@ -179,6 +250,12 @@ class ResearchExtensionRegistry:
         search_pressures = signal.search_pressures if mode in {"advisory", "active"} else []
         evidence_records = signal.evidence_records if mode == "active" else []
         final_gate_directives = _normalize_final_gate_directives(signal.final_gate_directives, mode=mode, round_index=signal.round_index)
+        contract_delta_proposals = list(signal.contract_delta_proposals)
+        verification_obligations = list(signal.verification_obligations) if mode == "active" else []
+        archive_directives = list(signal.archive_directives) if mode in {"advisory", "active"} else []
+        budget_directives = list(signal.budget_directives) if mode in {"advisory", "active"} else []
+        context_transforms = list(signal.context_transforms) if mode in {"advisory", "active"} else []
+        candidate_transforms = list(signal.candidate_transforms) if mode == "active" else []
 
         if mode == "observe":
             dropped = {
@@ -186,6 +263,11 @@ class ResearchExtensionRegistry:
                 "search_pressures": len(signal.search_pressures),
                 "evidence_records": len(signal.evidence_records),
                 "final_gate_directives": len(signal.final_gate_directives),
+                "verification_obligations": len(signal.verification_obligations),
+                "archive_directives": len(signal.archive_directives),
+                "budget_directives": len(signal.budget_directives),
+                "context_transforms": len(signal.context_transforms),
+                "candidate_transforms": len(signal.candidate_transforms),
             }
             dropped = {key: value for key, value in dropped.items() if value}
             if dropped:
@@ -194,6 +276,12 @@ class ResearchExtensionRegistry:
             if signal.evidence_records:
                 dropped["evidence_records"] = len(signal.evidence_records)
                 warnings.append("research_advisory_mode_dropped_evidence_records")
+            if signal.verification_obligations:
+                dropped["verification_obligations"] = len(signal.verification_obligations)
+                warnings.append("research_advisory_mode_dropped_verification_obligations")
+            if signal.candidate_transforms:
+                dropped["candidate_transforms"] = len(signal.candidate_transforms)
+                warnings.append("research_advisory_mode_dropped_candidate_transforms")
 
         unknown_count = sum(1 for item in signal.final_gate_directives if _unknown_final_directive(item))
         if unknown_count:
@@ -212,13 +300,18 @@ class ResearchExtensionRegistry:
             final_gate_directives=final_gate_directives,
             metrics=metrics,
             warnings=list(dict.fromkeys(warnings)),
+            verification_obligations=verification_obligations,
+            archive_directives=archive_directives,
+            budget_directives=budget_directives,
+            context_transforms=context_transforms,
+            candidate_transforms=candidate_transforms,
+            contract_delta_proposals=contract_delta_proposals,
         )
 
 
 _KNOWN_FINAL_DIRECTIVE_KINDS = {
     "bft_quorum_report",
     "chaos_replay_required_if_configured",
-    "contract_refinement_proposal",
     "immune_necropsy_report",
     "parametric_candidate_not_final",
 }
@@ -248,6 +341,38 @@ def _normalize_final_gate_directives(items: list[dict[str, Any]], *, mode: str, 
         directive["round_index"] = int(round_index or 0)
         directives.append(directive)
     return directives
+
+
+
+def _item_dict(item: Any) -> dict[str, Any]:
+    if hasattr(item, "to_dict"):
+        try:
+            value = item.to_dict()
+            return dict(value) if isinstance(value, dict) else {}
+        except Exception:
+            return {}
+    if isinstance(item, dict):
+        return dict(item)
+    try:
+        return dict(item)
+    except Exception:
+        return {}
+
+
+def _dedupe_dicts(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in items:
+        key = str(item.get("id") or item.get("delta_id") or item.get("candidate_id") or sorted(item.items()))
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(item)
+    return out
+
+
+def _effective_decision_changed(counts: dict[str, int]) -> bool:
+    return any(key not in {"metrics", "warnings"} and value for key, value in counts.items())
 
 
 __all__ = ["ResearchExtensionRegistry"]

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""OpenAI-compatible API server for CognitiveEvolve.
+"""OpenAI-shaped API server for CognitiveEvolve.
 
 The public contract intentionally mirrors the subset used by AI frontends:
 
@@ -49,6 +49,18 @@ def _stream_engine_chunks(prompt: str, **kwargs: Any) -> Iterator[bytes]:
     return stream_engine_chunks(prompt, **kwargs)
 
 
+def _resume_engine(*, output_dir: Path, model: str, max_rounds: int | None = None) -> tuple[str, dict[str, Any]]:
+    from ..llm import LLMSession, llm_session
+    from ..nexus.runtime import NexusRuntime
+    from .profiles import _temporary_model_runtime
+
+    with llm_session(LLMSession()), _temporary_model_runtime(model):
+        runtime = NexusRuntime.with_configured_llm(output_dir=output_dir)
+        run = runtime.resume_from_checkpoint(max_rounds=max_rounds)
+    data = run.to_dict()
+    return run.final_answer, data
+
+
 def _testclient_compat_patch_enabled() -> bool:
     explicit = os.environ.get("COGEV_ENABLE_TESTCLIENT_COMPAT_PATCH", "").strip().lower()
     return explicit in {"1", "true", "yes", "on"} or "PYTEST_CURRENT_TEST" in os.environ
@@ -88,7 +100,7 @@ def create_app() -> FastAPI:
     load_service_env()
     config = get_service_config()
     config.enforce_safe_to_serve()
-    app = FastAPI(title="CognitiveEvolve OpenAI-Compatible API", version="2.0.0", lifespan=_lifespan)
+    app = FastAPI(title="CognitiveEvolve OpenAI-Shaped API", version="2.0.0", lifespan=_lifespan)
     app.add_middleware(APIGuardMiddleware)
     _install_cors(app, config)
     _install_health_and_model_routes(app)
@@ -230,6 +242,52 @@ def _install_job_routes(app: FastAPI) -> None:
             raise HTTPException(status_code=404, detail="Unknown CognitiveEvolve job id.")
         return JSONResponse(_job_public(job))
 
+
+    @app.post("/v1/cogev/jobs/{job_id}/resume", dependencies=[Depends(require_service_api_key)], response_model=None)
+    async def resume_job(job_id: str, request: Request) -> JSONResponse:
+        job = _get_job(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Unknown CognitiveEvolve job id.")
+        if job.get("status") in {"queued", "running", "cancellation_requested", "resuming"}:
+            raise HTTPException(status_code=409, detail="Job is already active.")
+        try:
+            raw = await request.json()
+        except Exception:
+            raw = {}
+        max_rounds = (raw.get("budget") or raw.get("max_rounds")) if isinstance(raw, dict) else None
+        try:
+            max_rounds_int = int(max_rounds) if max_rounds is not None else None
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=422, detail="budget/max_rounds must be an integer")
+        config = get_service_config()
+        root = _safe_job_root(config.api_task_root, job_id)
+        if root is None:
+            raise HTTPException(status_code=404, detail="Unknown CognitiveEvolve job id.")
+        output_dir = root / "nexus-runtime"
+        checkpoint_path = output_dir / "checkpoint.json"
+        if not checkpoint_path.exists():
+            raise HTTPException(status_code=409, detail="No checkpoint is available for this job.")
+        model = str(job.get("model") or config.default_model)
+        _set_job(job_id, status="queued", error=None, cancellation_requested=False)
+
+        def worker() -> None:
+            _set_job(job_id, status="resuming")
+            try:
+                answer, nexus_data = _resume_engine(output_dir=output_dir, model=model, max_rounds=max_rounds_int)
+                status = _status_from_nexus_data(nexus_data, fallback="completed")
+                _set_job(job_id, status=status, answer=answer, nexus_data=nexus_data, artifact_root=str(root), task_dir=str(root))
+            except Exception as exc:
+                _set_job(job_id, status="failed", error=f"CognitiveEvolve resume failed: {exc}")
+
+        try:
+            future = get_job_executor().submit(worker)
+        except QueueFullError as exc:
+            rejected = _set_job(job_id, status="rejected", error=str(exc), cancellation_requested=False)
+            return JSONResponse(_job_public(rejected, include_answer=False), status_code=503)
+        _register_job_future(job_id, future)
+        future.add_done_callback(lambda _future: _pop_job_future(job_id))
+        return JSONResponse(_job_public(_get_job(job_id) or {"id": job_id}, include_answer=False), status_code=202)
+
     @app.delete("/v1/cogev/jobs/{job_id}", dependencies=[Depends(require_service_api_key)], response_model=None)
     async def cancel_job(job_id: str) -> JSONResponse:
         job = _get_job(job_id)
@@ -287,6 +345,19 @@ def _safe_job_artifact_root(job: dict[str, Any]) -> Path:
     return root
 
 
+def _safe_job_root(api_task_root: Path, job_id: str) -> Path | None:
+    normalized = str(job_id or "").strip()
+    if not normalized or Path(normalized).name != normalized:
+        return None
+    base = api_task_root.resolve()
+    candidate = (base / normalized).resolve()
+    try:
+        candidate.relative_to(base)
+    except ValueError:
+        return None
+    return candidate
+
+
 def _install_chat_routes(app: FastAPI) -> None:
     @app.post("/v1/chat/completions", dependencies=[Depends(require_service_api_key)], response_model=None)
     async def chat_completions(request: Request) -> Response:
@@ -325,7 +396,7 @@ def _install_chat_routes(app: FastAPI) -> None:
         except QueueFullError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except Exception as exc:
-            # Keep the error OpenAI-client friendly while not leaking upstream provider secrets.
+            # Keep the error client friendly while not leaking upstream provider secrets.
             raise HTTPException(status_code=502, detail=f"CognitiveEvolve pipeline failed: {exc}") from exc
         payload = _completion_payload(request_id=request_id, model=model, prompt=prompt, answer=answer, nexus_data=nexus_data)
         return JSONResponse(payload)

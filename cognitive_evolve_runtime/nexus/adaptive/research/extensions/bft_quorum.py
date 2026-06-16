@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from cognitive_evolve_runtime.concepts.contract import contract_for
+
 from cognitive_evolve_runtime.nexus.adaptive.research.protocol import ResearchContext
 from cognitive_evolve_runtime.nexus.adaptive.research.signal import ResearchSignal
 
@@ -12,6 +14,7 @@ class BFTQuorumExtension:
 
     def __init__(self, config: dict[str, Any] | None = None) -> None:
         self.config = dict(config or {})
+        self.contract = contract_for(self.extension_id)
         self.reports: list[dict[str, Any]] = []
 
     def after_evidence(self, ctx: ResearchContext) -> ResearchSignal:

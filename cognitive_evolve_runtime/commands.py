@@ -12,6 +12,7 @@ from .api.server import serve as api_serve, status_cli as api_status_cli
 from .config_templates import available_env_profiles, env_template_info, render_env_template, write_env_template
 from .artifacts.task_files import check_task, list_tasks, new_task, _slug_from_prompt
 from .core.redaction import redact_text
+from .cli.attack import run_attack
 from .doctor import doctor
 from .llm.env import LLMConfigurationError, LLMResponseError, require_llm_config
 from .llm import llm_json, llm_public_status, llm_status_cli
@@ -210,6 +211,13 @@ def main() -> int:
     llm_sub.add_parser("status")
     llm_sub.add_parser("smoke")
 
+    p_attack = sub.add_parser("attack")
+    p_attack.add_argument("problem", nargs="?", help="problem.yaml for a new attack campaign")
+    p_attack.add_argument("--budget", type=int, default=1, help="round budget or resume target rounds")
+    p_attack.add_argument("--out", dest="out_dir", default=None, help="output directory for artifacts")
+    p_attack.add_argument("--resume", dest="resume_dir", default=None, help="resume from an existing attack output directory")
+    p_attack.add_argument("--offline", action="store_true", help="run without configured LLM for local smoke tests")
+
     p_api = sub.add_parser("api")
     api_sub = p_api.add_subparsers(dest="api_cmd", required=True)
     api_sub.add_parser("serve")
@@ -278,6 +286,8 @@ def main() -> int:
         if args.llm_cmd == "smoke":
             load_service_env()
             return llm_smoke()
+    if args.cmd == "attack":
+        return run_attack(problem_path=args.problem, budget=args.budget, out_dir=args.out_dir, resume_dir=args.resume_dir, offline=args.offline)
     if args.cmd == "api":
         if args.api_cmd == "serve":
             return api_serve()

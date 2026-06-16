@@ -1,10 +1,10 @@
-# CognitiveEvolve Agent-System Paradigm
+# CognitiveEvolve Unresolved-Problem Attack Paradigm
 
 ## Thesis
 
-CognitiveEvolve is a new agent-system paradigm for tasks where quality depends on judgment, cognition, evaluation, and evolution rather than a single prompt-response turn.
+CognitiveEvolve is an unresolved-problem attack engine for tasks where quality depends on search, verification, evidence, and honest grading rather than a single prompt-response turn.
 
-The core system is host-neutral. MCP, LangGraph, DSPy/GEPA, Promptfoo, SkyDiscover, and other tools are adapters or configured local backends. They do not define the project identity, but tasks may use them directly through the runtime when needed.
+The core system identity is Nexus: objective contract, candidate population, verification spine, archive/tension memory, checkpoint/replay, and graded output. External tools are adapters; they do not define the runtime or replace its authority boundaries.
 
 ## Core Loop
 
@@ -21,14 +21,15 @@ The core system is host-neutral. MCP, LangGraph, DSPy/GEPA, Promptfoo, SkyDiscov
 
 ## Why It Differs From A Normal Agent Harness
 
-Most agent harnesses emphasize tool access, orchestration, and execution. CognitiveEvolve emphasizes cognition quality:
+Most agent harnesses emphasize tool access, orchestration, and execution. CognitiveEvolve emphasizes attack quality and verification honesty:
 
 - Better problem definition before action.
 - Explicit tradeoff structure instead of hidden preference guesses.
 - Multi-candidate search for tasks where one answer is fragile.
 - Evidence and validation records as first-class artifacts.
 - User cognitive gain as a hard quality objective.
-- Optional host adapters rather than a fixed runtime.
+- Optional adapters rather than replacement runtimes.
+- GradedOutput separates verified results from lower-strength portfolios.
 
 ## Native Capabilities
 

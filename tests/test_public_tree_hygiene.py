@@ -102,7 +102,7 @@ def test_public_tree_has_no_absolute_local_developer_paths_or_secret_files() -> 
             text = path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             continue
-        if ("/Users/" + "zzz/") in text or ("file://" + "/Users/") in text:
+        if ("/" + "Users/" + "zzz/") in text or ("file://" + "/" + "Users/") in text:
             offenders.append(rel)
         lower = text.lower()
         forbidden_text = (
