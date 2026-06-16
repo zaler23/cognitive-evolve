@@ -97,6 +97,9 @@ def test_llm_fixture_json_budget_governor_and_reporting_paths(tmp_path: Path, mo
         report = json.loads((task_dir / "evaluations" / "llm-runtime-report.json").read_text(encoding="utf-8"))
         assert report["event_count"] == 1
         assert report["no_llm_fallback"] is True
+        assert report["credential_configured"] is False
+        assert "api_key_configured" not in report
+        assert "api_key_placeholder" not in report
 
     monkeypatch.setenv("COGEV_LLM_BUDGET_USD", "0")
     with pytest.raises(LLMResponseError):

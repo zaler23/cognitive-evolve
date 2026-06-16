@@ -22,6 +22,8 @@ from cognitive_evolve_runtime.nexus.prompt_view import build_prompt_view
 from cognitive_evolve_runtime.nexus._serde import stable_hash, stable_json
 from cognitive_evolve_runtime.persistence.event_store import EventStore
 
+FAKE_RUNTIME_CREDENTIAL = "unit-test-runtime-credential"
+
 
 def _response(content: str) -> SimpleNamespace:
     return SimpleNamespace(
@@ -32,16 +34,16 @@ def _response(content: str) -> SimpleNamespace:
 
 def test_event_store_append_fsyncs_and_redacts(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     fsynced: list[int] = []
-    monkeypatch.setenv("COGEV_LLM_API_KEY", "sk-secret-runtime-key")
+    monkeypatch.setenv("COGEV_LLM_API_KEY", FAKE_RUNTIME_CREDENTIAL)
     monkeypatch.setattr("cognitive_evolve_runtime.persistence.event_store.os.fsync", lambda fd: fsynced.append(fd))
 
     store = EventStore(tmp_path / "events.jsonl")
-    payload = store.append({"type": "provider_error", "api_key": "sk-secret-runtime-key", "message": "Bearer sk-secret-runtime-key failed"})
+    payload = store.append({"type": "provider_error", "api_key": FAKE_RUNTIME_CREDENTIAL, "message": f"credential {FAKE_RUNTIME_CREDENTIAL} failed"})
 
     assert fsynced
     assert payload["api_key"] == "[REDACTED]"
     raw = (tmp_path / "events.jsonl").read_text(encoding="utf-8")
-    assert "sk-secret-runtime-key" not in raw
+    assert FAKE_RUNTIME_CREDENTIAL not in raw
     assert "[REDACTED]" in raw
 
 
@@ -49,7 +51,8 @@ def test_redact_secret_shaped_key_handles_nested_payloads_without_crashing() -> 
     payload = {
         "type": "latent_metadata",
         "token_metadata": {"nested": {"still": "private"}},
-        "authorization": ["Bearer sk-nested-runtime-key", {"inner": "value"}],
+        "total_tokens": 42,
+        "authorization": ["unit-test-nested-credential", {"inner": "value"}],
         "session_id": None,
         "api_key": "",
         "safe": {"nested": "kept"},
@@ -58,6 +61,7 @@ def test_redact_secret_shaped_key_handles_nested_payloads_without_crashing() -> 
     redacted = redact(payload)
 
     assert redacted["token_metadata"] == "[REDACTED]"
+    assert redacted["total_tokens"] == 42
     assert redacted["authorization"] == "[REDACTED]"
     assert redacted["session_id"] is None
     assert redacted["api_key"] == ""
@@ -65,15 +69,15 @@ def test_redact_secret_shaped_key_handles_nested_payloads_without_crashing() -> 
 
 
 def test_redact_handles_sets_cycles_and_nested_secret_values() -> None:
-    payload: dict[str, object] = {"meta": {"values": {"sk-secret-runtime-key", "safe"}}}
+    payload: dict[str, object] = {"meta": {"values": {f"Bearer {FAKE_RUNTIME_CREDENTIAL}", "safe"}}}
     payload["self"] = payload
 
     redacted = redact(payload)
 
     assert redacted["self"] == "[CIRCULAR]"
     values = redacted["meta"]["values"]
-    assert "[REDACTED]" in values
-    assert "sk-secret-runtime-key" not in json.dumps(redacted, ensure_ascii=False)
+    assert "Bearer [REDACTED]" in values
+    assert FAKE_RUNTIME_CREDENTIAL not in json.dumps(redacted, ensure_ascii=False)
 
 
 def test_stable_json_orders_sets_and_marks_cycles() -> None:
@@ -88,8 +92,8 @@ def test_stable_json_orders_sets_and_marks_cycles() -> None:
 
 
 def test_event_logs_redact_set_values_and_survive_cycles(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    monkeypatch.setenv("COGEV_LLM_API_KEY", "sk-secret-runtime-key")
-    payload: dict[str, object] = {"type": "provider_error", "values": {"sk-secret-runtime-key"}}
+    monkeypatch.setenv("COGEV_LLM_API_KEY", FAKE_RUNTIME_CREDENTIAL)
+    payload: dict[str, object] = {"type": "provider_error", "values": {FAKE_RUNTIME_CREDENTIAL}}
     payload["self"] = payload
 
     store = EventStore(tmp_path / "events.jsonl")
@@ -98,7 +102,7 @@ def test_event_logs_redact_set_values_and_survive_cycles(monkeypatch: pytest.Mon
 
     assert stored["self"] == "[CIRCULAR]"
     raw = (tmp_path / "events.jsonl").read_text(encoding="utf-8") + (tmp_path / "durable.jsonl").read_text(encoding="utf-8")
-    assert "sk-secret-runtime-key" not in raw
+    assert FAKE_RUNTIME_CREDENTIAL not in raw
     assert "[REDACTED]" in raw
 
 

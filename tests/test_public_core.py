@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from cognitive_evolve_runtime.llm import llm_status
+from cognitive_evolve_runtime.llm import llm_public_status, llm_status
 from cognitive_evolve_runtime.ranking.parent_selection import ParentSelector
 from cognitive_evolve_runtime.candidates.genome import CandidateGenome
 from cognitive_evolve_runtime.nexus.search_space import build_search_space_map
@@ -30,6 +30,11 @@ def test_generic_litellm_provider_status_has_no_host_specific_driver(monkeypatch
     assert status["api_key_placeholder"] is True
     assert "model_key" not in status
     assert "model_enum" not in status
+
+    public = llm_public_status(status)
+    assert public["credential_placeholder"] is True
+    assert "api_key_placeholder" not in public
+    assert "api_key_configured" not in public
 
 
 def test_parent_selector_preserves_underexplored_rare_candidate() -> None:
