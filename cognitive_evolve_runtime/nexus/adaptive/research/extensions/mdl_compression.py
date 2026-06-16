@@ -3,6 +3,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from cognitive_evolve_runtime.concepts.contract import contract_for
+from cognitive_evolve_runtime.concepts.effects import CandidateTransform
+
 from cognitive_evolve_runtime.core.scalars import bounded_score
 from cognitive_evolve_runtime.evaluators.evidence import SearchPressure
 from cognitive_evolve_runtime.nexus.adaptive.research.protocol import ResearchContext
@@ -14,6 +17,7 @@ class MDLCompressionExtension:
 
     def __init__(self, config: dict[str, Any] | None = None) -> None:
         self.config = dict(config or {})
+        self.contract = contract_for(self.extension_id)
         self.complexity: dict[str, float] = {}
 
     def after_evidence(self, ctx: ResearchContext) -> ResearchSignal:
@@ -36,7 +40,8 @@ class MDLCompressionExtension:
         if length <= threshold:
             return ResearchSignal.empty(source=self.extension_id, round_index=ctx.round_index)
         pressure = SearchPressure.from_parts(parent_id=ctx.parent.id, scope="candidate", mutation_instruction="Compress this candidate without broadening behavior: remove dead scaffolding, deduplicate logic, and preserve evaluator-passing behavior.", metadata={"source_extension": self.extension_id, "description_length": length})
-        return ResearchSignal(source=self.extension_id, round_index=ctx.round_index, search_pressures=[pressure], metrics={"mdl_compression_pressure_count": 1})
+        transform = CandidateTransform(candidate_id=ctx.parent.id, kind="compress", payload={"description_length": length, "threshold": threshold}, preserve_score_within=float(self.config.get("score_epsilon", 0.02) or 0.02))
+        return ResearchSignal(source=self.extension_id, round_index=ctx.round_index, search_pressures=[pressure], candidate_transforms=[transform], metrics={"mdl_compression_pressure_count": 1})
 
     def before_final_projection(self, ctx: ResearchContext) -> ResearchSignal:
         return ResearchSignal.empty(source=self.extension_id, round_index=ctx.round_index)

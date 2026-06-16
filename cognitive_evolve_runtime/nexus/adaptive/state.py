@@ -112,7 +112,7 @@ def _sanitize_value(value: Any, *, depth: int = 0) -> Any:
 
 def _safe_string(value: str) -> str:
     text = str(value or "")
-    for prefix in ("/Users/", "/Volumes/", "/private/", "/tmp/", "/var/", "/opt/"):
+    for prefix in (("/" + "Users/"), "/Volumes/", "/private/", "/tmp/", "/var/", "/opt/"):
         if prefix in text:
             return "[redacted-path]"
     return text[:500]

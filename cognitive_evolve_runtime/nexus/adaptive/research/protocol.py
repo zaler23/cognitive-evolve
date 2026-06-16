@@ -11,6 +11,7 @@ from typing import Any, Protocol
 from cognitive_evolve_runtime.candidates.genome import CandidateGenome, CandidatePopulation
 from cognitive_evolve_runtime.evaluators.challenge_memory import ChallengeMemory
 from cognitive_evolve_runtime.nexus.adaptive.research.signal import ResearchSignal
+from cognitive_evolve_runtime.concepts.contract import ConceptContract, contract_for
 
 
 @dataclass(frozen=True)
@@ -31,6 +32,7 @@ class ResearchContext:
 
 class ResearchExtension(Protocol):
     extension_id: str
+    contract: ConceptContract
 
     def after_evidence(self, ctx: ResearchContext) -> ResearchSignal: ...
     def before_parent_selection(self, ctx: ResearchContext) -> ResearchSignal: ...
@@ -42,6 +44,9 @@ class ResearchExtension(Protocol):
 
 class NoOpResearchExtension:
     extension_id = "noop"
+
+    def __init__(self) -> None:
+        self.contract = contract_for(self.extension_id)
 
     def after_evidence(self, ctx: ResearchContext) -> ResearchSignal:
         return ResearchSignal.empty(source=self.extension_id, round_index=ctx.round_index)

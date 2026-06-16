@@ -4,6 +4,9 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
+from cognitive_evolve_runtime.concepts.contract import contract_for
+from cognitive_evolve_runtime.concepts.effects import ArchiveDirective
+
 from cognitive_evolve_runtime.core.scalars import bounded_score
 from cognitive_evolve_runtime.evaluators.evidence import SearchPressure, evidence_state
 from cognitive_evolve_runtime.nexus.adaptive.research.protocol import ResearchContext
@@ -15,11 +18,13 @@ class PatternMemoryExtension:
 
     def __init__(self, config: dict[str, Any] | None = None) -> None:
         self.config = dict(config or {})
+        self.contract = contract_for(self.extension_id)
         self.patterns: dict[str, dict[str, Any]] = {}
 
     def after_evidence(self, ctx: ResearchContext) -> ResearchSignal:
         learned = 0
         quarantined = 0
+        directives: list[ArchiveDirective] = []
         for candidate in ctx.candidates:
             state = evidence_state(candidate)
             resolved = state.get("resolved_challenge_ids") or []
@@ -31,6 +36,7 @@ class PatternMemoryExtension:
                 current["resolved_challenge_ids"] = list(dict.fromkeys([*(current.get("resolved_challenge_ids") or []), *resolved]))
                 current["weight"] = bounded_score(0.2 + 0.1 * current["success_count"] - 0.15 * int(current.get("failure_count") or 0))
                 self.patterns[current["id"]] = current
+                directives.append(ArchiveDirective(kind="add_descriptor", descriptor=("pattern", current["id"]), payload={"weight": current["weight"], "resolved_challenge_ids": current["resolved_challenge_ids"]}))
                 learned += 1
             elif state.get("terminal_reject"):
                 pattern = _pattern_from_candidate(candidate)
@@ -40,7 +46,7 @@ class PatternMemoryExtension:
                 current["quarantined"] = current["failure_count"] >= 2
                 self.patterns[current["id"]] = current
                 quarantined += 1 if current["quarantined"] else 0
-        return ResearchSignal(source=self.extension_id, round_index=ctx.round_index, metrics={"pattern_count": len(self.patterns), "pattern_learned_count": learned, "pattern_quarantine_count": quarantined})
+        return ResearchSignal(source=self.extension_id, round_index=ctx.round_index, archive_directives=directives, metrics={"pattern_count": len(self.patterns), "pattern_learned_count": learned, "pattern_quarantine_count": quarantined})
 
     def before_parent_selection(self, ctx: ResearchContext) -> ResearchSignal:
         advisory = {}

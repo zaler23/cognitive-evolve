@@ -159,12 +159,13 @@ def test_contract_refinement_only_proposes_user_decision_not_contract_mutation()
     ext = ContractRefinementExtension({"generic_challenge_threshold": 5})
     ext.after_evidence(ResearchContext(round_index=1, candidates=[], challenge_memory=memory))
     signal = ext.before_final_projection(ResearchContext(round_index=1, candidates=[], challenge_memory=memory))
-    assert signal.final_gate_directives[0]["requires_user_decision"] is True
-    assert signal.final_gate_directives[0]["silent_mutation_allowed"] is False
+    assert signal.contract_delta_proposals[0]["requires_approval"] is True
+    assert signal.contract_delta_proposals[0]["objective_hash_before"] != signal.contract_delta_proposals[0]["objective_hash_after"]
+    assert not signal.final_gate_directives
 
 
 def test_unknown_research_signal_field_warns_not_silent() -> None:
-    signal = ResearchSignal.from_dict({"source": "test", "round_index": 1, "archive_directives": [{"x": 1}]})
+    signal = ResearchSignal.from_dict({"source": "test", "round_index": 1, "unexpected_field": [{"x": 1}]})
     assert any("unknown_research_signal_fields" in item for item in signal.warnings)
 
 

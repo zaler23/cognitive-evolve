@@ -109,6 +109,7 @@ class EvolutionLoopResult:
     stop_reason: str = ""
     completion_status: str = "running"
     adaptive_state: dict[str, Any] = field(default_factory=dict)
+    graded_output: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -129,6 +130,7 @@ class EvolutionLoopResult:
             "stop_reason": self.stop_reason,
             "completion_status": self.completion_status,
             "adaptive_state": self.adaptive_state,
+            "graded_output": self.graded_output,
         }
 
 

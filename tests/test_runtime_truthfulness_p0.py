@@ -208,13 +208,13 @@ def test_service_api_key_matching_is_constant_time_membership() -> None:
     assert _matches_service_api_key("secret-c", ("secret-a", "secret-b")) is False
 
 
-def test_job_public_downgrades_durable_resume_claim(tmp_path: Path) -> None:
+def test_job_public_exposes_resume_route_without_claiming_checkpoint_available(tmp_path: Path) -> None:
     job = {"id": "job-test", "status": "completed", "artifact_root": str(tmp_path), "task_dir": str(tmp_path)}
 
     public = _job_public(job)
 
     assert public["durable_resume_plan"]["status"] == "snapshot_only"
-    assert public["durable_resume_plan"]["api_resume_supported"] is False
+    assert public["durable_resume_plan"]["api_resume_supported"] is True
     assert public["resume_available"] is False
 
 

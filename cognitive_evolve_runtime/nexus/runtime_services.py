@@ -99,6 +99,12 @@ class NexusPersistenceService:
             budget_history=budget_history or [],
             budget=_checkpoint_budget_payload(budget, checkpoint_round=checkpoint_round),
             adaptive_state=adaptive_state,
+            trace_state={"entries": list((adaptive_state.get("research_extensions") or {}).get("trace_entries") or [])},
+            tension_map=dict((adaptive_state.get("research_extensions") or {}).get("tension_map") or {}),
+            cost_ledger=dict((adaptive_state.get("research_extensions") or {}).get("cost_ledger") or {}),
+            concept_snapshots=dict((adaptive_state.get("research_extensions") or {}).get("extensions") or {}),
+            verification_plan=dict((adaptive_state.get("research_extensions") or {}).get("verification_plan") or {}),
+            graded_output=dict(getattr(result, "graded_output", {}) or {}),
             allow_progress_round_repair=bool(result.interrupted),
         )
         adaptive_dir = self.output_dir / "adaptive"
@@ -134,6 +140,9 @@ class NexusPersistenceService:
                     "research_state": str(research_dir / "research-state.json"),
                     "research_events": str(research_dir / "research-events.jsonl"),
                     "research_metrics": str(research_dir / "research-metrics.json"),
+                    "campaign_trace": str(research_dir / "campaign_trace.jsonl"),
+                    "concept_effect_report": str(research_dir / "concept-effect-report.json"),
+                    "contract_delta_proposals": str(research_dir / "contract-delta-proposals.json"),
                 }
             )
         run.artifacts = dict(artifacts)
@@ -263,6 +272,10 @@ def _adaptive_snapshot_writes(adaptive_state: dict[str, Any], final_certificate:
         events = [safe_research_payload(dict(item), max_bytes=8192) for item in research.get("events", []) if isinstance(item, dict)]
         writes.append(SnapshotWrite("research/research-events.jsonl", "text", "".join(json.dumps(event, ensure_ascii=False, sort_keys=True, default=str) + "\n" for event in events), sort_keys=False))
         writes.append(SnapshotWrite("research/research-metrics.json", "json", dict(research.get("metrics") or adaptive_state.get("research_metrics") or {})))
+        trace_entries = [dict(item) for item in research.get("trace_entries", []) if isinstance(item, dict)]
+        writes.append(SnapshotWrite("research/campaign_trace.jsonl", "text", "".join(json.dumps(item, ensure_ascii=False, sort_keys=True, default=str) + "\n" for item in trace_entries), sort_keys=False))
+        writes.append(SnapshotWrite("research/concept-effect-report.json", "json", dict(research.get("concept_effect_report") or {})))
+        writes.append(SnapshotWrite("research/contract-delta-proposals.json", "json", {"proposals": [dict(item) for item in research.get("contract_delta_proposals", []) if isinstance(item, dict)]}))
     return writes
 
 

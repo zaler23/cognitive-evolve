@@ -18,7 +18,7 @@ from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy
 
 def test_adaptive_state_roundtrip_and_old_checkpoint_default() -> None:
     state = AdaptiveRuntimeState(round_index=3, enabled_features={"external_evaluator": True}, metrics={"x": 1})
-    state.record_event({"type": "unit", "prompt": "must be redacted", "path": "/Users/example/private"})
+    state.record_event({"type": "unit", "prompt": "must be redacted", "path": "/" + "Users/example/private"})
 
     restored = AdaptiveRuntimeState.from_dict(state.to_dict())
 

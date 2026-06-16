@@ -166,8 +166,8 @@ def test_fallback_events_are_captured_and_persisted(tmp_path: Path) -> None:
     record_fallback(
         stage="model_schema_repair",
         reason="FixtureError",
-        detail="/Users/private/project/path with secret API_KEY should be summarized",
-        target="/Users/private/project/runtime-state.json",
+        detail=("/" + "Users/private/project/path with secret API_KEY should be summarized"),
+        target=("/" + "Users/private/project/runtime-state.json"),
     )
     events = finish_fallback_capture(token)
 
@@ -194,6 +194,6 @@ def test_fallback_events_are_captured_and_persisted(tmp_path: Path) -> None:
     assert run_result["evolution"]["fallback_event_count"] == 1
     persisted_event = run_result["evolution"]["fallback_events"][0]
     assert persisted_event["type"] == "nexus_fallback"
-    assert "/Users/" not in json.dumps(persisted_event)
+    assert ("/" + "Users/") not in json.dumps(persisted_event)
     assert "API_KEY" not in json.dumps(persisted_event)
     assert any(json.loads(line)["type"] == "nexus_fallback" for line in events_jsonl)

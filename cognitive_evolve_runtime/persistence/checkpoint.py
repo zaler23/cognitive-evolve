@@ -27,6 +27,12 @@ class NexusCheckpoint:
     budget_history: list[dict[str, Any]] = field(default_factory=list)
     budget: dict[str, Any] = field(default_factory=dict)
     adaptive_state: dict[str, Any] = field(default_factory=dict)
+    trace_state: dict[str, Any] = field(default_factory=dict)
+    tension_map: dict[str, Any] = field(default_factory=dict)
+    cost_ledger: dict[str, Any] = field(default_factory=dict)
+    concept_snapshots: dict[str, Any] = field(default_factory=dict)
+    verification_plan: dict[str, Any] = field(default_factory=dict)
+    graded_output: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=utc_now)
 
     def to_dict(self) -> dict[str, Any]:
@@ -48,6 +54,12 @@ class NexusCheckpoint:
             budget_history=[dict(item) for item in data.get("budget_history", []) if isinstance(item, dict)],
             budget=coerce_dict(data.get("budget")),
             adaptive_state=coerce_dict(data.get("adaptive_state")),
+            trace_state=coerce_dict(data.get("trace_state")),
+            tension_map=coerce_dict(data.get("tension_map")),
+            cost_ledger=coerce_dict(data.get("cost_ledger")),
+            concept_snapshots=coerce_dict(data.get("concept_snapshots")),
+            verification_plan=coerce_dict(data.get("verification_plan")),
+            graded_output=coerce_dict(data.get("graded_output")),
             created_at=str(data.get("created_at") or utc_now()),
         )
 
@@ -97,6 +109,12 @@ class CheckpointStore:
             "budget_history": list(checkpoint.budget_history),
             "budget": dict(checkpoint.budget),
             "adaptive_state": dict(checkpoint.adaptive_state),
+            "trace_state": dict(checkpoint.trace_state),
+            "tension_map": dict(checkpoint.tension_map),
+            "cost_ledger": dict(checkpoint.cost_ledger),
+            "concept_snapshots": dict(checkpoint.concept_snapshots),
+            "verification_plan": dict(checkpoint.verification_plan),
+            "graded_output": dict(checkpoint.graded_output),
             "contract": checkpoint.contract,
             "world": checkpoint.world,
             "mode": checkpoint.mode,
@@ -118,6 +136,12 @@ class CheckpointStore:
         budget_history: list[dict[str, Any]] | None = None,
         budget: dict[str, Any] | None = None,
         adaptive_state: dict[str, Any] | None = None,
+        trace_state: dict[str, Any] | None = None,
+        tension_map: dict[str, Any] | None = None,
+        cost_ledger: dict[str, Any] | None = None,
+        concept_snapshots: dict[str, Any] | None = None,
+        verification_plan: dict[str, Any] | None = None,
+        graded_output: dict[str, Any] | None = None,
         allow_progress_round_repair: bool = False,
     ) -> NexusCheckpoint:
         checkpoint = build_checkpoint_state(
@@ -134,6 +158,12 @@ class CheckpointStore:
             budget_history=budget_history,
             budget=budget,
             adaptive_state=adaptive_state,
+            trace_state=trace_state,
+            tension_map=tension_map,
+            cost_ledger=cost_ledger,
+            concept_snapshots=concept_snapshots,
+            verification_plan=verification_plan,
+            graded_output=graded_output,
             allow_progress_round_repair=allow_progress_round_repair,
         )
         self.save(checkpoint, allow_progress_round_repair=allow_progress_round_repair)
@@ -155,6 +185,12 @@ def build_checkpoint_state(
     budget_history: list[dict[str, Any]] | None = None,
     budget: dict[str, Any] | None = None,
     adaptive_state: dict[str, Any] | None = None,
+    trace_state: dict[str, Any] | None = None,
+    tension_map: dict[str, Any] | None = None,
+    cost_ledger: dict[str, Any] | None = None,
+    concept_snapshots: dict[str, Any] | None = None,
+    verification_plan: dict[str, Any] | None = None,
+    graded_output: dict[str, Any] | None = None,
     allow_progress_round_repair: bool = False,
 ) -> NexusCheckpoint:
     checkpoint = NexusCheckpoint(
@@ -171,6 +207,12 @@ def build_checkpoint_state(
         budget_history=budget_history or [],
         budget=coerce_dict(budget),
         adaptive_state=coerce_dict(adaptive_state),
+        trace_state=coerce_dict(trace_state),
+        tension_map=coerce_dict(tension_map),
+        cost_ledger=coerce_dict(cost_ledger),
+        concept_snapshots=coerce_dict(concept_snapshots),
+        verification_plan=coerce_dict(verification_plan),
+        graded_output=coerce_dict(graded_output),
     )
     checkpoint = _repair_progress_event_round(checkpoint) if allow_progress_round_repair else checkpoint
     if checkpoint.progress_event:

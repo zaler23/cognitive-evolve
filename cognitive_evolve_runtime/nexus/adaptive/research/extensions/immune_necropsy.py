@@ -4,6 +4,9 @@ from __future__ import annotations
 import hashlib
 from typing import Any
 
+from cognitive_evolve_runtime.concepts.contract import contract_for
+from cognitive_evolve_runtime.concepts.effects import VerificationObligation
+
 from cognitive_evolve_runtime.core.scalars import bounded_score
 from cognitive_evolve_runtime.evaluators.evidence import SearchPressure, evidence_records, evidence_state
 from cognitive_evolve_runtime.nexus.adaptive.research.protocol import ResearchContext
@@ -15,11 +18,13 @@ class ImmuneNecropsyExtension:
 
     def __init__(self, config: dict[str, Any] | None = None) -> None:
         self.config = dict(config or {})
+        self.contract = contract_for(self.extension_id)
         self.rules: dict[str, dict[str, Any]] = {}
         self.necropsies: list[dict[str, Any]] = []
 
     def after_evidence(self, ctx: ResearchContext) -> ResearchSignal:
         created = 0
+        obligations: list[VerificationObligation] = []
         for candidate in ctx.candidates:
             state = evidence_state(candidate)
             if not state.get("terminal_reject"):
@@ -35,8 +40,9 @@ class ImmuneNecropsyExtension:
             self.rules[rid] = rule
             if count >= 2:
                 self.necropsies.append({"candidate_id": candidate.id, "rule_id": rid, "common_failure_signature": signature, "recommended_reseed": "repair_from_non_terminal_parent", "contract_mutated": False})
+            obligations.append(VerificationObligation(id=rid, verifier_fingerprint="immune:" + hashlib.sha256(signature.encode("utf-8")).hexdigest()[:16], must_pass=count >= int(self.config.get("hard_reject_after", 3) or 3), strength_contribution=1 if count >= 2 else 0, replayable=True, origin=self.extension_id))
             created += 1
-        return ResearchSignal(source=self.extension_id, round_index=ctx.round_index, metrics={"antibody_rule_count": len(self.rules), "necropsy_report_count": len(self.necropsies), "immune_observed_failures": created})
+        return ResearchSignal(source=self.extension_id, round_index=ctx.round_index, verification_obligations=obligations, metrics={"antibody_rule_count": len(self.rules), "necropsy_report_count": len(self.necropsies), "immune_observed_failures": created})
 
     def before_parent_selection(self, ctx: ResearchContext) -> ResearchSignal:
         advisory = {}

@@ -3,6 +3,9 @@ from __future__ import annotations
 
 from typing import Any
 
+from cognitive_evolve_runtime.concepts.contract import contract_for
+from cognitive_evolve_runtime.concepts.effects import BudgetDirective
+
 from cognitive_evolve_runtime.core.scalars import bounded_score
 from cognitive_evolve_runtime.evaluators.evidence import SearchPressure, evidence_records, evidence_state
 from cognitive_evolve_runtime.nexus.adaptive.research.protocol import ResearchContext
@@ -14,6 +17,7 @@ class BudgetBackpressureExtension:
 
     def __init__(self, config: dict[str, Any] | None = None) -> None:
         self.config = dict(config or {})
+        self.contract = contract_for(self.extension_id)
         self.ledger: dict[str, dict[str, Any]] = {}
         self.backpressure = False
 
@@ -29,7 +33,12 @@ class BudgetBackpressureExtension:
         pending = sum(1 for item in self.ledger.values() if item.get("targeted", 0) and item.get("search_score", 0.0) < 0.5)
         threshold = _int(self.config.get("pending_threshold"), 8)
         self.backpressure = pending > threshold
-        return ResearchSignal(source=self.extension_id, round_index=ctx.round_index, metrics={"budget_ledger_candidate_count": len(self.ledger), "backpressure_active": self.backpressure, "pending_targeted_low_score": pending})
+        directives = []
+        if self.ledger:
+            best_roi = max(float(item.get("roi") or 0.0) for item in self.ledger.values())
+            target = max(self.ledger.items(), key=lambda item: float(item[1].get("roi") or 0.0))[0]
+            directives.append(BudgetDirective(target=str(target), weight=max(0.1, best_roi), reason="prioritize_high_roi_candidate_verification", roi_estimate=best_roi))
+        return ResearchSignal(source=self.extension_id, round_index=ctx.round_index, budget_directives=directives, metrics={"budget_ledger_candidate_count": len(self.ledger), "backpressure_active": self.backpressure, "pending_targeted_low_score": pending})
 
     def before_parent_selection(self, ctx: ResearchContext) -> ResearchSignal:
         advisory = {}

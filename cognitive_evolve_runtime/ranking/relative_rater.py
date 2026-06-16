@@ -140,9 +140,12 @@ class RelativeRater:
                 if is_quota_error(exc):
                     raise
                 record_fallback(stage="relative_ranking", reason=exc.__class__.__name__, detail=str(exc))
-                repaired = _deterministic_rank(candidates, raw_notes=f"model_relative_rank_schema_error_repaired:{exc.__class__.__name__}:{exc}")
+                repaired = _deterministic_rank(candidates, raw_notes=f"model_relative_rank_schema_error_repaired:{exc.__class__.__name__}:{exc}; evidence_degraded_no_final_answer_claim")
+                repaired.best_final_answer_id = ""
                 for candidate in candidates:
                     candidate.metadata["ranking_schema_repair_error"] = f"{exc.__class__.__name__}: {exc}"
+                    candidate.metadata["evidence_degraded"] = True
+                    candidate.metadata["final_output_blocked_reason"] = "model_relative_rank_unavailable"
                 return repaired
         if not candidates:
             return RelativeRankingResult(raw_notes="no candidates")
