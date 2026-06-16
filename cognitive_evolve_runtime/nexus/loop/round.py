@@ -52,6 +52,10 @@ from cognitive_evolve_runtime.nexus.reproduction import (
     verify_offspring,
 )
 from cognitive_evolve_runtime.tools.verification_stack import NexusVerifierStack
+from cognitive_evolve_runtime.verification.cache import check_with_cache
+from cognitive_evolve_runtime.verification.factory import verifier_from_plan
+from cognitive_evolve_runtime.verification.obligation_runner import run_obligations_for_population
+from cognitive_evolve_runtime.verification.types import VerificationPlan
 from cognitive_evolve_runtime.theory import TheoryConfig, TheoryLayer, build_population_representation
 from cognitive_evolve_runtime.nexus._shared import MODEL_BOUNDARY_ERRORS, positive_int
 from cognitive_evolve_runtime.llm.retry import provider_error_category
@@ -116,6 +120,7 @@ class EvolutionRound:
         contract: NexusObjectiveContract,
     ) -> RoundEvaluation:
         self.adaptive.begin_round(round_index=current_round)
+        self._sync_model_context_controls()
         self.adaptive.observe_population(population=population, round_index=current_round)
         critiques, verification_results = self.critique_and_verify(
             current_round=current_round,
@@ -152,6 +157,7 @@ class EvolutionRound:
                 failed=max(0, evaluated - passed),
                 candidates=population.candidates,
             )
+        self._apply_archive_directives(archives=archives, population=population)
         rankings = self.rank(population=population, archives=archives, policy=policy, contract=contract, current_round=current_round)
         self.adaptive.observe_population(population=population, round_index=current_round)
         plan = GenerationPlan.from_dict(self.last_generation_plan)
@@ -322,6 +328,8 @@ class EvolutionRound:
             current_round=current_round,
             round_limit=self.budget.round_limit,
         )
+        verification_results.extend(self._run_synthesized_verifier(population.candidates, current_round=current_round))
+        verification_results.extend(self._run_verification_obligations(population.candidates, current_round=current_round))
         ingest_latent_feedback(
             contract=contract,
             critiques=critiques,
@@ -329,6 +337,58 @@ class EvolutionRound:
         )
         ingest_runtime_trial_feedback(contract=contract, candidates=population.candidates)
         return critiques, verification_results
+
+    def _run_synthesized_verifier(self, candidates: list[CandidateGenome], *, current_round: int) -> list[Any]:
+        plan_data = self.adaptive.verification_plan_dict()
+        if not plan_data:
+            return []
+        plan = VerificationPlan.from_dict(plan_data)
+        verifier = verifier_from_plan(plan)
+        if verifier is None:
+            return []
+        cache = self.adaptive.verification_cache()
+        results: list[Any] = []
+        viable = [
+            candidate
+            for candidate in candidates
+            if CandidateFate.normalize(candidate.current_fate) in {CandidateFate.ACTIVE.value, CandidateFate.ELITE.value, CandidateFate.INCUBATING.value}
+        ]
+        max_checks = max(1, min(len(viable), self._branch_limit() if self.budget.adaptive else max(self._branch_limit(), 4)))
+        for candidate in viable[:max_checks]:
+            result, cache_key, cache_hit = check_with_cache(candidate, verifier, cache)
+            trace_item = result.to_dict()
+            trace_item.setdefault("metadata", {})
+            if isinstance(trace_item["metadata"], dict):
+                trace_item["metadata"].update({"round_index": current_round, "cache_key": cache_key, "cache_hit": cache_hit})
+            candidate.verification_trace = [*candidate.verification_trace, trace_item][-100:]
+            if result.passed and result.replayable:
+                current = candidate.verification_result if isinstance(candidate.verification_result, dict) else {}
+                current_strength = int(current.get("strength_value") or 0) if current else 0
+                if int(result.strength) >= current_strength:
+                    candidate.verification_result = trace_item
+            results.append(result)
+        self.adaptive.update_verification_cache(cache)
+        return results
+
+    def _run_verification_obligations(self, candidates: list[CandidateGenome], *, current_round: int) -> list[Any]:
+        obligations = self.adaptive.verification_obligation_features()
+        if not obligations:
+            return []
+        cache = self.adaptive.verification_cache()
+        records = run_obligations_for_population(candidates, obligations, cache=cache, max_checks=max(1, self._branch_limit()))
+        self.adaptive.update_verification_cache(cache)
+        for record in records:
+            obligation = record.get("obligation") if isinstance(record.get("obligation"), dict) else {}
+            self.adaptive.record_effect_application(
+                channel="verification_obligations",
+                item=obligation,
+                changed=bool(record.get("changed")),
+                consumer="verification.obligation_runner",
+                reason=str(record.get("reason") or ""),
+                result=record,
+                consume=bool(record.get("changed")),
+            )
+        return records
 
     def diagnose_and_update(
         self,
@@ -388,9 +448,11 @@ class EvolutionRound:
             actions = list(dict.fromkeys(latent_actions + actions))
         if plan is not None:
             assert_stage_ready(plan, "plan_mutations", completed_stage_ops)
+        self._sync_model_context_controls()
         plans = _plan_mutations(model=self.model, mutation_planner=self.mutation_planner, parents=parents, actions=actions, archives=archives, diagnosis=diagnosis, policy=policy)
         plans, latent_exploration_plan = apply_latent_exploration_to_mutation_plans(plans, contract, exploration=latent_exploration_plan)
         plans = self._apply_search_pressure_to_plans(plans, parents=parents)
+        plans = self._apply_candidate_transforms_to_plans(plans, parents=parents)
         if plan is not None:
             completed_stage_ops.append("plan_mutations")
             self.last_generation_plan["mutation_objectives"] = list(actions)
@@ -448,6 +510,116 @@ class EvolutionRound:
     def _branch_limit(self) -> int:
         return max(2, int(self.budget.branch_factor or 2))
 
+    def _sync_model_context_controls(self) -> None:
+        metadata = getattr(self.model, "metadata", None)
+        if not isinstance(metadata, dict):
+            return
+        transforms = self.adaptive.context_transform_features()
+        plan = self.adaptive.verification_plan_dict()
+        if not transforms and not plan:
+            return
+        protect_refs: list[str] = []
+        drop_refs: list[str] = []
+        view_hash_parts: list[str] = []
+        known_protect = {"problem_spec", "verification_plan", "honesty_invariant", "contract", "world", "policy", "prompt_contract"}
+        known_drop = {"drop:history", "drop:archive_elites", "drop:failure_lessons"}
+        for transform in transforms:
+            if not isinstance(transform, dict):
+                continue
+            protect_refs.extend(str(item) for item in transform.get("protect_refs", []) if item) if isinstance(transform.get("protect_refs"), list) else None
+            drop_refs.extend(str(item) for item in transform.get("drop_refs", []) if item) if isinstance(transform.get("drop_refs"), list) else None
+            if transform.get("view_hash"):
+                view_hash_parts.append(str(transform.get("view_hash")))
+        controls = {
+            "protect_refs": list(dict.fromkeys([item for item in protect_refs if item in known_protect])),
+            "drop_refs": list(dict.fromkeys([item for item in drop_refs if item in known_drop])),
+            "view_hash": ":".join(view_hash_parts),
+            "verification_plan": plan,
+        }
+        before = dict(metadata.get("prompt_context_controls") or {}) if isinstance(metadata.get("prompt_context_controls"), dict) else {}
+        metadata["prompt_context_controls"] = controls
+        for transform in transforms:
+            if not isinstance(transform, dict):
+                continue
+            mapped = bool(set(transform.get("protect_refs", []) or []) & known_protect or set(transform.get("drop_refs", []) or []) & known_drop)
+            self.adaptive.record_effect_application(
+                channel="context_transforms",
+                item=transform,
+                changed=mapped and before != controls,
+                consumer="StructuredModelAdapterCore.prompt_context_controls",
+                reason="context_transform_controls_injected" if mapped else "context_transform_unknown_refs",
+                result={"controls": controls},
+                consume=False,
+            )
+
+    def _apply_archive_directives(self, *, archives: ArchiveManager, population: CandidatePopulation) -> None:
+        if not self.adaptive.enabled:
+            return
+        directives = self.adaptive.archive_directive_features()
+        if not directives:
+            return
+        for directive in directives:
+            if self.adaptive.effect_consumed("archive_directives", directive):
+                continue
+            records = archives.apply_archive_directives([directive], population.candidates)
+            result = records[0] if records else {"changed": False, "reason": "archive_directive_no_result"}
+            changed = bool(result.get("changed"))
+            self.adaptive.record_effect_application(
+                channel="archive_directives",
+                item=directive,
+                changed=changed,
+                consumer="ArchiveManager.apply_archive_directives",
+                reason=str(result.get("reason") or ""),
+                result=result,
+                consume=changed,
+            )
+
+    def _apply_budget_directives_to_parents(self, parents: list[CandidateGenome], *, population: CandidatePopulation, limit: int) -> list[CandidateGenome]:
+        if not parents or not self.adaptive.enabled:
+            return parents
+        directives = self.adaptive.budget_directive_features()
+        if not directives:
+            return parents
+        active_mode = str(getattr(self.adaptive.config.research, "mode", "observe") or "observe").lower() == "active"
+        viable_by_id = {candidate.id: candidate for candidate in population.candidates if CandidateFate.normalize(candidate.current_fate) in {CandidateFate.ACTIVE.value, CandidateFate.ELITE.value, CandidateFate.INCUBATING.value}}
+        candidates = sorted(
+            [dict(item) for item in directives if isinstance(item, dict) and not self.adaptive.effect_consumed("budget_directives", item)],
+            key=lambda item: (float(item.get("roi_estimate") or 0.0), float(item.get("weight") or 0.0), str(item.get("target") or "")),
+            reverse=True,
+        )
+        selected = list(parents)[: max(0, int(limit or len(parents)))]
+        selected_ids = {candidate.id for candidate in selected}
+        for directive in candidates[:1]:
+            target_id = str(directive.get("target") or "")
+            target = viable_by_id.get(target_id)
+            if target is None:
+                self.adaptive.record_effect_application(channel="budget_directives", item=directive, changed=False, consumer="EvolutionRound._apply_budget_directives_to_parents", reason="budget_target_not_viable", consume=False)
+                continue
+            if not active_mode:
+                self.adaptive.record_effect_application(channel="budget_directives", item=directive, changed=False, consumer="EvolutionRound._apply_budget_directives_to_parents", reason="budget_directive_advisory_only", consume=False)
+                continue
+            before = [candidate.id for candidate in selected]
+            if target.id not in selected_ids:
+                if len(selected) < max(1, int(limit or len(selected))):
+                    selected.append(target)
+                elif selected:
+                    selected[-1] = target
+                else:
+                    selected = [target]
+            after = [candidate.id for candidate in selected]
+            changed = before != after
+            self.adaptive.record_effect_application(
+                channel="budget_directives",
+                item=directive,
+                changed=changed,
+                consumer="EvolutionRound._apply_budget_directives_to_parents",
+                reason="budget_parent_slot_reserved" if changed else "budget_target_already_selected",
+                result={"before_parent_ids": before, "after_parent_ids": after},
+                consume=changed,
+            )
+            break
+        return selected[: max(1, int(limit or len(selected)))]
+
     def _select_reproduction_parents(
         self,
         *,
@@ -465,7 +637,7 @@ class EvolutionRound:
         advisory_features = self._combined_advisory_features(policy=policy, candidates=population.candidates, current_round=current_round)
         parents = self.selector.select(population.candidates, archives, limit=limit, eligibility_policy=_eligibility_policy(policy), advisory_features=advisory_features)
         if parents:
-            return parents
+            return self._apply_budget_directives_to_parents(parents, population=population, limit=limit)
         parents = ranked_repair_fallback_parents(population.candidates, rankings=rankings, diagnosis=diagnosis, limit=limit, current_round=current_round)
         if parents:
             return parents
@@ -514,6 +686,57 @@ class EvolutionRound:
             return {}
         representation = build_population_representation(candidates, cycle_id=f"round:{current_round}")
         return self.theory_layer.advisory_features_for_population(representation, config=config)
+
+    def _apply_candidate_transforms_to_plans(self, plans: list[MutationPlan], *, parents: list[CandidateGenome]) -> list[MutationPlan]:
+        if not plans or not parents or not self.adaptive.enabled:
+            return plans
+        transforms = self.adaptive.candidate_transform_features()
+        if not transforms:
+            return plans
+        by_parent = {parent.id: parent for parent in parents}
+        by_candidate: dict[str, list[dict[str, Any]]] = {}
+        for transform in transforms:
+            if not isinstance(transform, dict) or self.adaptive.effect_consumed("candidate_transforms", transform):
+                continue
+            by_candidate.setdefault(str(transform.get("candidate_id") or ""), []).append(transform)
+        out: list[MutationPlan] = []
+        applied_keys: set[str] = set()
+        for index, plan in enumerate(plans):
+            parent = None
+            for parent_id in plan.parent_ids:
+                parent = by_parent.get(parent_id)
+                if parent is not None:
+                    break
+            if parent is None:
+                parent = parents[index % len(parents)]
+            selected = by_candidate.get(parent.id, [])
+            if not selected:
+                out.append(plan)
+                continue
+            metadata = dict(plan.metadata or {})
+            applied: list[dict[str, Any]] = []
+            instruction = plan.instruction
+            for transform in selected:
+                transform_key = effect_key("candidate_transforms", transform)
+                if transform_key in applied_keys or self.adaptive.effect_consumed("candidate_transforms", transform, key=transform_key):
+                    continue
+                kind = str(transform.get("kind") or "")
+                payload = transform.get("payload") if isinstance(transform.get("payload"), dict) else {}
+                if kind == "collapse_params" and not payload.get("parameter_slots"):
+                    self.adaptive.record_effect_application(channel="candidate_transforms", item=transform, changed=False, consumer="EvolutionRound._apply_candidate_transforms_to_plans", reason="collapse_params_missing_parameter_slots", consume=False)
+                    continue
+                applied.append(dict(transform))
+                applied_keys.add(transform_key)
+                if kind == "collapse_params":
+                    instruction = (instruction.rstrip() + "\n\nApply the explicit parameter_slots assignment from candidate_transform.collapse_params; remove parameter_space after freezing concrete values.").strip()
+            if applied:
+                metadata["candidate_transforms"] = applied
+                out.append(MutationPlan.from_dict({**plan.to_dict(), "instruction": instruction, "metadata": metadata}))
+                for transform in applied:
+                    self.adaptive.record_effect_application(channel="candidate_transforms", item=transform, changed=True, consumer="EvolutionRound._apply_candidate_transforms_to_plans", reason="candidate_transform_attached_to_mutation_plan", result={"parent_id": parent.id}, consume=True)
+            else:
+                out.append(plan)
+        return out
 
     def _apply_search_pressure_to_plans(self, plans: list[MutationPlan], *, parents: list[CandidateGenome]) -> list[MutationPlan]:
         if not plans or not parents or not self.adaptive.enabled:

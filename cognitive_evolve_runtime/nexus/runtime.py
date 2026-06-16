@@ -25,6 +25,8 @@ from cognitive_evolve_runtime.nexus.budget_factory import evolution_budget_from_
 from cognitive_evolve_runtime.nexus.loop import EvolutionBudget, EvolutionLoopResult, evolve_once, seed_population
 from cognitive_evolve_runtime.nexus.model_adapter import StructuredModelAdapter
 from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy, EvolutionPolicyBuilder
+from cognitive_evolve_runtime.verification.synthesizer import VerificationSynthesizer
+from cognitive_evolve_runtime.verification.types import VerificationPlan
 from cognitive_evolve_runtime.nexus.protocols import NexusModelLike
 from cognitive_evolve_runtime.nexus.project_verification import ProjectVerificationSummary
 from cognitive_evolve_runtime.nexus.fallbacks import finish_fallback_capture, start_fallback_capture
@@ -142,6 +144,7 @@ class NexusRuntime:
         min_population_size = min_population_size if min_population_size is not None else budget.initial_candidate_count
         population = seed_population(contract=contract, world=world, policy=policy, model=self.model, min_population_size=min_population_size)
         archives = ArchiveManager(policy.archive_schema)
+        verification_plan = VerificationSynthesizer(model=self.model).synthesize({"goal": goal, "contract": contract.to_dict()})
         world_payload = _world_to_dict_with_latent_metadata(world, contract)
         observer = self._live_observer(mode="text", contract=contract, world=world_payload, max_rounds=budget.max_rounds, budget=budget.to_dict())
         result = evolve_once(
@@ -155,6 +158,7 @@ class NexusRuntime:
             observer=observer,
             cancellation_callback=cancellation_callback,
             adaptive_config=adaptive_config,
+            verification_plan=verification_plan,
         )
         run = NexusRunResult(
             mode="text",
@@ -212,6 +216,7 @@ class NexusRuntime:
         min_population_size = min_population_size if min_population_size is not None else budget.initial_candidate_count
         population = seed_population(contract=contract, world=world, policy=policy, model=self.model, min_population_size=min_population_size)
         archives = ArchiveManager(policy.archive_schema)
+        verification_plan = VerificationSynthesizer(model=self.model).synthesize({"goal": user_goal, "contract": contract.to_dict(), "mode": "project"})
         context_result = self.context_orchestrator.build_for_parents(
             contract=contract,
             snapshot=snapshot,
@@ -242,6 +247,7 @@ class NexusRuntime:
             cancellation_callback=cancellation_callback,
             offspring_verifier=verify_offspring,
             adaptive_config=adaptive_config,
+            verification_plan=verification_plan,
         )
         run = NexusRunResult(
             mode="project",
@@ -318,6 +324,7 @@ class NexusRuntime:
         )
         budget.max_rounds = target_rounds
         budget.history = list(restored.get("budget_history") or [])
+        verification_plan = _verification_plan_from_restored(restored, contract=contract, mode=mode, model=self.model)
         observer = self._live_observer(mode=mode, contract=contract, world=world, max_rounds=target_rounds, budget=budget.to_dict())
         result = evolve_once(
             population=population,
@@ -330,6 +337,7 @@ class NexusRuntime:
             observer=observer,
             offspring_verifier=offspring_verifier,
             adaptive_state=restored.get("adaptive_state") or {},
+            verification_plan=verification_plan,
         )
         world_payload = _world_to_dict_with_latent_metadata(world, contract)
         run = NexusRunResult(
@@ -461,6 +469,15 @@ def _sync_runtime_round_metadata(evolution: dict[str, Any], result: EvolutionLoo
         "stop_reason": result.stop_reason,
         "completion_status": result.completion_status,
     }
+
+
+def _verification_plan_from_restored(restored: dict[str, Any], *, contract: NexusObjectiveContract, mode: str, model: Any | None) -> VerificationPlan:
+    adaptive_state = dict(restored.get("adaptive_state") or {})
+    research = dict(adaptive_state.get("research_extensions") or {})
+    plan = dict(research.get("verification_plan") or restored.get("verification_plan") or {})
+    if plan:
+        return VerificationPlan.from_dict(plan)
+    return VerificationSynthesizer(model=model).synthesize({"goal": getattr(contract, "normalized_goal", "") or contract.to_dict(), "mode": mode, "resynthesized_from_checkpoint": True})
 
 
 def _contract_from_checkpoint(mode: str, data: dict[str, Any]) -> NexusObjectiveContract:

@@ -72,10 +72,12 @@ def build_prompt_view(request_type: str, payload: dict[str, Any], *, max_chars: 
     """Build a compact, bounded prompt view for a Nexus model request."""
 
     limit = max(1, int(max_chars or prompt_char_budget(long_context=_is_long_context_request(request_type))))
+    controls = _prompt_context_controls(payload)
+    protected_paths = _protected_paths_from_controls(controls)
     raw_chars = _json_chars(payload)
-    compressed = _compress_payload(request_type, payload)
+    compressed = _apply_prompt_context_controls(_compress_payload(request_type, payload), controls)
     compressed_chars = _json_chars(compressed)
-    bounded = _fit_payload(compressed, max_chars=limit)
+    bounded = _fit_payload(compressed, max_chars=limit, protected_paths=protected_paths)
     sent_chars = _json_chars(bounded)
     metadata = {
         "type": "nexus_prompt_view",
@@ -90,6 +92,9 @@ def build_prompt_view(request_type: str, payload: dict[str, Any], *, max_chars: 
         "sent_payload_sha256": _sha256_json(bounded),
         "policy": "candidate_archive_summary_then_recursive_fit",
         "omitted_heavy_fields": sorted(HEAVY_CANDIDATE_FIELDS),
+        "protected_paths_applied": protected_paths,
+        "protected_over_budget": bool(protected_paths and sent_chars > limit),
+        "context_transform_applied": bool(controls),
     }
     return PromptView(payload=bounded, metadata=metadata)
 
@@ -468,10 +473,87 @@ def _synthesis_evidence_manifest(payload: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _fit_payload(payload: dict[str, Any], *, max_chars: int) -> dict[str, Any]:
+def _prompt_context_controls(payload: dict[str, Any]) -> dict[str, Any]:
+    controls = payload.get("_prompt_context_controls") if isinstance(payload, dict) else None
+    return dict(controls) if isinstance(controls, dict) else {}
+
+
+def _protected_paths_from_controls(controls: dict[str, Any]) -> list[str]:
+    refs = [str(item) for item in controls.get("protect_refs", []) if item] if isinstance(controls.get("protect_refs"), list) else []
+    mapping = {
+        "problem_spec": ["contract", "world", "policy"],
+        "verification_plan": ["verification_plan"],
+        "honesty_invariant": ["prompt_contract", "synthesis_requirements"],
+    }
+    out: list[str] = []
+    for ref in refs:
+        out.extend(mapping.get(ref, [ref] if ref in {"contract", "world", "policy", "prompt_contract"} else []))
+    return list(dict.fromkeys(out))
+
+
+def _apply_prompt_context_controls(compressed: dict[str, Any], controls: dict[str, Any]) -> dict[str, Any]:
+    if not controls:
+        return compressed
+    out = json.loads(json.dumps(compressed, ensure_ascii=False, default=str))
+    if "verification_plan" in controls and "verification_plan" not in out:
+        out["verification_plan"] = _small_mapping(_to_mapping(controls.get("verification_plan")), max_items=10, string_chars=300)
+    drop_refs = [str(item) for item in controls.get("drop_refs", []) if item] if isinstance(controls.get("drop_refs"), list) else []
+    for ref in drop_refs:
+        if ref == "drop:history":
+            out.pop("history", None)
+        elif ref == "drop:archive_elites" and isinstance(out.get("archives"), dict):
+            for key in ("answer_elites", "rarity_elites", "dormant_hints"):
+                out["archives"].pop(key, None)
+        elif ref == "drop:failure_lessons":
+            if isinstance(out.get("archives"), dict):
+                out["archives"].pop("failure_lessons", None)
+            for key in ("candidates", "parents"):
+                if isinstance(out.get(key), list):
+                    for item in out[key]:
+                        if isinstance(item, dict):
+                            item.pop("failure_lessons", None)
+    out["_prompt_context_controls_applied"] = {
+        "protect_refs": controls.get("protect_refs", []),
+        "drop_refs": drop_refs,
+        "view_hash": str(controls.get("view_hash") or ""),
+    }
+    return out
+
+
+def _snapshot_paths(payload: dict[str, Any], paths: list[str]) -> dict[str, Any]:
+    return {path: _get_path(payload, path) for path in paths if _get_path(payload, path) is not None}
+
+
+def _restore_paths(payload: dict[str, Any], snapshot: dict[str, Any]) -> None:
+    for path, value in snapshot.items():
+        _set_path(payload, path, value)
+
+
+def _get_path(payload: dict[str, Any], path: str) -> Any:
+    current: Any = payload
+    for part in str(path).split("."):
+        if not isinstance(current, dict) or part not in current:
+            return None
+        current = current[part]
+    return current
+
+
+def _set_path(payload: dict[str, Any], path: str, value: Any) -> None:
+    current = payload
+    parts = [part for part in str(path).split(".") if part]
+    for part in parts[:-1]:
+        if not isinstance(current.get(part), dict):
+            current[part] = {}
+        current = current[part]
+    if parts:
+        current[parts[-1]] = value
+
+
+def _fit_payload(payload: dict[str, Any], *, max_chars: int, protected_paths: list[str] | None = None) -> dict[str, Any]:
     """Recursively shrink a compressed payload until its JSON fits the budget."""
 
     fitted = json.loads(json.dumps(payload, ensure_ascii=False, default=str))
+    protected_snapshot = _snapshot_paths(fitted, protected_paths or [])
     if _json_chars(fitted) <= max_chars:
         return fitted
     # First reduce candidate and archive exemplars; these dominate most payloads.
@@ -481,6 +563,8 @@ def _fit_payload(payload: dict[str, Any], *, max_chars: int) -> dict[str, Any]:
         for key in ("answer_elites", "rarity_elites", "dormant_hints", "auxiliary_hints", "failure_lessons"):
             if isinstance(fitted.get("archives"), dict):
                 _trim_sequence(fitted["archives"], key, min(5, max(2, limit // 4)))
+        _restore_paths(fitted, protected_snapshot)
+        _restore_paths(fitted, protected_snapshot)
         if _json_chars(fitted) <= max_chars:
             return fitted
     # Then halve large strings/lists until fit.  This preserves schema shape.
@@ -496,10 +580,14 @@ def _fit_payload(payload: dict[str, Any], *, max_chars: int) -> dict[str, Any]:
         "candidate_population_stats": fitted.get("candidate_population_stats"),
         "candidates": fitted.get("candidates", [])[:3],
         "archives": fitted.get("archives", {}).get("summary", {}) if isinstance(fitted.get("archives"), dict) else {},
-        "history": fitted.get("history", [])[-1:],
         "_fit_warning": "payload was reduced to minimal Nexus prompt view",
     }
-    return _recursive_clip(minimal, string_limit=120, list_limit=4)
+    if fitted.get("history"):
+        minimal["history"] = fitted.get("history", [])[-1:]
+    _restore_paths(minimal, protected_snapshot)
+    clipped = _recursive_clip(minimal, string_limit=120, list_limit=4)
+    _restore_paths(clipped, protected_snapshot)
+    return clipped
 
 
 def _select_candidates_for_prompt(candidates: list[CandidateGenome], *, limit: int) -> list[CandidateGenome]:

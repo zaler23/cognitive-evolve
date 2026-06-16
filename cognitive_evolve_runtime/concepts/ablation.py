@@ -30,8 +30,9 @@ class ConceptEffectReport:
         concept_id = str(entry.get("concept_id") or "unknown")
         stats = self.stats.setdefault(concept_id, ConceptEffectStats(concept_id=concept_id))
         produced = entry.get("produced_effects") if isinstance(entry.get("produced_effects"), dict) else {}
-        stats.effect_count += sum(1 for value in produced.values() if value) or (1 if produced else 0)
         if entry.get("decision_changed"):
+            # Only actual application traces count as effective concept effects.
+            stats.effect_count += sum(1 for value in produced.values() if value) or (1 if produced else 0)
             stats.decision_changed_count += 1
         cost = entry.get("cost") if isinstance(entry.get("cost"), dict) else {}
         stats.token_cost += _float(cost.get("tokens"), 0.0)
