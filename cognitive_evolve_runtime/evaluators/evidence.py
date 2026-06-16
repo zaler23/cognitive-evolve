@@ -44,6 +44,16 @@ class ArtifactPolicy:
         merged = {**cfg, **evidence}
         if "machine_artifact_required" in merged and "machine_readable_required" not in merged:
             merged["machine_readable_required"] = merged.get("machine_artifact_required")
+        metadata = {k: v for k, v in coerce_dict(merged.get("metadata")).items() if not _sensitive_key(k)}
+        for key in (
+            "domain_vocabulary",
+            "allowed_terms",
+            "allowed_domain_terms",
+            "forbidden_semantic_terms",
+            "semantic_drift_terms",
+        ):
+            if key in merged and key not in metadata and not _sensitive_key(key):
+                metadata[key] = merged[key]
         return cls(
             machine_readable_required=_bool(merged.get("machine_readable_required"), default=False),
             allow_text_fallback=_bool(merged.get("allow_text_fallback"), default=True),
@@ -56,7 +66,7 @@ class ArtifactPolicy:
             field_aliases={str(k): str(v) for k, v in coerce_dict(merged.get("field_aliases")).items() if str(k or "").strip() and str(v or "").strip()},
             required_fields=_str_list(merged.get("required_fields")),
             final_requires_clean_schema=_bool(merged.get("final_requires_clean_schema"), default=True),
-            metadata={k: v for k, v in coerce_dict(merged.get("metadata")).items() if not _sensitive_key(k)},
+            metadata=metadata,
         )
 
 

@@ -4,11 +4,29 @@ from __future__ import annotations
 import ast
 from copy import deepcopy
 import json
+import re
 from typing import Any
 
 from cognitive_evolve_runtime.evaluators.evidence import ArtifactPolicy
 from cognitive_evolve_runtime.nexus._serde import coerce_dict
 from cognitive_evolve_runtime.core.scalars import bounded_score
+
+
+DEFAULT_FORBIDDEN_SEMANTIC_TERMS = (
+    "objective_contract",
+    "fallback_route",
+    "route_profile",
+    "semantic_intake",
+    "nexus",
+    "cogev",
+    "runtime_state",
+    "runtime-state",
+    "checkpoint",
+    "hardware_latency",
+    "recovery_window",
+    "state_integrity",
+    "crc64",
+)
 
 
 def normalize_artifact(candidate: Any, *, artifact_type: str = "", policy: ArtifactPolicy | None = None, machine_artifact_required: bool | None = None) -> dict[str, Any]:
@@ -67,6 +85,48 @@ def normalize_artifact(candidate: Any, *, artifact_type: str = "", policy: Artif
         "final_eligible": False,
         "diagnostics": ["artifact_absent"],
     }
+
+
+def semantic_drift_diagnostics(artifact_view: dict[str, Any], policy: ArtifactPolicy) -> list[str]:
+    """Detect generic runtime/internal semantic drift in machine artifacts.
+
+    This is intentionally policy-driven and domain-neutral: callers may provide
+    allowed or forbidden terms through ``ArtifactPolicy.metadata``.  The default
+    forbidden terms only cover runtime/control-plane vocabulary that should not
+    become part of a user-facing machine artifact unless explicitly allowed.
+    """
+
+    if not policy.machine_readable_required:
+        return []
+    artifact = artifact_view.get("normalized_artifact")
+    if artifact is None:
+        artifact = artifact_view.get("artifact")
+    if artifact in (None, ""):
+        return []
+    metadata = coerce_dict(policy.metadata)
+    allowed_terms = set(_normalized_terms(metadata.get("domain_vocabulary")))
+    allowed_terms.update(_normalized_terms(metadata.get("allowed_domain_terms")))
+    allowed_terms.update(_normalized_terms(metadata.get("allowed_terms")))
+    allowed_terms.update(_tokens(policy.artifact_type))
+    for field in policy.required_fields:
+        allowed_terms.update(_tokens(field))
+    forbidden = _normalized_terms(metadata.get("forbidden_semantic_terms") or metadata.get("semantic_drift_terms"))
+    if not forbidden:
+        forbidden = list(DEFAULT_FORBIDDEN_SEMANTIC_TERMS)
+    text = _artifact_text(artifact).lower()
+    diagnostics: list[str] = []
+    for term in forbidden:
+        normalized = str(term or "").strip().lower()
+        if not normalized:
+            continue
+        term_tokens = set(_tokens(normalized))
+        if term_tokens and term_tokens.issubset(allowed_terms):
+            continue
+        if normalized in text:
+            diagnostics.append(f"semantic_drift_detected: forbidden_term={normalized}")
+        if len(diagnostics) >= 6:
+            break
+    return diagnostics
 
 
 def _machine_artifact_view(
@@ -234,6 +294,27 @@ def _balanced_segment(text: str, left: str, right: str) -> str | None:
     return None
 
 
+def _artifact_text(value: Any) -> str:
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    except Exception:
+        return str(value)
+
+
+def _normalized_terms(value: Any) -> list[str]:
+    if isinstance(value, str):
+        items = re.split(r"[,;\n]+", value)
+    elif isinstance(value, (list, tuple, set)):
+        items = [str(item) for item in value]
+    else:
+        items = []
+    return [str(item).strip().lower() for item in items if str(item or "").strip()]
+
+
+def _tokens(value: str) -> set[str]:
+    return {token for token in re.split(r"[^a-z0-9]+", str(value or "").lower()) if token}
+
+
 def artifact_policy_from_config(data: dict[str, Any] | None) -> ArtifactPolicy:
     cfg = coerce_dict(data)
     evidence = coerce_dict(cfg.get("evidence"))
@@ -251,4 +332,4 @@ def _bool(value: Any, *, default: bool) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on", "enabled", "required"}
 
 
-__all__ = ["artifact_policy_from_config", "normalize_artifact"]
+__all__ = ["artifact_policy_from_config", "normalize_artifact", "semantic_drift_diagnostics"]

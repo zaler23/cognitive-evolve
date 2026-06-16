@@ -198,8 +198,14 @@ evaluator is treated as objective evidence, while model self-claims such as
 "verified" do not by themselves solve the objective. Machine-artifact tasks can
 set `adaptive.evidence.machine_artifact_required=true`; natural-language
 fallback artifacts may then be probed but are not final-eligible until re-emitted
-as clean machine-readable artifacts. When no candidate is certified solved, the
-final projection still emits a best-current candidate when one is available.
+as clean machine-readable artifacts. The runtime turns configured artifact
+policy into a bounded prompt hint so model-backed mutation sees the exact
+`artifact_type`, required fields, forbidden aliases, and optional domain
+vocabulary. Artifact normalization, semantic-drift diagnostics, and
+score-component diagnostics become challenge-memory cases rather than final
+claims. When no candidate is certified solved, the final projection still emits
+a best-current candidate when one is available, and its JSON projection preserves
+structured machine artifacts instead of string-wrapping them.
 
 Adaptive research extensions are implemented as an internal registry under
 `AdaptiveRuntimeController`, not as a second runtime or a parallel research

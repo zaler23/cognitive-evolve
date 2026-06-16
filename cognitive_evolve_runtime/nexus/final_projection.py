@@ -85,8 +85,7 @@ def _projection_for_candidate(candidate: CandidateGenome | None, *, status: str,
     artifact_state = evidence.metadata.get("artifact_state", {}) if evidence is not None and isinstance(evidence.metadata, dict) else {}
     artifact = artifact_state.get("normalized_artifact") if isinstance(artifact_state, dict) and artifact_state.get("normalized_artifact") is not None else candidate.artifact
     artifact_type = _projection_artifact_type(candidate, evidence=evidence, artifact_state=artifact_state, certificate=certificate)
-    adapter = get_adapter(evidence.source if evidence is not None else None)
-    rendered_artifact = adapter.project_artifact_for_user(artifact, evidence=evidence_summary)
+    projected_artifact = _project_artifact_for_projection(artifact, evidence=evidence, evidence_summary=evidence_summary)
     blocking = [str(item) for item in certificate.get("blocking_reasons", []) if item]
     if evidence is not None:
         for challenge in (evidence.metadata.get("challenge_items", []) if isinstance(evidence.metadata, dict) else [])[:8]:
@@ -100,13 +99,16 @@ def _projection_for_candidate(candidate: CandidateGenome | None, *, status: str,
         candidate_id=candidate.id,
         title="Final artifact is certified." if objective_solved else "Best current artifact; not certified as solved.",
         artifact_type=artifact_type,
-        artifact=rendered_artifact,
+        artifact=projected_artifact,
         evidence_summary={
             "stage": evidence.stage if evidence is not None else "none",
             "source": evidence.source if evidence is not None else "none",
             "score": round(float(evidence.score), 4) if evidence is not None else 0.0,
             "final_blocked": bool(state.get("final_blocked", True)),
             "artifact_type": artifact_type,
+            "artifact_cleanliness": artifact_state.get("status") if isinstance(artifact_state, dict) else "",
+            "artifact_final_eligible": bool(artifact_state.get("final_eligible", False)) if isinstance(artifact_state, dict) and artifact_state else None,
+            "projection_status": "final" if objective_solved else "best_current",
         },
         blocking_issues=blocking or (["not_final_certified"] if not objective_solved else []),
         continuation_plan=continuation,
@@ -187,6 +189,13 @@ def _projection_artifact_type(candidate: CandidateGenome, *, evidence: Any, arti
     if value:
         return value
     return str(certificate.get("artifact_type") or "").strip()
+
+
+def _project_artifact_for_projection(artifact: Any, *, evidence: Any, evidence_summary: dict[str, Any]) -> Any:
+    if isinstance(artifact, (dict, list)):
+        return artifact
+    adapter = get_adapter(evidence.source if evidence is not None else None)
+    return adapter.project_artifact_for_user(artifact, evidence=evidence_summary)
 
 
 def _render_artifact(artifact: Any) -> str:

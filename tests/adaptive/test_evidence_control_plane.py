@@ -26,6 +26,8 @@ from cognitive_evolve_runtime.evaluators import (
     stable_artifact_identity_hash,
 )
 from cognitive_evolve_runtime.evaluators.artifact_normalizer import normalize_artifact
+from cognitive_evolve_runtime.evaluators.progressive import ProgressiveEvaluator
+from cognitive_evolve_runtime.evaluators.result import EvaluatorResult
 from cognitive_evolve_runtime.nexus.adaptive.config import AdaptiveConfig
 from cognitive_evolve_runtime.nexus.adaptive.controller import AdaptiveRuntimeController
 from cognitive_evolve_runtime.nexus.final_projection import build_final_projection
@@ -216,6 +218,8 @@ def test_schema_challenge_classification_and_auto_resolution() -> None:
     assert classify_diagnostic("missing required cache policy sections: eviction") == "missing_required_field"
     assert classify_diagnostic("candidate artifact must be a JSON object") == "machine_parse_failure"
     assert classify_diagnostic("field_alias_normalized: eviction_scoring -> eviction") == "field_alias"
+    assert classify_diagnostic("semantic_drift_detected: forbidden_term=checkpoint") == "semantic_drift"
+    assert classify_diagnostic("behavior_score_failure: hit_rate_below_threshold") == "behavior_score_failure"
     assert classify_diagnostic("semantic score too low") == "generic"
 
     schema_case = challenge_from_diagnostic(candidate_id="C1", source="cache_policy", diagnostic="missing required cache policy sections: eviction", round_index=1)
@@ -314,6 +318,104 @@ def test_schema_search_pressure_generates_strict_repair_instruction() -> None:
     assert "eviction_scoring" in pressure.mutation_instruction
 
 
+def test_semantic_drift_blocks_final_and_becomes_search_pressure() -> None:
+    candidate = CandidateGenome(
+        id="C-drift",
+        artifact={
+            "admission": {"logic": "restore checkpoint before serving request"},
+            "eviction": {"logic": "evict old runtime_state windows"},
+            "parameters": {"window": 4},
+            "update_or_state_update": {"on_hit": "checkpoint recovery_window"},
+        },
+        artifact_type="cache_policy",
+    )
+    spec = EvaluatorSpec.from_mapping(
+        {
+            "enabled": True,
+            "command": "unused",
+            "stage": "final",
+            "evidence": {
+                "machine_artifact_required": True,
+                "artifact_type": "cache_policy",
+                "required_fields": ["admission", "eviction", "parameters", "update_or_state_update"],
+                "metadata": {
+                    "domain_vocabulary": ["cache", "admission", "eviction", "hit", "miss", "object"],
+                    "forbidden_semantic_terms": ["checkpoint", "runtime_state", "recovery_window"],
+                },
+            },
+        }
+    )
+
+    record = ProgressiveEvaluator().evaluate_result(
+        candidate,
+        EvaluatorResult(candidate_id="C-drift", status="passed", passed=True, metrics={"score": 0.92, "certificate_passed": True}, diagnostics=[]),
+        spec=spec,
+        round_index=4,
+    )
+    memory = ChallengeMemory()
+    memory.ingest(record, round_index=4)
+    pressure = memory.compile_search_pressure(
+        artifact_requirements={
+            "artifact_type": "cache_policy",
+            "required_fields": ["admission", "eviction", "parameters", "update_or_state_update"],
+            "metadata": {
+                "domain_vocabulary": ["cache", "admission", "eviction", "hit", "miss", "object"],
+                "forbidden_semantic_terms": ["checkpoint", "runtime_state", "recovery_window"],
+            },
+        }
+    )
+
+    assert record.final_blocked is True
+    assert any("semantic_drift_detected" in item for item in record.diagnostics)
+    assert record.emitted_challenge_ids
+    assert pressure is not None
+    assert pressure.metadata["semantic_drift_focus"] is True
+    assert "removing out-of-domain/internal runtime concepts" in pressure.mutation_instruction
+    assert "checkpoint" in pressure.mutation_instruction
+
+
+def test_behavior_diagnostics_are_decomposed_into_behavior_challenges() -> None:
+    candidate = CandidateGenome(
+        id="C-behavior",
+        artifact={"admission": {}, "eviction": {}, "parameters": {}, "update_or_state_update": {}},
+        artifact_type="cache_policy",
+    )
+    spec = EvaluatorSpec.from_mapping(
+        {
+            "enabled": True,
+            "command": "unused",
+            "evidence": {
+                "machine_artifact_required": True,
+                "artifact_type": "cache_policy",
+                "required_fields": ["admission", "eviction", "parameters", "update_or_state_update"],
+            },
+        }
+    )
+
+    record = ProgressiveEvaluator().evaluate_result(
+        candidate,
+        EvaluatorResult(
+            candidate_id="C-behavior",
+            status="failed",
+            passed=False,
+            metrics={"score": 0.22, "hit_rate": 0.12, "byte_hit_rate": 0.16, "correctness": False},
+            diagnostics=["trace score below threshold"],
+        ),
+        spec=spec,
+        round_index=5,
+    )
+    memory = ChallengeMemory()
+    memory.ingest(record, round_index=5)
+    pressure = memory.compile_search_pressure(artifact_requirements={"artifact_type": "cache_policy"})
+
+    assert any(item.startswith("behavior_score_failure") for item in record.diagnostics)
+    categories = {item["metadata"]["category"] for item in record.metadata["challenge_items"]}
+    assert "behavior_score_failure" in categories
+    assert pressure is not None
+    assert pressure.metadata["behavior_score_focus"] is True
+    assert "improves evaluator behavior" in pressure.mutation_instruction
+
+
 def test_archive_keeps_repairable_challenge_failure_out_of_terminal_cull() -> None:
     candidate = CandidateGenome(
         id="C1",
@@ -391,6 +493,7 @@ def test_final_projection_returns_best_current_without_internal_directives() -> 
     assert "internal repair directive should not be reused" not in markdown
     assert "Best current artifact" in markdown
     assert "boundary case failed" in markdown
+    assert isinstance(projection.to_dict()["artifact"], dict)
 
 
 def test_final_projection_downgrades_refolded_artifact_even_with_solved_certificate() -> None:
