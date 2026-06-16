@@ -5,7 +5,8 @@ from pathlib import Path
 
 from cognitive_evolve_runtime.artifacts.task_files import new_task
 from cognitive_evolve_runtime.doctor import doctor
-from cognitive_evolve_runtime.runtime import runtime_run, runtime_status
+from cognitive_evolve_runtime.runtime import _seed_prompt_with_artifact_policy, runtime_run, runtime_status
+from cognitive_evolve_runtime.nexus.semantics import ensure_enhanced_task_contract
 from cognitive_evolve_runtime.nexus.evaluation import runtime_validation_run
 
 import cognitive_evolve_runtime.core as core
@@ -52,3 +53,42 @@ def test_fixture_backed_runtime_smoke_passes_core_and_runtime_doctor(tmp_path, m
     assert native_eval["suite"] == "runtime-validation"
     assert native_eval["status"] == "pass"
     assert native_eval["passed"] == native_eval["total"]
+
+
+def test_runtime_artifact_policy_hint_is_appended_from_adaptive_config() -> None:
+    prompt = "Design a general policy artifact."
+
+    augmented = _seed_prompt_with_artifact_policy(
+        prompt,
+        {
+            "evidence": {
+                "machine_artifact_required": True,
+                "artifact_type": "cache_policy",
+                "required_fields": ["admission", "eviction", "parameters", "update_or_state_update"],
+                "artifact_type_aliases": {"cache_policy_json": "cache_policy"},
+                "field_aliases": {"eviction_scoring": "eviction"},
+                "metadata": {"domain_vocabulary": ["cache", "hit", "miss"], "forbidden_semantic_terms": ["checkpoint"]},
+            }
+        },
+    )
+
+    assert augmented.startswith(prompt)
+    assert "CognitiveEvolve machine artifact contract" in augmented
+    assert "artifact_type exactly: `cache_policy`" in augmented
+    assert "`admission`, `eviction`, `parameters`, `update_or_state_update`" in augmented
+    assert "Do not use field aliases: `eviction_scoring`" in augmented
+    assert "Avoid forbidden semantic terms" in augmented
+
+
+def test_semantic_intake_preserves_user_research_brief_and_writes_route_summary(tmp_path: Path) -> None:
+    user_brief = "# Research Brief\n\nThis is the full user-authored benchmark specification.\n"
+    (tmp_path / "research-brief.md").write_text(user_brief, encoding="utf-8")
+    long_prompt = "Full task prompt. " * 80
+    short_prompt = "short route summary"
+
+    ensure_enhanced_task_contract(tmp_path, long_prompt, force=True)
+    ensure_enhanced_task_contract(tmp_path, short_prompt, force=True)
+
+    assert (tmp_path / "research-brief.md").read_text(encoding="utf-8") == user_brief
+    assert "Nexus Route Summary" in (tmp_path / "intake" / "route-summary.md").read_text(encoding="utf-8")
+    assert (tmp_path / "intake" / "user-input.md").read_text(encoding="utf-8") == long_prompt

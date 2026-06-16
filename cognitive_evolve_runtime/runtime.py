@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
+from typing import Any
 
 from .artifacts.store import _append_trace, _format_list, _load_json, _now, _task_dir, _write_json
 from .artifacts.task_files import _task_seed_prompt
@@ -57,7 +58,9 @@ def runtime_run(path: str | None, prompt: str | None, activate_all: bool = False
         print(f"Task directory not found: {task_dir}", file=sys.stderr)
         return 1
 
-    seed_prompt = _task_seed_prompt(task_dir, prompt)
+    raw_seed_prompt = _task_seed_prompt(task_dir, prompt)
+    adaptive_config = _task_adaptive_config(task_dir)
+    seed_prompt = _seed_prompt_with_artifact_policy(raw_seed_prompt, adaptive_config)
     runtime_model, model_status = _resolve_runtime_model(offline=offline)
     if model_status:
         return model_status
@@ -81,8 +84,6 @@ def runtime_run(path: str | None, prompt: str | None, activate_all: bool = False
         difficulty_assessment=difficulty_assessment,
     )
     evolution_budget = evolution_budget_from_round_budget(round_budget)
-    adaptive_config = _task_adaptive_config(task_dir)
-
     output_dir = task_dir / "nexus-runtime"
     result = NexusRuntime(model=runtime_model, output_dir=output_dir).run_text(
         seed_prompt,
@@ -97,6 +98,7 @@ def runtime_run(path: str | None, prompt: str | None, activate_all: bool = False
             "runtime_entry": "runtime_run",
             "offline": offline,
             "model_backed": runtime_model is not None,
+            "artifact_policy_hint_enabled": raw_seed_prompt != seed_prompt,
         },
     )
     run_status = _runtime_state_status(result.evolution)
@@ -140,6 +142,7 @@ def _task_adaptive_config(task_dir: Path) -> dict[str, object]:
         return {}
     adaptive = data.get("adaptive")
     evaluator = data.get("evaluator")
+    evidence = data.get("evidence")
     config: dict[str, object] = {}
     if isinstance(adaptive, dict):
         config.update(adaptive)
@@ -152,6 +155,8 @@ def _task_adaptive_config(task_dir: Path) -> dict[str, object]:
     if isinstance(evaluator, dict):
         evaluator_config = dict(evaluator)
         evaluator_config.setdefault("cwd", str(task_dir))
+        if isinstance(evaluator_config.get("evidence"), dict) and not isinstance(config.get("evidence"), dict):
+            config["evidence"] = dict(evaluator_config["evidence"])
         existing = config.get("evaluator")
         if isinstance(existing, dict):
             merged = dict(existing)
@@ -159,7 +164,75 @@ def _task_adaptive_config(task_dir: Path) -> dict[str, object]:
             evaluator_config = merged
         config["evaluator"] = evaluator_config
         config.setdefault("enabled", True)
+    if isinstance(evidence, dict):
+        existing_evidence = config.get("evidence")
+        merged_evidence = dict(existing_evidence) if isinstance(existing_evidence, dict) else {}
+        merged_evidence.update(evidence)
+        config["evidence"] = merged_evidence
+        config.setdefault("enabled", True)
     return config
+
+
+def _seed_prompt_with_artifact_policy(seed_prompt: str, adaptive_config: dict[str, object]) -> str:
+    hint = _artifact_policy_prompt_hint(adaptive_config)
+    if not hint or "## CognitiveEvolve machine artifact contract" in seed_prompt:
+        return seed_prompt
+    return seed_prompt.rstrip() + "\n\n" + hint
+
+
+def _artifact_policy_prompt_hint(adaptive_config: dict[str, object]) -> str:
+    evidence = _as_dict(adaptive_config.get("evidence"))
+    if not evidence:
+        return ""
+    machine_required = _truthy(evidence.get("machine_artifact_required") or evidence.get("machine_readable_required"))
+    artifact_type = str(evidence.get("artifact_type") or "").strip()
+    required_fields = _string_list(evidence.get("required_fields"))
+    if not (machine_required or artifact_type or required_fields):
+        return ""
+    field_aliases = _as_dict(evidence.get("field_aliases"))
+    type_aliases = _as_dict(evidence.get("artifact_type_aliases"))
+    metadata = _as_dict(evidence.get("metadata"))
+    allowed_terms = _string_list(metadata.get("domain_vocabulary") or metadata.get("allowed_domain_terms") or evidence.get("domain_vocabulary") or evidence.get("allowed_domain_terms"))
+    forbidden_terms = _string_list(metadata.get("forbidden_semantic_terms") or evidence.get("forbidden_semantic_terms"))
+    lines = [
+        "## CognitiveEvolve machine artifact contract",
+        "",
+        "The final candidate artifact must satisfy this machine-artifact boundary. Treat this section as a runtime contract hint, not as content to copy into the artifact.",
+    ]
+    if artifact_type:
+        lines.append(f"- Emit artifact_type exactly: `{artifact_type}`.")
+    if required_fields:
+        lines.append("- Required top-level artifact fields: `" + "`, `".join(required_fields) + "`.")
+    if type_aliases:
+        lines.append("- Do not use artifact_type aliases: `" + "`, `".join(str(key) for key in type_aliases.keys()) + "`.")
+    if field_aliases:
+        lines.append("- Do not use field aliases: `" + "`, `".join(str(key) for key in field_aliases.keys()) + "`.")
+    if machine_required:
+        lines.append("- Output a machine-readable artifact object, not prose that wraps or describes the object.")
+    if allowed_terms:
+        lines.append("- Prefer domain vocabulary: `" + "`, `".join(allowed_terms[:24]) + "`.")
+    if forbidden_terms:
+        lines.append("- Avoid forbidden semantic terms in the artifact: `" + "`, `".join(forbidden_terms[:24]) + "`.")
+    lines.append("- Do not emit internal runtime contracts, route summaries, checkpoint metadata, or evaluator implementation details as the artifact itself.")
+    return "\n".join(lines)
+
+
+def _as_dict(value: Any) -> dict[str, Any]:
+    return dict(value) if isinstance(value, dict) else {}
+
+
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [item.strip() for item in value.replace("\n", ",").split(",") if item.strip()]
+    if isinstance(value, (list, tuple, set)):
+        return [str(item).strip() for item in value if str(item or "").strip()]
+    return []
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on", "enabled", "required"}
 
 
 def _classify_runtime_seed(seed_prompt: str, runtime_model: object | None) -> object:

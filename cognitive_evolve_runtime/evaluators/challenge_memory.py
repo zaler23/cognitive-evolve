@@ -11,7 +11,10 @@ from cognitive_evolve_runtime.nexus._serde import coerce_dict, utc_now
 from cognitive_evolve_runtime.core.scalars import bounded_score
 
 
-SCHEMA_CHALLENGE_CATEGORIES = {"artifact_type_mismatch", "missing_required_field", "machine_parse_failure", "field_alias"}
+CONTRACT_CHALLENGE_CATEGORIES = {"contract_artifact_policy_conflict"}
+SCHEMA_CHALLENGE_CATEGORIES = {"artifact_type_mismatch", "missing_required_field", "machine_parse_failure", "field_alias", *CONTRACT_CHALLENGE_CATEGORIES}
+SEMANTIC_CHALLENGE_CATEGORIES = {"semantic_drift"}
+BEHAVIOR_CHALLENGE_CATEGORIES = {"behavior_score_failure"}
 
 
 @dataclass
@@ -164,16 +167,33 @@ class ChallengeMemory:
         ranked = sorted(unresolved, key=_pressure_score, reverse=True)[: max(1, int(limit or 1))]
         target_ids = [item.id for item in ranked]
         success = [{"kind": "resolve_challenge", "challenge_id": item.id, "summary": item.summary} for item in ranked]
-        schema_focus = any(str(item.metadata.get("category") or classify_diagnostic(item.summary)) in SCHEMA_CHALLENGE_CATEGORIES for item in ranked)
+        categories = [str(item.metadata.get("category") or classify_diagnostic(item.summary)) for item in ranked]
+        schema_focus = any(category in SCHEMA_CHALLENGE_CATEGORIES for category in categories)
+        semantic_focus = any(category in SEMANTIC_CHALLENGE_CATEGORIES for category in categories)
+        behavior_focus = any(category in BEHAVIOR_CHALLENGE_CATEGORIES for category in categories)
         return SearchPressure.from_parts(
             parent_id=parent_id,
             scope=scope,
             target_challenge_ids=target_ids,
             artifact_requirements=artifact_requirements or {},
             success_criteria=success,
-            selection_advisory={item.id: _pressure_score(item) for item in ranked},
-            mutation_instruction=_mutation_instruction(ranked, artifact_requirements or {}, schema_focus=schema_focus),
-            metadata={"challenge_count": len(self.items), "selected_count": len(target_ids), "schema_repair_focus": schema_focus},
+            challenge_weights={item.id: _pressure_score(item) for item in ranked},
+            selection_advisory={},
+            mutation_instruction=_mutation_instruction(
+                ranked,
+                artifact_requirements or {},
+                schema_focus=schema_focus,
+                semantic_focus=semantic_focus,
+                behavior_focus=behavior_focus,
+            ),
+            metadata={
+                "challenge_count": len(self.items),
+                "selected_count": len(target_ids),
+                "schema_repair_focus": schema_focus,
+                "semantic_drift_focus": semantic_focus,
+                "behavior_score_focus": behavior_focus,
+                "selected_categories": list(dict.fromkeys(categories)),
+            },
         )
 
     def targeted_resolution_rate(self) -> float:
@@ -188,6 +208,8 @@ class ChallengeMemory:
         return {
             "version": self.version,
             "case_count": len(self.items),
+            "targeted_count": len([item for item in (ChallengeMemoryItem.from_dict(raw) for raw in self.items.values()) if item is not None and item.targeted_by_candidate_ids]),
+            "resolved_count": len([item for item in (ChallengeMemoryItem.from_dict(raw) for raw in self.items.values()) if item is not None and item.resolved_by_candidate_ids]),
             "targeted_resolution_rate": self.targeted_resolution_rate(),
             "top_cases": [
                 {
@@ -257,11 +279,30 @@ def _challenge_items_from_record(record: EvidenceRecord) -> list[dict[str, Any]]
 def _pressure_score(item: ChallengeMemoryItem) -> float:
     cost = _cost_value(item.cost_to_retest)
     reuse = 0.05 * len(item.targeted_by_candidate_ids)
-    return bounded_score((item.priority * max(0.1, item.confidence)) / max(1.0, cost) + min(0.2, reuse) + min(0.2, 0.03 * item.kill_count))
+    category = str(item.metadata.get("category") or classify_diagnostic(item.summary))
+    category_bonus = {
+        "contract_artifact_policy_conflict": 0.35,
+        "artifact_type_mismatch": 0.30,
+        "missing_required_field": 0.28,
+        "machine_parse_failure": 0.26,
+        "field_alias": 0.24,
+        "semantic_drift": 0.22,
+        "behavior_score_failure": 0.18,
+        "final_gate": -0.08,
+        "generic": -0.12,
+    }.get(category, 0.0)
+    repeated_generic_penalty = 0.18 if category in {"generic", "final_gate"} and item.kill_count >= 5 else 0.0
+    return bounded_score((item.priority * max(0.1, item.confidence)) / max(1.0, cost) + category_bonus - repeated_generic_penalty + min(0.15, reuse) + min(0.15, 0.025 * item.kill_count))
 
 
 def classify_diagnostic(diagnostic: str) -> str:
     text = str(diagnostic or "").strip().lower()
+    if "contract_artifact_policy_conflict" in text:
+        return "contract_artifact_policy_conflict"
+    if "semantic_drift_detected" in text or "forbidden_term=" in text or "out-of-domain" in text or "out of domain" in text:
+        return "semantic_drift"
+    if "behavior_score_failure" in text or "trace score below threshold" in text or "score_below_threshold" in text or "hit_rate_below_threshold" in text or "byte_hit_rate_below_threshold" in text:
+        return "behavior_score_failure"
     if "artifact_type_alias_normalized" in text or "artifact_type_mismatch" in text or "artifact_type must be" in text or "artifact type" in text:
         return "artifact_type_mismatch"
     if "missing_required_fields" in text or "missing required" in text or "missing required cache policy sections" in text:
@@ -270,17 +311,54 @@ def classify_diagnostic(diagnostic: str) -> str:
         return "machine_parse_failure"
     if "field_alias_normalized" in text or "forbidden alias" in text or "eviction_scoring" in text or "state_update" in text:
         return "field_alias"
+    if "final gate" in text or "not_final_certified" in text or "external_evaluator_not_passed" in text or "generic_verifier_not_passed" in text:
+        return "final_gate"
     return "generic"
 
 
-def _mutation_instruction(items: list[ChallengeMemoryItem], artifact_requirements: dict[str, Any], *, schema_focus: bool) -> str:
+def _mutation_instruction(
+    items: list[ChallengeMemoryItem],
+    artifact_requirements: dict[str, Any],
+    *,
+    schema_focus: bool,
+    semantic_focus: bool = False,
+    behavior_focus: bool = False,
+) -> str:
     summaries = "; ".join(item.summary for item in items if item.summary)[:600]
-    if not schema_focus:
-        return "Generate a child candidate that directly addresses these unresolved challenges: " + summaries
     required_type = str(artifact_requirements.get("artifact_type") or "").strip()
     required_fields = _str_list(artifact_requirements.get("required_fields"))
     artifact_type_aliases = coerce_dict(artifact_requirements.get("artifact_type_aliases"))
     field_aliases = coerce_dict(artifact_requirements.get("field_aliases"))
+    metadata = coerce_dict(artifact_requirements.get("metadata"))
+    forbidden_terms = _str_list(metadata.get("forbidden_semantic_terms") or artifact_requirements.get("forbidden_semantic_terms"))
+    allowed_terms = _str_list(metadata.get("domain_vocabulary") or metadata.get("allowed_domain_terms") or artifact_requirements.get("domain_vocabulary") or artifact_requirements.get("allowed_domain_terms"))
+    if not schema_focus and semantic_focus:
+        parts = [
+            "Generate a child candidate that preserves the clean artifact schema while removing out-of-domain/internal runtime concepts from the machine artifact.",
+        ]
+        if required_type:
+            parts.append(f"Keep artifact_type={required_type}.")
+        if required_fields:
+            parts.append("Keep required top-level fields: " + ", ".join(required_fields) + ".")
+        if forbidden_terms:
+            parts.append("Avoid these forbidden semantic terms: " + ", ".join(forbidden_terms) + ".")
+        if allowed_terms:
+            parts.append("Prefer domain terms from the allowed vocabulary: " + ", ".join(allowed_terms[:16]) + ".")
+        parts.append("Resolve these semantic-drift challenges: " + summaries)
+        return " ".join(parts)
+    if not schema_focus and behavior_focus:
+        parts = [
+            "Generate a child candidate that keeps the machine artifact schema clean and improves evaluator behavior on the named failed metrics.",
+        ]
+        if required_type:
+            parts.append(f"Keep artifact_type={required_type}.")
+        if required_fields:
+            parts.append("Keep required top-level fields: " + ", ".join(required_fields) + ".")
+        parts.append("Do not only rename fields; change the artifact logic that drives the failed score components.")
+        parts.append("Resolve these behavior challenges: " + summaries)
+        return " ".join(parts)
+    if not schema_focus:
+        return "Generate a child candidate that directly addresses these unresolved challenges: " + summaries
     forbidden_type_aliases = ", ".join(str(key) for key in artifact_type_aliases.keys() if str(key).strip())
     forbidden_field_aliases = ", ".join(str(key) for key in field_aliases.keys() if str(key).strip())
     parts = [

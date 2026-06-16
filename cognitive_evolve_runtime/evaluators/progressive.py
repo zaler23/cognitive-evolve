@@ -4,10 +4,11 @@ from __future__ import annotations
 from typing import Any
 
 from cognitive_evolve_runtime.core.scalars import bounded_score
-from cognitive_evolve_runtime.evaluators.artifact_normalizer import artifact_policy_from_config, normalize_artifact
+from cognitive_evolve_runtime.evaluators.artifact_normalizer import artifact_policy_from_config, normalize_artifact, semantic_drift_diagnostics
 from cognitive_evolve_runtime.evaluators.challenge_memory import challenge_from_diagnostic
 from cognitive_evolve_runtime.evaluators.evidence import EvidenceRecord, repair_value_from_record
 from cognitive_evolve_runtime.evaluators.result import EvaluatorResult
+from cognitive_evolve_runtime.evaluators.evidence_authority import stable_artifact_hash, stable_artifact_identity_hash
 from cognitive_evolve_runtime.evaluators.spec import EvaluatorSpec
 
 
@@ -16,20 +17,32 @@ class ProgressiveEvaluator:
         spec = spec or EvaluatorSpec()
         policy = artifact_policy_from_config(getattr(spec, "progressive", {}) if spec is not None else {})
         artifact_state = normalize_artifact(candidate, artifact_type=policy.artifact_type or getattr(candidate, "artifact_type", "") or "", policy=policy)
+        semantic_diagnostics = semantic_drift_diagnostics(artifact_state, policy)
         source = str(getattr(spec, "domain_id", "") or artifact_state.get("artifact_type") or "general")
+        normalized_artifact_hash = stable_artifact_hash(artifact_state.get("normalized_artifact")) if artifact_state.get("normalized_artifact") is not None else ""
+        artifact_hash = stable_artifact_identity_hash(artifact_state, artifact_policy=policy.to_dict()) if artifact_state.get("normalized_artifact") is not None else ""
         if evaluator_result is None:
-            diagnostics = list(artifact_state.get("diagnostics") or [])
+            diagnostics = _dedupe_diagnostics(list(artifact_state.get("diagnostics") or []) + semantic_diagnostics)
             passed = bool(artifact_state.get("probe_eligible")) and not policy.machine_readable_required
             status = "artifact_probe_ready" if passed else f"artifact_{artifact_state.get('status') or 'unknown'}"
-            metrics = {"schema_cleanliness": artifact_state.get("schema_cleanliness", 0.0)}
+            metrics = {
+                "schema_cleanliness": artifact_state.get("schema_cleanliness", 0.0),
+                "semantic_drift_count": len(semantic_diagnostics),
+            }
             cost: dict[str, Any] = {}
         else:
-            diagnostics = list(evaluator_result.diagnostics or []) + list(artifact_state.get("diagnostics") or [])
             passed = bool(evaluator_result.passed)
             status = "passed" if passed else "challenge_failed"
             metrics = dict(evaluator_result.metrics or {})
             metrics.setdefault("schema_cleanliness", artifact_state.get("schema_cleanliness", 0.0))
+            metrics["semantic_drift_count"] = len(semantic_diagnostics)
             cost = dict(evaluator_result.cost or {})
+            diagnostics = _dedupe_diagnostics(
+                list(evaluator_result.diagnostics or [])
+                + list(artifact_state.get("diagnostics") or [])
+                + semantic_diagnostics
+                + _behavior_diagnostics(metrics, passed=passed, diagnostics=list(evaluator_result.diagnostics or []))
+            )
         score = _score_from_metrics(metrics, passed=passed, artifact_score=bounded_score(artifact_state.get("schema_cleanliness", 0.0)))
         artifact_status = str(artifact_state.get("status") or "")
         probe_blocked = bool(artifact_status in {"malformed", "absent"} and policy.machine_readable_required)
@@ -39,8 +52,10 @@ class ProgressiveEvaluator:
         final_ready = bool(artifact_state.get("final_eligible")) and passed and final_stage
         if policy.final_requires_certificate:
             final_ready = final_ready and bool(metrics.get("certificate_passed") or metrics.get("final_certificate_passed"))
+        if semantic_diagnostics:
+            final_ready = False
         challenge_items = []
-        artifact_blocks_final = artifact_status and artifact_status != "clean"
+        artifact_blocks_final = bool((artifact_status and artifact_status != "clean") or semantic_diagnostics)
         if not passed or artifact_blocks_final:
             priority = 0.7 if score >= 0.65 else 0.5
             for diagnostic in diagnostics[:8] or [status]:
@@ -71,12 +86,17 @@ class ProgressiveEvaluator:
             hints=hints,
             metadata={
                 "status": status,
+                "authority": "final" if final_stage and passed else ("verifier" if evaluator_result is not None else "probe"),
+                "artifact_hash": artifact_hash,
+                "artifact_identity_hash": artifact_hash,
+                "normalized_artifact_hash": normalized_artifact_hash,
                 "artifact_policy": policy.to_dict(),
                 "artifact_state": artifact_state,
                 "challenge_items": challenge_items,
                 "metrics": metrics,
                 "evaluator_score": metrics.get("score", score),
                 "challenge_pass_rate": metrics.get("challenge_pass_rate", 1.0 if passed else 0.0),
+                "semantic_drift_diagnostics": semantic_diagnostics,
             },
         )
         repair = repair_value_from_record(provisional)
@@ -100,6 +120,50 @@ def _repair_hints(diagnostics: list[str], artifact_status: str) -> list[str]:
         if text:
             hints.append(f"repair diagnostic: {text[:180]}")
     return hints[:8]
+
+
+def _behavior_diagnostics(metrics: dict[str, Any], *, passed: bool, diagnostics: list[str]) -> list[str]:
+    if passed:
+        return []
+    out: list[str] = []
+    diagnostic_text = " | ".join(str(item or "").lower() for item in diagnostics)
+    if "trace score below threshold" in diagnostic_text or "score below threshold" in diagnostic_text:
+        out.append("behavior_score_failure: evaluator_score_below_threshold")
+    if metrics.get("correctness") is False:
+        out.append("behavior_score_failure: correctness_false")
+    for key in ("score", "hit_rate", "byte_hit_rate", "challenge_pass_rate"):
+        if key not in metrics:
+            continue
+        value = _float_or_none(metrics.get(key))
+        if value is None:
+            continue
+        threshold = _float_or_none(metrics.get(f"{key}_threshold"))
+        if threshold is None:
+            threshold = _float_or_none(metrics.get("pass_threshold"))
+        if threshold is None:
+            threshold = 0.5
+        if value < threshold:
+            out.append(f"behavior_score_failure: {key}_below_threshold value={round(value, 4)} threshold={round(threshold, 4)}")
+    return out[:8]
+
+
+def _float_or_none(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _dedupe_diagnostics(items: list[Any]) -> list[str]:
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in items:
+        text = str(item or "").strip()
+        if not text or text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out[:40]
 
 
 __all__ = ["ProgressiveEvaluator"]
