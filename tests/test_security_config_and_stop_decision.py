@@ -239,7 +239,10 @@ def test_loopback_allows_dev_service_api_key(monkeypatch: pytest.MonkeyPatch, tm
     monkeypatch.setenv("COGEV_SERVER_REQUIRE_AUTH", "true")
     monkeypatch.setenv("COGEV_SERVER_API_KEY", "ce-local-dev-key-change-me")
 
-    get_service_config().enforce_safe_to_serve()
+    config = get_service_config()
+    assert config.host == "127.0.0.1"
+    assert service_api_key_is_placeholder_or_weak(config.api_keys[0]) is True
+    config.enforce_safe_to_serve()
 
 
 def test_require_llm_config_rejects_placeholder_upstream_key(monkeypatch: pytest.MonkeyPatch) -> None:

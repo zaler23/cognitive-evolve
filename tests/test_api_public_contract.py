@@ -27,7 +27,26 @@ def _fake_nexus(rounds: int = 1) -> dict[str, Any]:
     }
 
 
-def _solved_nexus(*, objective_solved: bool, critical_failures: list[str] | None = None) -> dict[str, Any]:
+def _graded_output_verified() -> dict[str, Any]:
+    return {
+        "mode": "verified_result",
+        "verification_strength": 4,
+        "result": {"replayable": True, "evidence_ref": "e1", "verifier_fingerprint": "vf"},
+        "replay_certificate": {"scope": "verifier_on_frozen_artifact_only", "verification_cache_key": "ck"},
+    }
+
+
+def _graded_output_portfolio() -> dict[str, Any]:
+    return {"mode": "graded_portfolio", "verification_strength": 2, "portfolio": []}
+
+
+def _solved_nexus(*, objective_solved: bool, graded_output: dict[str, Any] | None = None, critical_failures: list[str] | None = None) -> dict[str, Any]:
+    closure = {
+        "objective_solved": objective_solved,
+        "critical_failures": list(critical_failures or []),
+    }
+    if graded_output is not None:
+        closure["graded_output"] = dict(graded_output)
     return {
         "mode": "text",
         "evolution": {
@@ -36,26 +55,33 @@ def _solved_nexus(*, objective_solved: bool, critical_failures: list[str] | None
             "synthesis": {
                 "completion_status": "solved",
                 "objective_solved": objective_solved,
-                "closure_certificate": {
-                    "objective_solved": objective_solved,
-                    "critical_failures": list(critical_failures or []),
-                },
+                "closure_certificate": closure,
             },
         },
         "verification_summaries": [{"passed": True}],
     }
 
 
-def test_api_verification_passed_is_bound_to_objective_closure() -> None:
-    assert _nexus_verification_passed(_solved_nexus(objective_solved=True)) is True
-    assert _nexus_verification_passed(_solved_nexus(objective_solved=False)) is False
-    assert _nexus_verification_passed(_solved_nexus(objective_solved=True, critical_failures=["missing_verified_improvement_certificate"])) is False
+def test_api_verification_passed_requires_v2_graded_verified_result() -> None:
+    assert _nexus_verification_passed(_solved_nexus(objective_solved=True, graded_output=_graded_output_verified())) is True
+    assert _nexus_verification_passed(_solved_nexus(objective_solved=True)) is False
+    assert _nexus_verification_passed(_solved_nexus(objective_solved=True, graded_output=_graded_output_portfolio())) is False
+    assert _nexus_verification_passed(_solved_nexus(objective_solved=False, graded_output=_graded_output_verified())) is False
+    assert _nexus_verification_passed(_solved_nexus(objective_solved=True, graded_output=_graded_output_verified(), critical_failures=["missing_verified_improvement_certificate"])) is False
     assert _nexus_verification_passed(_fake_nexus(1)) is False
 
 
-def test_completion_payload_exposes_objective_solved_separately() -> None:
+def test_completion_payload_exposes_v2_objective_solved_separately() -> None:
     payload = _completion_payload(
         request_id="req",
+        model="cognitive-evolve-one-shot",
+        prompt="task",
+        answer="answer",
+        nexus_data=_solved_nexus(objective_solved=True, graded_output=_graded_output_verified()),
+    )
+
+    stale_payload = _completion_payload(
+        request_id="req2",
         model="cognitive-evolve-one-shot",
         prompt="task",
         answer="answer",
@@ -64,6 +90,8 @@ def test_completion_payload_exposes_objective_solved_separately() -> None:
 
     assert payload["cognitive_evolve"]["verification_passed"] is True
     assert payload["cognitive_evolve"]["objective_solved"] is True
+    assert stale_payload["cognitive_evolve"]["verification_passed"] is False
+    assert stale_payload["cognitive_evolve"]["objective_solved"] is False
 
 
 def test_openai_compatible_app_health_models_and_completion(tmp_path: Path) -> None:

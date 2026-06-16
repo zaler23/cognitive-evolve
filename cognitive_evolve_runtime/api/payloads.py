@@ -35,6 +35,18 @@ def _nexus_verification_passed(nexus_data: dict[str, Any]) -> bool:
     closure = _nexus_closure_certificate(nexus_data)
     if closure and closure.get("critical_failures"):
         return False
+    graded = _nexus_graded_output(nexus_data)
+    if graded.get("mode") != "verified_result":
+        return False
+    try:
+        if int(graded.get("verification_strength") or 0) < 4:
+            return False
+    except (TypeError, ValueError):
+        return False
+    result = graded.get("result") if isinstance(graded.get("result"), dict) else {}
+    replay = graded.get("replay_certificate") if isinstance(graded.get("replay_certificate"), dict) else {}
+    if not result or not bool(result.get("replayable")) or not replay:
+        return False
     summaries = nexus_data.get("verification_summaries")
     if isinstance(summaries, list) and summaries:
         return all(bool((item or {}).get("passed", (item or {}).get("verification_result", {}).get("passed", True))) for item in summaries if isinstance(item, dict))
@@ -51,13 +63,26 @@ def _nexus_closure_certificate(nexus_data: dict[str, Any]) -> dict[str, Any]:
     return closure
 
 
+def _nexus_graded_output(nexus_data: dict[str, Any]) -> dict[str, Any]:
+    evolution = nexus_data.get("evolution") if isinstance(nexus_data.get("evolution"), dict) else {}
+    synthesis = evolution.get("synthesis") if isinstance(evolution.get("synthesis"), dict) else {}
+    closure = _nexus_closure_certificate(nexus_data)
+    graded = synthesis.get("graded_output") if isinstance(synthesis.get("graded_output"), dict) else {}
+    if not graded and isinstance(closure.get("graded_output"), dict):
+        graded = closure.get("graded_output") or {}
+    return dict(graded or {})
+
+
 def _nexus_objective_solved(nexus_data: dict[str, Any]) -> bool:
     if not isinstance(nexus_data, dict):
         return False
     evolution = nexus_data.get("evolution") if isinstance(nexus_data.get("evolution"), dict) else {}
     synthesis = evolution.get("synthesis") if isinstance(evolution.get("synthesis"), dict) else {}
     closure = _nexus_closure_certificate(nexus_data)
-    return bool(synthesis.get("objective_solved") or closure.get("objective_solved"))
+    closure_solved = bool(synthesis.get("objective_solved") or closure.get("objective_solved"))
+    if not closure_solved:
+        return False
+    return _nexus_graded_output(nexus_data).get("mode") == "verified_result"
 
 
 def _nexus_completion_status(nexus_data: dict[str, Any]) -> str:
