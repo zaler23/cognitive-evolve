@@ -12,6 +12,7 @@ from cognitive_evolve_runtime.nexus.population_vitality import repair_slot_count
 from cognitive_evolve_runtime.nexus.stage_policy import stage_eligibility
 from .novelty import population_novelty
 from .lineage_saturation import detect_lineage_saturation
+from cognitive_evolve_runtime.nexus.search_kernel.diverse_selector import select_diverse
 
 
 def reproductive_value(
@@ -161,13 +162,41 @@ class ParentSelector:
                 max_parent_fraction=_float(repair_policy.get("max_parent_fraction"), default=None),
                 enabled=repair_policy.get("enabled", True) is not False,
             )
-            selected = primary[: max(0, target - repair_slots)]
-            selected.extend(incubating[: max(0, target - len(selected))])
+            selected, trace = select_diverse(
+                primary,
+                limit=max(0, target - repair_slots),
+                quality_fn=lambda candidate: base_values.get(candidate.id, 0.0) + _advisory_selection_adjustment(candidate, advisory_features),
+                archives=archives,
+                advisory_features=advisory_features,
+                eligibility_policy=eligibility_policy,
+            )
+            if len(selected) < target and incubating:
+                repair_selected, repair_trace = select_diverse(
+                    incubating,
+                    limit=max(0, target - len(selected)),
+                    quality_fn=lambda candidate: base_values.get(candidate.id, 0.0) + _advisory_selection_adjustment(candidate, advisory_features),
+                    archives=archives,
+                    advisory_features=advisory_features,
+                    eligibility_policy=eligibility_policy,
+                )
+                selected.extend(repair_selected)
+                trace.rejected.extend(repair_trace.rejected)
+                trace.selected_ids.extend([candidate.id for candidate in repair_selected])
+            self.last_selection_trace = trace.to_dict()
             return selected[:target]
         # If the run has temporarily lost all Active/Elite candidates, keep a
         # small repair lane alive instead of declaring no parents available.
         if incubating:
-            return incubating[:target]
+            selected, trace = select_diverse(
+                incubating,
+                limit=target,
+                quality_fn=lambda candidate: base_values.get(candidate.id, 0.0) + _advisory_selection_adjustment(candidate, advisory_features),
+                archives=archives,
+                advisory_features=advisory_features,
+                eligibility_policy=eligibility_policy,
+            )
+            self.last_selection_trace = trace.to_dict()
+            return selected[:target]
         # A current Elite/Active candidate can still have a negative numeric
         # reproductive value after conservative penalties for repeated failure
         # lessons, lineage constraints, or zero final-answer scores.  That
@@ -182,7 +211,16 @@ class ParentSelector:
             and _stage_parent_eligible(candidate)
         ]
         if primary_floor:
-            return primary_floor[:target]
+            selected, trace = select_diverse(
+                primary_floor,
+                limit=target,
+                quality_fn=lambda candidate: base_values.get(candidate.id, 0.0) + _advisory_selection_adjustment(candidate, advisory_features),
+                archives=archives,
+                advisory_features=advisory_features,
+                eligibility_policy=eligibility_policy,
+            )
+            self.last_selection_trace = trace.to_dict()
+            return selected[:target]
         # A conservative verifier can assign negative reproductive value to all
         # live candidates because they carry failure lessons, zero final-answer
         # scores, or archive constraints.  That should block final synthesis,
@@ -193,7 +231,16 @@ class ParentSelector:
             for candidate in by_value
             if _repair_target_candidate(candidate) and CandidateFate.normalize(candidate.current_fate) in {CandidateFate.ACTIVE.value, CandidateFate.INCUBATING.value}
         ]
-        return repairable[:target]
+        selected, trace = select_diverse(
+            repairable,
+            limit=target,
+            quality_fn=lambda candidate: base_values.get(candidate.id, 0.0) + _advisory_selection_adjustment(candidate, advisory_features),
+            archives=archives,
+            advisory_features=advisory_features,
+            eligibility_policy=eligibility_policy,
+        )
+        self.last_selection_trace = trace.to_dict()
+        return selected[:target]
 
 
 def _incubating_parent_allowed(candidate: CandidateGenome) -> bool:

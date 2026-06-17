@@ -33,6 +33,7 @@ class NexusCheckpoint:
     concept_snapshots: dict[str, Any] = field(default_factory=dict)
     verification_plan: dict[str, Any] = field(default_factory=dict)
     graded_output: dict[str, Any] = field(default_factory=dict)
+    search_kernel: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=utc_now)
 
     def to_dict(self) -> dict[str, Any]:
@@ -60,6 +61,7 @@ class NexusCheckpoint:
             concept_snapshots=coerce_dict(data.get("concept_snapshots")),
             verification_plan=coerce_dict(data.get("verification_plan")),
             graded_output=coerce_dict(data.get("graded_output")),
+            search_kernel=coerce_dict(data.get("search_kernel")),
             created_at=str(data.get("created_at") or utc_now()),
         )
 
@@ -115,6 +117,7 @@ class CheckpointStore:
             "concept_snapshots": dict(checkpoint.concept_snapshots),
             "verification_plan": dict(checkpoint.verification_plan),
             "graded_output": dict(checkpoint.graded_output),
+            "search_kernel": dict(checkpoint.search_kernel),
             "contract": checkpoint.contract,
             "world": checkpoint.world,
             "mode": checkpoint.mode,
@@ -142,6 +145,7 @@ class CheckpointStore:
         concept_snapshots: dict[str, Any] | None = None,
         verification_plan: dict[str, Any] | None = None,
         graded_output: dict[str, Any] | None = None,
+        search_kernel: dict[str, Any] | None = None,
         allow_progress_round_repair: bool = False,
     ) -> NexusCheckpoint:
         checkpoint = build_checkpoint_state(
@@ -164,6 +168,7 @@ class CheckpointStore:
             concept_snapshots=concept_snapshots,
             verification_plan=verification_plan,
             graded_output=graded_output,
+            search_kernel=search_kernel,
             allow_progress_round_repair=allow_progress_round_repair,
         )
         self.save(checkpoint, allow_progress_round_repair=allow_progress_round_repair)
@@ -191,6 +196,7 @@ def build_checkpoint_state(
     concept_snapshots: dict[str, Any] | None = None,
     verification_plan: dict[str, Any] | None = None,
     graded_output: dict[str, Any] | None = None,
+    search_kernel: dict[str, Any] | None = None,
     allow_progress_round_repair: bool = False,
 ) -> NexusCheckpoint:
     checkpoint = NexusCheckpoint(
@@ -213,6 +219,7 @@ def build_checkpoint_state(
         concept_snapshots=coerce_dict(concept_snapshots),
         verification_plan=coerce_dict(verification_plan),
         graded_output=coerce_dict(graded_output),
+        search_kernel=coerce_dict(search_kernel),
     )
     checkpoint = _repair_progress_event_round(checkpoint) if allow_progress_round_repair else checkpoint
     if checkpoint.progress_event:

@@ -28,6 +28,8 @@ from cognitive_evolve_runtime.nexus.repair_reactivation import recover_failure_a
 from cognitive_evolve_runtime.nexus.synthesis import SynthesizedResult, synthesize_result
 from cognitive_evolve_runtime.nexus.stop_decision import StopDecisionEngine
 from cognitive_evolve_runtime.nexus.semantic_dedupe import CandidateDeduper
+from cognitive_evolve_runtime.nexus.search_kernel.harvesting import CandidateHarvester, HarvestPolicy
+from cognitive_evolve_runtime.nexus.search_kernel.skill_library import search_skill_payload
 from cognitive_evolve_runtime.outcomes.latent_audit import audit_latent_replay_bundle
 from cognitive_evolve_runtime.outcomes.runtime_bridge import (
     annotate_candidates_with_latent_signals,
@@ -137,38 +139,36 @@ def _generate_model_seed_batches(
     policy: EvolutionPolicy,
     target_size: int,
 ) -> tuple[list[CandidateGenome], list[dict[str, Any]], Exception | None]:
-    accepted: list[CandidateGenome] = []
-    rejected: list[dict[str, Any]] = []
     deduper = CandidateDeduper()
-    max_batches = _seed_batch_limit(target_size)
-    low_novelty_streak = 0
-    model_error: Exception | None = None
-    for batch_index in range(max_batches):
-        try:
-            raw = model.seed_population(contract=contract, world=world, policy=_policy_for_seed_batch(policy, batch_index=batch_index, accepted=accepted, rejected=rejected))
-        except MODEL_BOUNDARY_ERRORS as exc:
-            model_error = exc
-            break
+    harvester = CandidateHarvester(
+        deduper=deduper,
+        policy=HarvestPolicy(
+            target_size=target_size,
+            max_batches=_seed_batch_limit(target_size),
+            min_batches=_seed_min_batches(target_size),
+            low_gain_patience=_seed_low_novelty_patience(target_size),
+            relevance_floor=0.20,
+            stage="seed",
+        ),
+    )
+
+    def _request(batch_index: int, accepted: list[CandidateGenome], rejected: list[dict[str, Any]]) -> list[CandidateGenome]:
+        raw = model.seed_population(contract=contract, world=world, policy=_policy_for_seed_batch(policy, batch_index=batch_index, accepted=accepted, rejected=rejected))
         batch = _coerce_seed_batch(raw)
-        before = len(accepted)
         for candidate in batch:
             candidate.metadata.setdefault("exploration_source", "nexus_model_seed_batch")
             candidate.metadata.setdefault("created_in_round", 0)
             candidate.metadata["model_seed_batch"] = batch_index
-            if deduper.add(candidate):
-                accepted.append(candidate)
-            else:
-                rejected.append({"batch": batch_index, "reason": "duplicate_semantic_signature", "candidate_id": candidate.id, "signature": candidate.metadata.get("dedupe_signature")})
-        novelty_gain = len(accepted) - before
-        if len(accepted) >= target_size:
-            break
-        if novelty_gain <= 0:
-            low_novelty_streak += 1
-        else:
-            low_novelty_streak = 0
-        if low_novelty_streak >= _seed_low_novelty_patience(target_size):
-            break
-    return accepted, rejected, model_error
+        return batch
+
+    result = harvester.harvest(
+        request_batch=_request,
+        context={"contract": contract, "policy": policy, "world": world},
+        recoverable_errors=MODEL_BOUNDARY_ERRORS,
+    )
+    for candidate in result.accepted:
+        candidate.metadata.setdefault("seed_harvest", result.to_dict())
+    return result.accepted, result.rejected, result.model_error
 
 
 def _coerce_seed_batch(raw: Any) -> list[CandidateGenome]:
@@ -188,6 +188,7 @@ def _policy_for_seed_batch(policy: EvolutionPolicy, *, batch_index: int, accepte
             "accepted_seed_signatures": [candidate.metadata.get("dedupe_signature") for candidate in accepted[-12:] if candidate.metadata.get("dedupe_signature")],
             "rejected_seed_count": len(rejected),
             "seed_instruction": "Generate candidates that differ semantically from accepted_seed_signatures; do not rephrase the same mechanism.",
+            "search_kernel_skills": search_skill_payload(limit=4),
         }
     )
     data["metadata"] = metadata
@@ -195,17 +196,31 @@ def _policy_for_seed_batch(policy: EvolutionPolicy, *, batch_index: int, accepte
 
 
 def _seed_batch_limit(target_size: int) -> int:
-    configured = _positive_int(os.environ.get("COGEV_NEXUS_SEED_BATCH_LIMIT"))
+    configured = _bounded_env_int("COGEV_NEXUS_SEED_BATCH_LIMIT", maximum=16)
     if configured:
         return configured
     return max(2, min(8, int(target_size or 1)))
 
 
+
+def _seed_min_batches(target_size: int) -> int:
+    configured = _positive_int(os.environ.get("COGEV_NEXUS_SEED_MIN_BATCHES"))
+    if configured:
+        return max(1, min(_seed_batch_limit(target_size), configured))
+    return 2 if _seed_batch_limit(target_size) >= 2 else 1
+
 def _seed_low_novelty_patience(target_size: int) -> int:
-    configured = _positive_int(os.environ.get("COGEV_NEXUS_SEED_LOW_NOVELTY_PATIENCE"))
+    configured = _bounded_env_int("COGEV_NEXUS_SEED_LOW_NOVELTY_PATIENCE", maximum=8)
     if configured:
         return configured
     return 2 if target_size <= 4 else 3
+
+
+def _bounded_env_int(name: str, *, maximum: int) -> int | None:
+    configured = _positive_int(os.environ.get(name))
+    if configured:
+        return min(maximum, configured)
+    return None
 
 
 __all__ = ["TEXT_SEED_TYPES", "PROJECT_SEED_TYPES", "seed_population"]

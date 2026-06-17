@@ -12,6 +12,7 @@ from typing import Any
 from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome
 from cognitive_evolve_runtime.nexus.adaptive_signals import in_top_band, score
 from cognitive_evolve_runtime.core.scalars import bounded_score
+from cognitive_evolve_runtime.nexus.search_kernel.descriptor_cells import descriptor_cell_key
 
 
 def candidate_quality(candidate: CandidateGenome) -> float:
@@ -163,14 +164,29 @@ def quality_diversity_survivors(
 @dataclass
 class QualityDiversityArchive:
     elites_by_niche: dict[str, dict[str, Any]] = field(default_factory=dict)
+    cell_elites: dict[str, dict[str, Any]] = field(default_factory=dict)
     directive_descriptors: dict[str, dict[str, Any]] = field(default_factory=dict)
     rebalance_requests: list[dict[str, Any]] = field(default_factory=list)
+    sparse_cells: list[str] = field(default_factory=list)
 
     def update(self, candidate: CandidateGenome) -> None:
         niches = candidate.niche_memberships or candidate.novelty_descriptors or [candidate.core_mechanism or "general"]
         final_quality = candidate_final_quality(candidate)
         search_quality = candidate_search_quality(candidate)
         quality = final_quality
+        cell_key = descriptor_cell_key(candidate)
+        current_cell = self.cell_elites.get(cell_key)
+        current_cell_score = max(float(current_cell.get("quality", -1.0)), float(current_cell.get("search_quality", -1.0))) if current_cell else -1.0
+        if current_cell is None or max(final_quality, search_quality) >= current_cell_score:
+            self.cell_elites[cell_key] = {
+                "candidate_id": candidate.id,
+                "quality": quality,
+                "search_quality": search_quality,
+                "final_quality": final_quality,
+                "bin_key": candidate_bin_key(candidate),
+                "descriptor_cell": cell_key,
+                "candidate": candidate.to_dict(),
+            }
         for niche in niches:
             current = self.elites_by_niche.get(niche)
             current_score = max(float(current.get("quality", -1.0)), float(current.get("search_quality", -1.0))) if current else -1.0
@@ -181,6 +197,7 @@ class QualityDiversityArchive:
                     "search_quality": search_quality,
                     "final_quality": final_quality,
                     "bin_key": candidate_bin_key(candidate),
+                    "descriptor_cell": cell_key,
                     "candidate": candidate.to_dict(),
                 }
 
@@ -217,6 +234,9 @@ class QualityDiversityArchive:
             changed = existing.get(descriptor) != request
             existing[descriptor] = request
             self.rebalance_requests = list(existing.values())[-100:]
+            if descriptor not in self.sparse_cells:
+                self.sparse_cells.append(descriptor)
+                self.sparse_cells = self.sparse_cells[-200:]
             return {"changed": changed, "reason": "archive_rebalance_recorded" if changed else "archive_rebalance_already_present", "matched_candidate_ids": []}
         return {"changed": False, "reason": "archive_directive_unknown_kind", "matched_candidate_ids": []}
 
@@ -231,9 +251,14 @@ class QualityDiversityArchive:
             token = str(record.get("descriptor_token") or "").strip().lower()
             if token and token in candidate_tokens:
                 boost = max(boost, 0.12)
+        candidate_cell = descriptor_cell_key(candidate).lower()
         for request in self.rebalance_requests:
             descriptor = str(request.get("descriptor") or "").strip().lower() if isinstance(request, dict) else ""
-            if descriptor and any(part and part in candidate_tokens for part in descriptor.replace("|", ":").split(":")):
+            if descriptor and (descriptor in candidate_cell or any(part and part in candidate_tokens for part in descriptor.replace("|", ":").split(":"))):
+                boost = max(boost, 0.1)
+        for sparse in self.sparse_cells:
+            descriptor = str(sparse or "").strip().lower()
+            if descriptor and (descriptor in candidate_cell or any(part and part in candidate_tokens for part in descriptor.replace("|", ":").split(":"))):
                 boost = max(boost, 0.1)
         return boost
 
@@ -244,8 +269,10 @@ class QualityDiversityArchive:
     def from_dict(cls, data: dict[str, Any]) -> "QualityDiversityArchive":
         return cls(
             elites_by_niche=dict(data.get("elites_by_niche") or {}),
+            cell_elites={str(k): dict(v) for k, v in dict(data.get("cell_elites") or {}).items() if isinstance(v, dict)},
             directive_descriptors={str(k): dict(v) for k, v in dict(data.get("directive_descriptors") or {}).items() if isinstance(v, dict)},
             rebalance_requests=[dict(item) for item in data.get("rebalance_requests", []) if isinstance(item, dict)],
+            sparse_cells=[str(item) for item in data.get("sparse_cells", []) if str(item or "").strip()],
         )
 
 
