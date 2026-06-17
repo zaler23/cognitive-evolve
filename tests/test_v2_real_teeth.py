@@ -94,9 +94,10 @@ def test_archive_directive_without_matchable_payload_is_noop() -> None:
 def test_candidate_verification_strength_ignores_failed_or_non_replayable_results() -> None:
     candidate = CandidateGenome(id="C1")
     candidate.verification_trace = [
-        VerificationResult(True, strength=VerificationStrength.EMPIRICAL, replayable=False).to_dict(),
-        VerificationResult(False, strength=VerificationStrength.FORMAL, replayable=True).to_dict(),
-        VerificationResult(True, strength=VerificationStrength.DECOMPOSED, replayable=True).to_dict(),
+        _measured_verification_result(VerificationStrength.EMPIRICAL, replayable=False).to_dict(),
+        _measured_verification_result(VerificationStrength.FORMAL, passed=False, replayable=True).to_dict(),
+        _measured_verification_result(VerificationStrength.DECOMPOSED, replayable=True).to_dict(),
+        VerificationResult(True, strength=VerificationStrength.FORMAL, replayable=True).to_dict(),
     ]
     assert candidate_verification_strength(candidate) == VerificationStrength.DECOMPOSED
 
@@ -110,7 +111,7 @@ def test_old_objective_solved_without_actual_formal_result_returns_portfolio() -
 
 def test_verified_result_requires_actual_formal_replayable_result() -> None:
     candidate = CandidateGenome(id="C1", artifact="answer")
-    result = VerificationResult(True, score=1.0, strength=VerificationStrength.FORMAL, evidence_ref="e1", replayable=True, metadata={"verifier_fingerprint": "vf", "cache_key": "ck"})
+    result = _measured_verification_result(VerificationStrength.FORMAL, evidence_ref="e1", verifier_fingerprint="vf", cache_key="ck")
     candidate.verification_trace = [result.to_dict()]
     synthesis = SynthesizedResult(status="synthesized", final_answer="answer", best_candidate_id="C1", closure_certificate={"objective_solved": True})
     graded = _graded_output_for_final_state(population=CandidatePopulation([candidate]), synthesis=synthesis, final_certificate={"objective_solved": True, "candidate_id": "C1"}, latent_replay_audit={})
@@ -132,6 +133,53 @@ def test_context_transform_changes_prompt_payload_hash_and_preserves_protected_s
     assert "contract" in view.payload
     assert "verification_plan" in view.payload
     assert view.metadata["context_transform_applied"] is True
+
+
+def test_verification_obligations_render_as_verification_regime_section() -> None:
+    payload = {
+        "contract": {"normalized_goal": "g"},
+        "policy": {"fitness_axes": ["a"]},
+        "candidates": [CandidateGenome(id="C1", artifact="x")],
+        "_prompt_context_controls": {
+            "verification_regime": [
+                {
+                    "id": "obl1",
+                    "origin": "test",
+                    "must_pass": True,
+                    "strength_contribution": 99,
+                    "replayable": True,
+                    "exogeneity_probe": {"content": "engine probe"},
+                }
+            ]
+        },
+    }
+    view = build_prompt_view("nexus_diagnose_search_state", payload, max_chars=1200)
+    assert "verification_regime" in view.payload
+    rendered = view.payload["verification_regime"][0]
+    assert rendered["id"] == "obl1"
+    assert "strength_contribution" not in rendered
+    assert "replayable" not in rendered
+
+
+def test_verification_regime_protected_under_tight_budget() -> None:
+    payload = {
+        "contract": {"normalized_goal": "g"},
+        "candidates": [CandidateGenome(id=f"C{i}", artifact="x" * 1000) for i in range(8)],
+        "_prompt_context_controls": {
+            "verification_regime": [
+                {
+                    "id": "must",
+                    "origin": "test",
+                    "must_pass": True,
+                    "replay_record": {"huge": "z" * 5000},
+                    "exogeneity_probe": {"context": "p" * 5000, "content": "c" * 5000},
+                }
+            ]
+        },
+    }
+    view = build_prompt_view("nexus_diagnose_search_state", payload, max_chars=700)
+    assert "verification_regime" in view.payload
+    assert view.payload["verification_regime"][0]["id"] == "must"
 
 
 def test_collapse_params_requires_parameter_slots_for_candidate_transform() -> None:
@@ -170,3 +218,37 @@ def test_immune_signature_not_raw_substring_and_text_obligation_not_replayable_f
     assert "machine_parse_failure" not in obligation["signature"]
     assert obligation["replayable"] is False
     assert obligation["strength_contribution"] == 0
+
+
+def _measured_verification_result(
+    strength: VerificationStrength,
+    *,
+    passed: bool = True,
+    replayable: bool = True,
+    evidence_ref: str = "evidence",
+    verifier_fingerprint: str = "vf",
+    cache_key: str = "cache",
+) -> VerificationResult:
+    return VerificationResult(
+        passed=passed,
+        score=1.0 if passed else 0.0,
+        strength=strength,
+        evidence_ref=evidence_ref,
+        replayable=replayable,
+        metadata={
+            "verifier_fingerprint": verifier_fingerprint,
+            "cache_key": cache_key,
+            "measured_strength": strength.name,
+            "measured_strength_value": int(strength),
+            "honesty_measurements": {
+                "exogeneity_score": 1.0,
+                "variety_score": 1.0,
+                "falsification_score": 1.0,
+                "replay_score": 1.0,
+                "diagnostics": [],
+            },
+            "replay_record": {"frozen_artifact_hash": "artifact", "verifier_fingerprint": verifier_fingerprint},
+            "diagnostics_only": False,
+            "legacy": False,
+        },
+    )

@@ -33,8 +33,9 @@ def candidate_verification_results(candidate: Any) -> list[VerificationResult]:
 def candidate_verification_strength(candidate: Any) -> VerificationStrength:
     strength = VerificationStrength.NONE
     for result in candidate_verification_results(candidate):
-        if result.passed and result.replayable:
-            strength = max(strength, result.strength)
+        measured = measured_strength_from_result(result)
+        if result.passed and result.replayable and measured > VerificationStrength.NONE:
+            strength = max(strength, measured)
     return strength
 
 
@@ -43,9 +44,25 @@ def strongest_passed_replayable_result(candidate: Any) -> VerificationResult | N
     for result in candidate_verification_results(candidate):
         if not (result.passed and result.replayable):
             continue
-        if best is None or result.strength > best.strength or (result.strength == best.strength and result.score > best.score):
+        strength = measured_strength_from_result(result)
+        if strength <= VerificationStrength.NONE:
+            continue
+        best_strength = measured_strength_from_result(best) if best is not None else VerificationStrength.NONE
+        if best is None or strength > best_strength or (strength == best_strength and result.score > best.score):
             best = result
     return best
 
 
-__all__ = ["candidate_verification_results", "candidate_verification_strength", "strongest_passed_replayable_result"]
+def measured_strength_from_result(result: VerificationResult | None) -> VerificationStrength:
+    if result is None:
+        return VerificationStrength.NONE
+    metadata = coerce_dict(result.metadata)
+    if metadata.get("diagnostics_only") or metadata.get("legacy"):
+        return VerificationStrength.NONE
+    measurements = metadata.get("honesty_measurements")
+    if not isinstance(measurements, dict):
+        return VerificationStrength.NONE
+    return VerificationStrength.from_value(metadata.get("measured_strength") or metadata.get("measured_strength_value"))
+
+
+__all__ = ["candidate_verification_results", "candidate_verification_strength", "measured_strength_from_result", "strongest_passed_replayable_result"]

@@ -8,6 +8,7 @@ from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateG
 from cognitive_evolve_runtime.evaluators.evidence import evidence_state, latest_evidence_record
 from cognitive_evolve_runtime.evaluators.registry import get_adapter
 from cognitive_evolve_runtime.core.scalars import bounded_score
+from cognitive_evolve_runtime.verification.types import GradedOutput
 
 
 @dataclass(frozen=True)
@@ -53,9 +54,9 @@ class FinalProjection:
         return "\n".join(lines).rstrip() + "\n"
 
 
-def build_final_projection(*, population: CandidatePopulation, synthesis: Any, final_certificate: dict[str, Any] | None = None) -> FinalProjection:
+def build_final_projection(*, population: CandidatePopulation, synthesis: Any, graded_output: GradedOutput, final_certificate: dict[str, Any] | None = None) -> FinalProjection:
     certificate = dict(final_certificate or getattr(synthesis, "closure_certificate", {}) or {})
-    solved = bool(certificate.get("objective_solved") or getattr(synthesis, "objective_solved", False))
+    solved = graded_output.mode == "verified_result"
     if solved:
         candidate = _candidate_by_id(population.candidates, str(certificate.get("candidate_id") or getattr(synthesis, "best_candidate_id", "")))
         if _projection_candidate_final_eligible(candidate):

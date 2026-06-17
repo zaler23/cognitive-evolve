@@ -32,7 +32,20 @@ def _graded_output_verified() -> dict[str, Any]:
         "mode": "verified_result",
         "verification_strength": 4,
         "result": {"replayable": True, "evidence_ref": "e1", "verifier_fingerprint": "vf"},
-        "replay_certificate": {"scope": "verifier_on_frozen_artifact_only", "verification_cache_key": "ck"},
+        "replay_certificate": {
+            "scope": "verifier_on_frozen_artifact_only",
+            "verification_cache_key": "ck",
+            "frozen_artifact_hash": "artifact-1",
+            "verifier_fingerprint": "vf",
+            "measured_strength": "FORMAL",
+            "measured_strength_value": 4,
+            "honesty_measurements": {
+                "exogeneity_score": 1.0,
+                "variety_score": 1.0,
+                "falsification_score": 1.0,
+                "replay_score": 1.0,
+            },
+        },
     }
 
 

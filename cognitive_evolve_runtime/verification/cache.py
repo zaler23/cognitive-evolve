@@ -4,6 +4,8 @@ from __future__ import annotations
 from typing import Any
 
 from cognitive_evolve_runtime.nexus._serde import stable_hash
+from .honesty_core import measure_verification_result
+from .regime import compile_grounding_regime
 from .types import VerificationResult, SynthesizedVerifier
 
 
@@ -24,25 +26,64 @@ def check_with_cache(candidate: Any, verifier: SynthesizedVerifier, cache: dict[
     fingerprint = str(getattr(verifier, "fingerprint", "") or getattr(verifier, "verifier_id", ""))
     key = verification_cache_key(candidate, fingerprint)
     if key in cache and isinstance(cache[key], dict):
-        result = VerificationResult.from_dict(cache[key].get("result") if isinstance(cache[key].get("result"), dict) else cache[key])
-        metadata = dict(result.metadata)
-        metadata["cache_hit"] = True
-        metadata.setdefault("cache_key", key)
-        metadata.setdefault("artifact_sha256", candidate_artifact_hash(candidate))
-        metadata.setdefault("verifier_fingerprint", fingerprint)
-        result = VerificationResult(result.passed, result.score, result.strength, result.evidence_ref, result.replayable, list(result.diagnostics), metadata)
-        return result, key, True
-    result = verifier.check(candidate)
-    metadata = dict(result.metadata)
+        entry = cache[key]
+        if isinstance(entry.get("measured_result"), dict):
+            result = VerificationResult.from_dict(entry["measured_result"])
+            metadata = dict(result.metadata)
+            metadata["cache_hit"] = True
+            metadata.setdefault("cache_key", key)
+            metadata.setdefault("artifact_sha256", candidate_artifact_hash(candidate))
+            metadata.setdefault("verifier_fingerprint", fingerprint)
+            result = VerificationResult(result.passed, result.score, result.strength, result.evidence_ref, result.replayable, list(result.diagnostics), metadata)
+            return result, key, True
+        # Legacy entries did not carry honesty measurements.  Keep them for
+        # diagnostics, but rerun instead of certifying from stale strength.
+        entry["legacy_cache"] = True
+        entry["diagnostics_only"] = True
+
+    raw_result = verifier.check(candidate)
+    artifact_sha = candidate_artifact_hash(candidate)
+    oracle_kind = str(raw_result.metadata.get("oracle_kind") or getattr(verifier, "verifier_id", "").replace("-verifier", "") or "")
+    metadata = dict(raw_result.metadata)
     metadata.update({
         "cache_hit": False,
         "cache_key": key,
-        "artifact_sha256": candidate_artifact_hash(candidate),
+        "artifact_sha256": artifact_sha,
         "verifier_fingerprint": fingerprint,
         "replay_scope": "verifier_on_frozen_artifact",
+        "diagnostics_only": bool(metadata.get("diagnostics_only", True)),
     })
-    result = VerificationResult(result.passed, result.score, result.strength, result.evidence_ref, result.replayable, list(result.diagnostics), metadata)
-    cache[key] = {"result": result.to_dict(), "artifact_sha256": metadata["artifact_sha256"], "verifier_fingerprint": fingerprint}
+    raw_result = VerificationResult(raw_result.passed, raw_result.score, raw_result.strength, raw_result.evidence_ref, raw_result.replayable, list(raw_result.diagnostics), metadata)
+    replay_record = {
+        "frozen_artifact_hash": artifact_sha,
+        "artifact_sha256": artifact_sha,
+        "verifier_fingerprint": fingerprint,
+        "verification_cache_key": key,
+        "replay_verified": bool(raw_result.replayable),
+        "replay_scope": "verifier_on_frozen_artifact",
+    }
+    regime = compile_grounding_regime(
+        candidate=candidate,
+        verifier_fingerprint=fingerprint,
+        artifact_hash=artifact_sha,
+        plan=getattr(verifier, "plan", None) if isinstance(getattr(verifier, "plan", None), dict) else None,
+        oracle_kind=oracle_kind,
+    )
+    measured = measure_verification_result(
+        raw_result,
+        regime,
+        actual_probe_verdicts=raw_result.metadata.get("engine_honesty_observations") if isinstance(raw_result.metadata.get("engine_honesty_observations"), dict) else {},
+        replay_record=replay_record,
+    )
+    result = measured.to_verification_result()
+    cache[key] = {
+        "raw_result": raw_result.to_dict(),
+        "measured_result": result.to_dict(),
+        "honesty_measurements": result.metadata.get("honesty_measurements"),
+        "artifact_sha256": artifact_sha,
+        "verifier_fingerprint": fingerprint,
+        "replay_record": replay_record,
+    }
     return result, key, False
 
 

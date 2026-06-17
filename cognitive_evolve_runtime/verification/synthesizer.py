@@ -22,30 +22,31 @@ class VerificationSynthesizer:
     def synthesize(self, problem: Any) -> VerificationPlan:
         text = _problem_text(problem)
         modality = "adversarial"
-        strength = VerificationStrength.ADVERSARIAL if text else VerificationStrength.NONE
         if _EXEC_HINT_RE.search(text):
             modality = "executable"
-            strength = VerificationStrength.EXECUTABLE
         elif _FORMAL_HINT_RE.search(text):
             modality = "formal"
-            strength = VerificationStrength.FORMAL
         elif _EMPIRICAL_HINT_RE.search(text):
             modality = "empirical"
-            strength = VerificationStrength.EMPIRICAL
         elif _DECOMPOSE_HINT_RE.search(text):
             modality = "decomposed"
-            strength = VerificationStrength.DECOMPOSED
-        reformulations = [item.to_dict() for item in reformulate_for_verification(text)] if strength <= VerificationStrength.ADVERSARIAL else []
+        diagnostic_strength = VerificationStrength.from_value(0)
+        reformulations = [item.to_dict() for item in reformulate_for_verification(text)] if modality == "adversarial" else []
         fingerprint = "verifier-" + stable_hash({"modality": modality, "problem": text})[:16]
         return VerificationPlan(
             verifier_id=f"{modality}-verifier",
-            strength=strength,
+            strength=diagnostic_strength,
             modality=modality,
             verifier_fingerprint=fingerprint,
-            replayable=modality in {"executable", "formal", "empirical", "decomposed"},
+            replayable=False,
             diagnostics=[f"selected_modality:{modality}"],
             reformulations=reformulations,
-            metadata={"replay_scope": "verifier_on_frozen_artifact_only"},
+            metadata={
+                "replay_scope": "verifier_on_frozen_artifact_only",
+                "diagnostics_only": True,
+                "probe_requirements": [{"kind": f"{modality}_grounding_probe", "expected_verdict_flip": False}],
+                "falsification_budget": {"count": 1 if modality in {"executable", "formal", "empirical", "decomposed"} else 0},
+            },
         )
 
 

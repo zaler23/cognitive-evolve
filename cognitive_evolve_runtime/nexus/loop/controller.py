@@ -28,8 +28,9 @@ from cognitive_evolve_runtime.nexus.protocols import NexusModelLike, NexusMutati
 from cognitive_evolve_runtime.nexus.repair_reactivation import recover_failure_archive_repair_seeds, recover_repairable_dormant_seeds
 from cognitive_evolve_runtime.nexus.synthesis import SynthesizedResult, synthesize_result
 from cognitive_evolve_runtime.verification.ladder import VerificationStrength
+from cognitive_evolve_runtime.verification.grading import certificate_allows_verified_result
 from cognitive_evolve_runtime.verification.types import GradedOutput, VerifiedResult, Direction, VerificationPlan
-from cognitive_evolve_runtime.verification.strength import candidate_verification_strength, strongest_passed_replayable_result
+from cognitive_evolve_runtime.verification.strength import candidate_verification_strength, measured_strength_from_result, strongest_passed_replayable_result
 from cognitive_evolve_runtime.nexus.stop_decision import StopDecisionEngine
 from cognitive_evolve_runtime.nexus.semantic_dedupe import CandidateDeduper
 from cognitive_evolve_runtime.outcomes.latent_audit import audit_latent_replay_bundle
@@ -192,6 +193,7 @@ class EvolutionLoopController:
                 "round": current_round,
                 "ranking": evaluation.rankings.to_dict(),
                 "diagnosis": self.diagnosis.to_dict(),
+                "grounded_information_gain": dict(getattr(self.diagnosis, "grounded_information_gain", {}) or {}),
                 "critiques": [critique.to_dict() for critique in evaluation.critiques],
                 "verification": [item.to_dict() for item in evaluation.verification_results],
                 "generation_plan": evaluation.generation_plan,
@@ -332,7 +334,7 @@ class EvolutionLoopController:
             archives=self.archives,
         )
         _attach_latent_replay_audit_to_closure(synthesis, latent_replay_audit)
-        graded_output = _graded_output_for_final_state(population=self.population, synthesis=synthesis, final_certificate=final_certificate, latent_replay_audit=latent_replay_audit)
+        graded_output = _graded_output_for_final_state(population=self.population, synthesis=synthesis, final_certificate=final_certificate, latent_replay_audit=latent_replay_audit, contract=self.contract)
         synthesis.closure_certificate["graded_output"] = graded_output.to_dict()
         if graded_output.mode != "verified_result":
             synthesis.closure_certificate["objective_solved"] = False
@@ -383,9 +385,10 @@ class EvolutionLoopController:
 
 
 
-def _graded_output_for_final_state(*, population: CandidatePopulation, synthesis: SynthesizedResult, final_certificate: dict[str, Any], latent_replay_audit: dict[str, Any]) -> GradedOutput:
+def _graded_output_for_final_state(*, population: CandidatePopulation, synthesis: SynthesizedResult, final_certificate: dict[str, Any], latent_replay_audit: dict[str, Any], contract: Any | None = None) -> GradedOutput:
     closure = dict(synthesis.closure_certificate or {})
     closure_solved = bool(closure.get("objective_solved"))
+    threshold = _verification_threshold(contract)
     selected = _selected_final_candidate(population, synthesis=synthesis, final_certificate=final_certificate)
     strongest = strongest_passed_replayable_result(selected) if selected is not None else None
     strength = candidate_verification_strength(selected) if selected is not None else VerificationStrength.NONE
@@ -396,7 +399,7 @@ def _graded_output_for_final_state(*, population: CandidatePopulation, synthesis
         candidate=selected,
         verification_result=strongest,
     )
-    if closure_solved and strongest is not None and strength >= VerificationStrength.FORMAL and strongest.replayable:
+    if closure_solved and strongest is not None and strength >= threshold and strongest.replayable and certificate_allows_verified_result(replay_certificate, threshold):
         result = VerifiedResult(
             answer=synthesis.final_answer,
             replayable=True,
@@ -429,6 +432,8 @@ def _replay_certificate_for_final_state(*, synthesis: SynthesizedResult, final_c
     frozen_hash = candidate_artifact_hash(candidate) if candidate is not None else "artifact-" + stable_hash({"answer": synthesis.final_answer, "candidate_id": synthesis.best_candidate_id or synthesis.reference_candidate_id})[:16]
     result_payload = verification_result.to_dict() if hasattr(verification_result, "to_dict") else {}
     metadata = dict(getattr(verification_result, "metadata", {}) or {}) if verification_result is not None else {}
+    measured_strength = measured_strength_from_result(verification_result)
+    honesty_measurements = metadata.get("honesty_measurements") if isinstance(metadata.get("honesty_measurements"), dict) else None
     evidence_hash = "evidence-" + stable_hash({"final_certificate": final_certificate, "latent_replay_audit": latent_replay_audit, "verification_result": result_payload})[:16]
     return {
         "scope": "verifier_on_frozen_artifact_only",
@@ -436,12 +441,22 @@ def _replay_certificate_for_final_state(*, synthesis: SynthesizedResult, final_c
         "candidate_id": str(getattr(candidate, "id", "") or ""),
         "frozen_artifact_hash": frozen_hash,
         "verifier_fingerprint": str(metadata.get("verifier_fingerprint") or metadata.get("fingerprint") or ""),
+        "measured_strength": measured_strength.name,
+        "measured_strength_value": int(measured_strength),
+        "honesty_measurements": honesty_measurements,
         "verification_cache_key": str(metadata.get("cache_key") or ""),
         "tool_versions": {},
         "evidence_bundle_hash": evidence_hash,
         "replay_command": "cogev attack --resume <out-dir> --budget <compute>  # replays verifier state on frozen artifacts only",
         "verifier_seed": 0,
     }
+
+
+def _verification_threshold(contract: Any | None) -> VerificationStrength:
+    metadata = getattr(contract, "metadata", {}) if contract is not None else {}
+    if isinstance(metadata, dict):
+        return VerificationStrength.from_value(metadata.get("verification_threshold") or VerificationStrength.FORMAL)
+    return VerificationStrength.FORMAL
 
 def evolve_once(
     *,

@@ -4,6 +4,7 @@ import time
 from typing import Any
 
 from cognitive_evolve_runtime.validation.result import aggregate_verification_results, verification_result_from_mapping
+from cognitive_evolve_runtime.verification.grading import certificate_allows_verified_result
 
 from .usage import _usage
 
@@ -46,6 +47,8 @@ def _nexus_verification_passed(nexus_data: dict[str, Any]) -> bool:
     result = graded.get("result") if isinstance(graded.get("result"), dict) else {}
     replay = graded.get("replay_certificate") if isinstance(graded.get("replay_certificate"), dict) else {}
     if not result or not bool(result.get("replayable")) or not replay:
+        return False
+    if not certificate_allows_verified_result(replay, 4):
         return False
     summaries = nexus_data.get("verification_summaries")
     if isinstance(summaries, list) and summaries:

@@ -54,8 +54,10 @@ from cognitive_evolve_runtime.nexus.reproduction import (
 from cognitive_evolve_runtime.tools.verification_stack import NexusVerifierStack
 from cognitive_evolve_runtime.verification.cache import check_with_cache
 from cognitive_evolve_runtime.verification.factory import verifier_from_plan
+from cognitive_evolve_runtime.verification.information_gain import population_information_gain_report
 from cognitive_evolve_runtime.verification.obligation_runner import run_obligations_for_population
-from cognitive_evolve_runtime.verification.types import VerificationPlan
+from cognitive_evolve_runtime.verification.strength import measured_strength_from_result
+from cognitive_evolve_runtime.verification.types import VerificationPlan, VerificationResult
 from cognitive_evolve_runtime.theory import TheoryConfig, TheoryLayer, build_population_representation
 from cognitive_evolve_runtime.nexus._shared import MODEL_BOUNDARY_ERRORS, positive_int
 from cognitive_evolve_runtime.llm.retry import provider_error_category
@@ -363,8 +365,8 @@ class EvolutionRound:
             candidate.verification_trace = [*candidate.verification_trace, trace_item][-100:]
             if result.passed and result.replayable:
                 current = candidate.verification_result if isinstance(candidate.verification_result, dict) else {}
-                current_strength = int(current.get("strength_value") or 0) if current else 0
-                if int(result.strength) >= current_strength:
+                current_strength = measured_strength_from_result(VerificationResult.from_dict(current)) if current else measured_strength_from_result(None)
+                if measured_strength_from_result(result) >= current_strength:
                     candidate.verification_result = trace_item
             results.append(result)
         self.adaptive.update_verification_cache(cache)
@@ -398,7 +400,11 @@ class EvolutionRound:
         policy: EvolutionPolicy,
         contract: NexusObjectiveContract,
     ) -> tuple[SearchDiagnosis, EvolutionPolicy]:
+        gain_report = population_information_gain_report(population.candidates, self.budget.history)
+        policy.metadata.setdefault("engine_grounded_information_gain", gain_report)
+        policy.metadata["engine_grounded_information_gain"] = gain_report
         diagnosis = self.diagnoser.diagnose(population=population.candidates, archives=archives, history=self.budget.history, contract=contract, policy=policy)
+        diagnosis.grounded_information_gain = gain_report
         return diagnosis, self.updater.update(policy, diagnosis, model=self.model, archives=archives)
 
     def reproduce(
@@ -516,7 +522,8 @@ class EvolutionRound:
             return
         transforms = self.adaptive.context_transform_features()
         plan = self.adaptive.verification_plan_dict()
-        if not transforms and not plan:
+        obligations = self.adaptive.verification_obligation_features()
+        if not transforms and not plan and not obligations:
             return
         protect_refs: list[str] = []
         drop_refs: list[str] = []
@@ -536,6 +543,10 @@ class EvolutionRound:
             "view_hash": ":".join(view_hash_parts),
             "verification_plan": plan,
         }
+        regime = [_prompt_verification_regime_item(item) for item in obligations if isinstance(item, dict)]
+        regime = [item for item in regime if item]
+        if regime:
+            controls["verification_regime"] = regime
         before = dict(metadata.get("prompt_context_controls") or {}) if isinstance(metadata.get("prompt_context_controls"), dict) else {}
         metadata["prompt_context_controls"] = controls
         for transform in transforms:
@@ -855,6 +866,24 @@ def _search_pressure_has_effect(pressure: Any) -> bool:
         or getattr(pressure, "success_criteria", None)
         or str(getattr(pressure, "mutation_instruction", "") or "").strip()
     )
+
+
+def _prompt_verification_regime_item(obligation: dict[str, Any]) -> dict[str, Any]:
+    """Return a model-facing obligation view without certification shortcuts."""
+
+    allowed = {
+        "id",
+        "origin",
+        "must_pass",
+        "exogeneity_probe",
+        "variety_probe",
+        "falsification_budget",
+        "replay_record",
+    }
+    out = {key: obligation.get(key) for key in allowed if key in obligation}
+    for forbidden in ("strength_contribution", "replayable", "strength", "strength_value", "measured_strength"):
+        out.pop(forbidden, None)
+    return out
 
 
 __all__ = ["EvolutionRound", "RoundEvaluation"]

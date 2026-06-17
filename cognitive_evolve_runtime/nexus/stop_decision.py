@@ -19,6 +19,8 @@ from cognitive_evolve_runtime.nexus.stop_reasons import (
     normalize_external_review_stop_reason,
 )
 from cognitive_evolve_runtime.outcomes.runtime_bridge import best_candidate_m5_certificate, latent_stop_allows_solved
+from cognitive_evolve_runtime.verification.ladder import VerificationStrength
+from cognitive_evolve_runtime.verification.strength import candidate_verification_strength
 
 
 
@@ -50,6 +52,8 @@ class StopDecisionEngine:
                 return convergence_reason
             if not latent_stop_allows_solved(contract=contract, synthesis_certificate=improvement_certificate):
                 return "latent_problem_space_needs_continuation"
+            if not _measured_strength_allows_solved(population, best_answer_id, contract):
+                return "model_stop_needs_measured_verification"
             return convergence_reason
         if policy == "adaptive_until_solved":
             if isinstance(model, NexusStopModelProtocol):
@@ -61,11 +65,15 @@ class StopDecisionEngine:
                     if decision.get("solved") is True:
                         if not latent_stop_allows_solved(contract=contract, synthesis_certificate=improvement_certificate):
                             return "latent_problem_space_needs_continuation"
+                        if not _measured_strength_allows_solved(population, best_answer_id, contract):
+                            return "model_stop_needs_measured_verification"
                         return str(decision.get("reason") or "objective_solved")
                     return "model_stop_unsolved_needs_continuation"
                 if decision is True:
                     if not latent_stop_allows_solved(contract=contract, synthesis_certificate=improvement_certificate):
                         return "latent_problem_space_needs_continuation"
+                    if not _measured_strength_allows_solved(population, best_answer_id, contract):
+                        return "model_stop_needs_measured_verification"
                     return "objective_solved"
             return ""
         if policy == "convergence_or_max_rounds":
@@ -83,11 +91,15 @@ class StopDecisionEngine:
                 if decision.get("solved") is True:
                     if not latent_stop_allows_solved(contract=contract, synthesis_certificate=improvement_certificate):
                         return "latent_problem_space_needs_continuation"
+                    if not _measured_strength_allows_solved(population, best_answer_id, contract):
+                        return "model_stop_needs_measured_verification"
                     return str(decision.get("reason") or "objective_solved")
                 return "model_stop_unsolved_needs_continuation"
             if bool(decision):
                 if not latent_stop_allows_solved(contract=contract, synthesis_certificate=improvement_certificate):
                     return "latent_problem_space_needs_continuation"
+                if not _measured_strength_allows_solved(population, best_answer_id, contract):
+                    return "model_stop_needs_measured_verification"
                 return "model_stop_after_minimum"
             return ""
         return ""
@@ -143,6 +155,23 @@ def _candidate_certificate(population: CandidatePopulation, candidate_id: str) -
         return None
     candidate = population.by_id().get(candidate_id)
     return best_candidate_m5_certificate(candidate)
+
+
+def _measured_strength_allows_solved(population: CandidatePopulation, best_answer_id: str, contract: Any | None) -> bool:
+    if not best_answer_id:
+        return False
+    candidate = population.by_id().get(best_answer_id)
+    if candidate is None:
+        return False
+    threshold = _verification_threshold(contract)
+    return candidate_verification_strength(candidate) >= threshold
+
+
+def _verification_threshold(contract: Any | None) -> VerificationStrength:
+    metadata = getattr(contract, "metadata", {}) if contract is not None else {}
+    if isinstance(metadata, dict):
+        return VerificationStrength.from_value(metadata.get("verification_threshold") or VerificationStrength.FORMAL)
+    return VerificationStrength.FORMAL
 
 
 __all__ = ["StopDecisionEngine"]

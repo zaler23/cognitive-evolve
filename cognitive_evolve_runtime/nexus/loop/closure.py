@@ -147,7 +147,7 @@ def _completion_status_for_budget(*, budget: EvolutionBudget, interrupted: bool,
         return "needs_continuation"
     if is_external_review_stop_reason(reason):
         return "best_current_route"
-    if reason in {"needs_continuation", "model_stop_unsolved_needs_continuation", "model_stop_after_minimum", "latent_problem_space_needs_continuation"}:
+    if reason in {"needs_continuation", "model_stop_unsolved_needs_continuation", "model_stop_after_minimum", "latent_problem_space_needs_continuation", "model_stop_needs_measured_verification"}:
         return "needs_continuation"
     if budget.completion_requires_stop_signal and not _is_solved_stop_reason(reason):
         return "needs_continuation"

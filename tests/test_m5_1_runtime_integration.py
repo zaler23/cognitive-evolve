@@ -8,6 +8,8 @@ from cognitive_evolve_runtime.inputs.text_packet import TextInputPacket, TextWor
 from cognitive_evolve_runtime.nexus.diagnosis import SearchDiagnosis
 from cognitive_evolve_runtime.nexus.loop import EvolutionBudget, _closure_certificate, _completion_status_for_budget
 from cognitive_evolve_runtime.nexus.stop_decision import StopDecisionEngine
+from cognitive_evolve_runtime.verification.ladder import VerificationStrength
+from cognitive_evolve_runtime.verification.types import VerificationResult
 from cognitive_evolve_runtime.nexus.synthesis import SynthesizedResult
 from cognitive_evolve_runtime.outcomes import (
     ExplorationAction,
@@ -216,6 +218,7 @@ def test_stop_decision_allows_solved_when_latent_converged_and_verified() -> Non
     )
     contract = NexusObjectiveContract(original_user_goal="verified best", normalized_goal="verified best", metadata={"latent_problem_state": state.to_dict()})
     candidate = CandidateGenome(id="C1", metadata={"improvement_certificate": m5.to_dict()})
+    candidate.verification_trace = [_measured_formal_result().to_dict()]
 
     reason = StopDecisionEngine().stop_reason_after_round(
         budget=EvolutionBudget(max_rounds=2, stop_policy="llm_after_minimum", min_rounds_before_stop=1),
@@ -228,3 +231,26 @@ def test_stop_decision_allows_solved_when_latent_converged_and_verified() -> Non
     )
 
     assert reason == "objective_solved"
+
+
+def _measured_formal_result() -> VerificationResult:
+    return VerificationResult(
+        True,
+        score=1.0,
+        strength=VerificationStrength.FORMAL,
+        evidence_ref="evidence",
+        replayable=True,
+        metadata={
+            "verifier_fingerprint": "vf",
+            "measured_strength": "FORMAL",
+            "measured_strength_value": 4,
+            "honesty_measurements": {
+                "exogeneity_score": 1.0,
+                "variety_score": 1.0,
+                "falsification_score": 1.0,
+                "replay_score": 1.0,
+            },
+            "diagnostics_only": False,
+            "legacy": False,
+        },
+    )

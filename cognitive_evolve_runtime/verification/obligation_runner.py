@@ -5,7 +5,10 @@ from typing import Any
 
 from cognitive_evolve_runtime.evaluators.evidence import EvidenceRecord, apply_evidence_record
 from cognitive_evolve_runtime.nexus._serde import stable_hash
-from .ladder import VerificationStrength
+from .cache import candidate_artifact_hash
+from .honesty_core import measure_verification_result
+from .regime import compile_grounding_regime
+from .strength import measured_strength_from_result
 from .types import VerificationResult
 
 
@@ -49,23 +52,61 @@ def _check_obligation(candidate: Any, obligation: dict[str, Any], *, cache: dict
     fingerprint = str(obligation.get("verifier_fingerprint") or "obligation:" + stable_hash(obligation)[:16])
     key = "obligation:" + stable_hash({"candidate": getattr(candidate, "id", ""), "artifact": getattr(candidate, "artifact", ""), "fingerprint": fingerprint})
     if key in cache and isinstance(cache[key], dict):
-        return VerificationResult.from_dict(cache[key].get("result") if isinstance(cache[key].get("result"), dict) else cache[key])
+        entry = cache[key]
+        if isinstance(entry.get("measured_result"), dict):
+            return VerificationResult.from_dict(entry["measured_result"])
+        entry["legacy_cache"] = True
+        entry["diagnostics_only"] = True
     text = str(getattr(candidate, "artifact", "") or getattr(candidate, "concise_claim", "") or getattr(candidate, "core_mechanism", ""))
     matcher = str(obligation.get("diagnostic_matcher") or obligation.get("signature") or "")
     # Text obligations are low-strength unless backed by an executable/project oracle.
     replayable = bool(obligation.get("replayable") and obligation.get("oracle_kind") == "toolrunner")
-    strength = VerificationStrength.EXECUTABLE if replayable else VerificationStrength.DECOMPOSED
     passed = not matcher or matcher.lower() not in text.lower()
-    result = VerificationResult(
+    raw_result = VerificationResult(
         passed=passed,
         score=1.0 if passed else 0.0,
-        strength=strength,
         evidence_ref="evidence-" + stable_hash({"obligation": oid, "passed": passed})[:16],
         replayable=replayable,
         diagnostics=["obligation_passed" if passed else "obligation_regression_detected", f"obligation_id:{oid}"],
-        metadata={"fingerprint": fingerprint, "obligation_id": oid, "replay_scope": "verifier_on_frozen_artifact" if replayable else "diagnostic_matcher_only"},
+        metadata={
+            "fingerprint": fingerprint,
+            "verifier_fingerprint": fingerprint,
+            "obligation_id": oid,
+            "oracle_kind": str(obligation.get("oracle_kind") or ("toolrunner" if replayable else "diagnostic_matcher")),
+            "replay_scope": "verifier_on_frozen_artifact" if replayable else "diagnostic_matcher_only",
+            "diagnostics_only": True,
+            "strength_contribution": obligation.get("strength_contribution", 0),
+        },
     )
-    cache[key] = {"result": result.to_dict(), "obligation_id": oid, "verifier_fingerprint": fingerprint}
+    artifact_sha = candidate_artifact_hash(candidate)
+    replay_record = {
+        "frozen_artifact_hash": artifact_sha,
+        "artifact_sha256": artifact_sha,
+        "verifier_fingerprint": fingerprint,
+        "replay_verified": replayable,
+        "replay_scope": "verifier_on_frozen_artifact" if replayable else "diagnostic_matcher_only",
+    }
+    regime = compile_grounding_regime(
+        candidate=candidate,
+        verifier_fingerprint=fingerprint,
+        artifact_hash=artifact_sha,
+        raw_obligation=obligation,
+        oracle_kind=str(raw_result.metadata.get("oracle_kind") or ""),
+    )
+    result = measure_verification_result(
+        raw_result,
+        regime,
+        actual_probe_verdicts=obligation.get("engine_honesty_observations") if isinstance(obligation.get("engine_honesty_observations"), dict) else {},
+        replay_record=replay_record,
+    ).to_verification_result()
+    cache[key] = {
+        "raw_result": raw_result.to_dict(),
+        "measured_result": result.to_dict(),
+        "honesty_measurements": result.metadata.get("honesty_measurements"),
+        "obligation_id": oid,
+        "verifier_fingerprint": fingerprint,
+        "replay_record": replay_record,
+    }
     return result
 
 
@@ -77,8 +118,8 @@ def _append_verification_result(candidate: Any, result: VerificationResult) -> N
     candidate.verification_trace = trace[-100:]
     if result.passed and result.replayable:
         current = getattr(candidate, "verification_result", {}) if isinstance(getattr(candidate, "verification_result", {}), dict) else {}
-        current_strength = VerificationStrength.from_value(current.get("strength") or current.get("strength_value")) if current else VerificationStrength.NONE
-        if result.strength >= current_strength:
+        current_strength = measured_strength_from_result(VerificationResult.from_dict(current)) if current else measured_strength_from_result(None)
+        if measured_strength_from_result(result) >= current_strength:
             candidate.verification_result = result.to_dict()
 
 

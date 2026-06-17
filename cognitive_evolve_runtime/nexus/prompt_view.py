@@ -483,11 +483,14 @@ def _protected_paths_from_controls(controls: dict[str, Any]) -> list[str]:
     mapping = {
         "problem_spec": ["contract", "world", "policy"],
         "verification_plan": ["verification_plan"],
+        "verification_regime": ["verification_regime"],
         "honesty_invariant": ["prompt_contract", "synthesis_requirements"],
     }
     out: list[str] = []
     for ref in refs:
-        out.extend(mapping.get(ref, [ref] if ref in {"contract", "world", "policy", "prompt_contract"} else []))
+        out.extend(mapping.get(ref, [ref] if ref in {"contract", "world", "policy", "prompt_contract", "verification_regime"} else []))
+    if controls.get("verification_regime"):
+        out.append("verification_regime")
     return list(dict.fromkeys(out))
 
 
@@ -497,6 +500,9 @@ def _apply_prompt_context_controls(compressed: dict[str, Any], controls: dict[st
     out = json.loads(json.dumps(compressed, ensure_ascii=False, default=str))
     if "verification_plan" in controls and "verification_plan" not in out:
         out["verification_plan"] = _small_mapping(_to_mapping(controls.get("verification_plan")), max_items=10, string_chars=300)
+    if "verification_regime" in controls:
+        regime = _verification_regime_view(controls.get("verification_regime"))
+        out = _insert_after_key(out, "candidates" if "candidates" in out else "candidate_population_stats", "verification_regime", regime)
     drop_refs = [str(item) for item in controls.get("drop_refs", []) if item] if isinstance(controls.get("drop_refs"), list) else []
     for ref in drop_refs:
         if ref == "drop:history":
@@ -516,7 +522,72 @@ def _apply_prompt_context_controls(compressed: dict[str, Any], controls: dict[st
         "protect_refs": controls.get("protect_refs", []),
         "drop_refs": drop_refs,
         "view_hash": str(controls.get("view_hash") or ""),
+        "verification_regime_count": len(out.get("verification_regime", []) if isinstance(out.get("verification_regime"), list) else []),
     }
+    return out
+
+
+def _verification_regime_view(value: Any) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        return []
+    allowed = {
+        "id",
+        "origin",
+        "must_pass",
+        "exogeneity_probe",
+        "variety_probe",
+        "falsification_budget",
+        "replay_record",
+    }
+    out: list[dict[str, Any]] = []
+    for item in value:
+        if not isinstance(item, dict):
+            continue
+        cleaned = {key: item.get(key) for key in allowed if key in item}
+        for key in ("exogeneity_probe", "variety_probe", "falsification_budget", "replay_record"):
+            if isinstance(cleaned.get(key), dict):
+                cleaned[key] = _small_mapping(cleaned[key], max_items=8, string_chars=280)
+        if cleaned:
+            out.append(cleaned)
+    return _shrink_verification_regime(out, max_chars=6000)
+
+
+def _insert_after_key(mapping: dict[str, Any], after_key: str, key: str, value: Any) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    inserted = False
+    for current_key, current_value in mapping.items():
+        if current_key == key:
+            continue
+        out[current_key] = current_value
+        if current_key == after_key:
+            out[key] = value
+            inserted = True
+    if not inserted:
+        out[key] = value
+    return out
+
+
+def _shrink_verification_regime(regime: Any, *, max_chars: int) -> list[dict[str, Any]]:
+    items = [dict(item) for item in regime if isinstance(item, dict)] if isinstance(regime, list) else []
+    items.sort(key=lambda item: (not bool(item.get("must_pass")), str(item.get("id") or "")))
+    out: list[dict[str, Any]] = []
+    for item in items:
+        cleaned = dict(item)
+        if isinstance(cleaned.get("replay_record"), dict):
+            cleaned["replay_record"] = _small_mapping(cleaned["replay_record"], max_items=4, string_chars=80)
+        for probe_key in ("exogeneity_probe", "variety_probe"):
+            if isinstance(cleaned.get(probe_key), dict):
+                probe = dict(cleaned[probe_key])
+                for field in ("context", "content"):
+                    if field in probe:
+                        probe[field] = _clip(probe[field], 160)
+                cleaned[probe_key] = _small_mapping(probe, max_items=6, string_chars=160)
+        candidate = [*out, cleaned]
+        if _json_chars(candidate) > max_chars and out:
+            continue
+        out = candidate
+        if _json_chars(out) > max_chars:
+            break
     return out
 
 
@@ -553,6 +624,8 @@ def _fit_payload(payload: dict[str, Any], *, max_chars: int, protected_paths: li
     """Recursively shrink a compressed payload until its JSON fits the budget."""
 
     fitted = json.loads(json.dumps(payload, ensure_ascii=False, default=str))
+    if isinstance(fitted.get("verification_regime"), list):
+        fitted["verification_regime"] = _shrink_verification_regime(fitted["verification_regime"], max_chars=max(1000, max_chars // 4))
     protected_snapshot = _snapshot_paths(fitted, protected_paths or [])
     if _json_chars(fitted) <= max_chars:
         return fitted
