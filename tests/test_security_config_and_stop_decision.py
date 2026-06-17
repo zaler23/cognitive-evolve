@@ -11,6 +11,8 @@ from cognitive_evolve_runtime.nexus.diagnosis import SearchDiagnosis
 from cognitive_evolve_runtime.nexus.loop import EvolutionBudget, _closure_certificate, _completion_status_for_budget, _is_solved_stop_reason
 from cognitive_evolve_runtime.nexus.stop_decision import StopDecisionEngine
 from cognitive_evolve_runtime.nexus.synthesis import SynthesizedResult
+from cognitive_evolve_runtime.verification.ladder import VerificationStrength
+from cognitive_evolve_runtime.verification.types import VerificationResult
 
 
 class UnsolvedStopModel:
@@ -59,7 +61,7 @@ def test_legacy_bool_stop_signal_is_continuation_not_completed() -> None:
     )
     budget.stop_reason = reason
 
-    assert reason == "model_stop_after_minimum"
+    assert reason == "model_stop_needs_measured_verification"
     assert _completion_status_for_budget(
         budget=budget,
         interrupted=False,
@@ -74,12 +76,54 @@ def test_model_stop_true_solved_true_uses_exact_solved_reason() -> None:
         completed_round=1,
         diagnosis=SearchDiagnosis(),
         best_answer_id="C1",
-        population=CandidatePopulation([CandidateGenome(id="C1")]),
+        population=CandidatePopulation([_candidate_with_measured_formal("C1")]),
         model=SolvedStopModel(),
     )
 
     assert reason == "objective_solved"
     assert _is_solved_stop_reason(reason) is True
+
+
+def test_model_stop_solved_requires_measured_strength_gate() -> None:
+    budget = EvolutionBudget(max_rounds=3, stop_policy="llm_after_minimum", min_rounds_before_stop=1)
+    reason = StopDecisionEngine().stop_reason_after_round(
+        budget=budget,
+        completed_round=1,
+        diagnosis=SearchDiagnosis(),
+        best_answer_id="C1",
+        population=CandidatePopulation([CandidateGenome(id="C1")]),
+        model=SolvedStopModel(),
+    )
+
+    assert reason == "model_stop_needs_measured_verification"
+    assert _is_solved_stop_reason(reason) is False
+
+
+def _candidate_with_measured_formal(candidate_id: str) -> CandidateGenome:
+    candidate = CandidateGenome(id=candidate_id)
+    candidate.verification_trace = [
+        VerificationResult(
+            True,
+            score=1.0,
+            strength=VerificationStrength.FORMAL,
+            evidence_ref="evidence",
+            replayable=True,
+            metadata={
+                "verifier_fingerprint": "vf",
+                "measured_strength": "FORMAL",
+                "measured_strength_value": 4,
+                "honesty_measurements": {
+                    "exogeneity_score": 1.0,
+                    "variety_score": 1.0,
+                    "falsification_score": 1.0,
+                    "replay_score": 1.0,
+                },
+                "diagnostics_only": False,
+                "legacy": False,
+            },
+        ).to_dict()
+    ]
+    return candidate
 
 
 def test_closure_certificate_is_the_objective_solved_gate() -> None:
@@ -239,7 +283,10 @@ def test_loopback_allows_dev_service_api_key(monkeypatch: pytest.MonkeyPatch, tm
     monkeypatch.setenv("COGEV_SERVER_REQUIRE_AUTH", "true")
     monkeypatch.setenv("COGEV_SERVER_API_KEY", "ce-local-dev-key-change-me")
 
-    get_service_config().enforce_safe_to_serve()
+    config = get_service_config()
+    assert config.host == "127.0.0.1"
+    assert service_api_key_is_placeholder_or_weak(config.api_keys[0]) is True
+    config.enforce_safe_to_serve()
 
 
 def test_require_llm_config_rejects_placeholder_upstream_key(monkeypatch: pytest.MonkeyPatch) -> None:

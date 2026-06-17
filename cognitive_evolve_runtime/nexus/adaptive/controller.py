@@ -193,6 +193,32 @@ class AdaptiveRuntimeController:
         self.research_registry.before_final_projection(ctx)
         self._sync_research_state()
 
+    def set_verification_plan(self, plan: Any | None) -> None:
+        if plan is None:
+            return
+        if hasattr(plan, "to_dict"):
+            data = plan.to_dict()
+        elif isinstance(plan, dict):
+            data = dict(plan)
+        else:
+            return
+        self.research_registry.state.verification_plan = data
+        self._sync_research_state()
+
+    def verification_plan_dict(self) -> dict[str, Any]:
+        return dict(self.research_registry.state.verification_plan or {})
+
+    def verification_cache(self) -> dict[str, dict[str, Any]]:
+        return self.research_registry.state.verification_cache
+
+    def update_verification_cache(self, cache: dict[str, dict[str, Any]]) -> None:
+        self.research_registry.state.verification_cache = {str(k): dict(v) for k, v in dict(cache or {}).items() if isinstance(v, dict)}
+        self._sync_research_state()
+
+    def record_verification_plan_resynthesized(self, *, reason: str = "") -> None:
+        self.research_registry.state.record_event({"event": "verification_plan_resynthesized", "reason": str(reason or "")})
+        self._sync_research_state()
+
     def final_gate_directives(self) -> list[dict[str, Any]]:
         if not self.enabled:
             return []
@@ -202,6 +228,43 @@ class AdaptiveRuntimeController:
             for item in self.research_registry.state.final_gate_directives
             if isinstance(item, dict) and _int_or_default(item.get("round_index"), -1) == current_round
         ]
+
+    def budget_directive_features(self) -> list[dict[str, Any]]:
+        if not self.enabled:
+            return []
+        return self.research_registry.budget_directive_features()
+
+    def archive_directive_features(self) -> list[dict[str, Any]]:
+        if not self.enabled:
+            return []
+        return self.research_registry.archive_directive_features()
+
+    def context_transform_features(self) -> list[dict[str, Any]]:
+        if not self.enabled:
+            return []
+        return self.research_registry.context_transform_features()
+
+    def candidate_transform_features(self) -> list[dict[str, Any]]:
+        if not self.enabled:
+            return []
+        return self.research_registry.candidate_transform_features()
+
+    def verification_obligation_features(self) -> list[dict[str, Any]]:
+        if not self.enabled:
+            return []
+        return self.research_registry.verification_obligation_features()
+
+    def effect_consumed(self, channel: str, item: Any, *, key: str | None = None) -> bool:
+        if not self.enabled:
+            return True
+        return self.research_registry.effect_consumed(channel, item, key=key)
+
+    def record_effect_application(self, *, channel: str, item: Any, changed: bool, consumer: str, reason: str = "", result: dict[str, Any] | None = None, key: str | None = None, consume: bool = True) -> dict[str, Any]:
+        if not self.enabled:
+            return {}
+        record = self.research_registry.record_effect_application(channel=channel, item=item, changed=changed, consumer=consumer, reason=reason, result=result, key=key, consume=consume)
+        self._sync_research_state()
+        return record
 
     def record_generated_targets(self, *, candidate_id: str, challenge_ids: list[str], pressure_id: str, round_index: int) -> None:
         self.research_registry.record_generated_targets(candidate_id=candidate_id, challenge_ids=challenge_ids, pressure_id=pressure_id, round_index=round_index)

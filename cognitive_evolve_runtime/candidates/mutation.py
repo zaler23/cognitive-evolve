@@ -131,6 +131,9 @@ class MutationEngine:
         return CandidateGenome(**base_kwargs)
 
     def _mutated_artifact(self, parent: CandidateGenome, plan: MutationPlan) -> Any:
+        transformed = _apply_candidate_transform_artifact(parent.artifact, plan)
+        if transformed is not None:
+            return transformed
         text = str(parent.artifact or parent.concise_claim or parent.core_mechanism)
         operator = plan.operator
         repair_note = _repair_note(plan)
@@ -301,6 +304,60 @@ def _remove_scaffold_terms(text: str) -> str:
     return " ".join(stripped.split()) or "core mechanism needs reconstruction"
 
 
+def _apply_candidate_transform_artifact(artifact: Any, plan: MutationPlan) -> Any | None:
+    transforms = plan.metadata.get("candidate_transforms", []) if isinstance(plan.metadata, dict) else []
+    for transform in transforms or []:
+        if not isinstance(transform, dict) or transform.get("kind") != "collapse_params":
+            continue
+        payload = transform.get("payload") if isinstance(transform.get("payload"), dict) else {}
+        assignment = payload.get("assignment") if isinstance(payload.get("assignment"), dict) else {}
+        slots = payload.get("parameter_slots") if isinstance(payload.get("parameter_slots"), dict) else {}
+        if not assignment or not slots:
+            continue
+        changed, value = _apply_parameter_slots(artifact, assignment=assignment, slots=slots)
+        if changed:
+            return value
+    return None
+
+
+def _apply_parameter_slots(artifact: Any, *, assignment: dict[str, Any], slots: dict[str, Any]) -> tuple[bool, Any]:
+    if isinstance(artifact, dict):
+        import copy
+        out = copy.deepcopy(artifact)
+        changed = False
+        for key, value in assignment.items():
+            slot = slots.get(key)
+            path = slot.get("path") if isinstance(slot, dict) else slot
+            if isinstance(path, str) and path:
+                current = out
+                parts = [part for part in path.split(".") if part]
+                for part in parts[:-1]:
+                    if not isinstance(current.get(part), dict):
+                        current[part] = {}
+                    current = current[part]
+                if parts:
+                    if current.get(parts[-1]) != value:
+                        current[parts[-1]] = value
+                        changed = True
+        return changed, out
+    text = str(artifact or "")
+    out = text
+    for key, value in assignment.items():
+        slot = slots.get(key)
+        markers: list[str] = []
+        if isinstance(slot, dict):
+            marker = slot.get("marker")
+            if isinstance(marker, list):
+                markers.extend(str(item) for item in marker if item)
+            elif marker:
+                markers.append(str(marker))
+        elif slot:
+            markers.append(str(slot))
+        for marker in markers:
+            out = out.replace(marker, str(value))
+    return out != text, out
+
+
 def _repair_note(plan: MutationPlan) -> str:
     repair = plan.metadata.get("repair_required")
     if not isinstance(repair, dict):
@@ -343,6 +400,16 @@ def _inherited_mutation_metadata(parent: CandidateGenome, plan: MutationPlan) ->
     if isinstance(repair_required, dict):
         metadata["repair_required"] = dict(repair_required)
     metadata.update(plan.metadata)
+    for transform in plan.metadata.get("candidate_transforms", []) or []:
+        if not isinstance(transform, dict) or transform.get("kind") != "collapse_params":
+            continue
+        payload = transform.get("payload") if isinstance(transform.get("payload"), dict) else {}
+        assignment = payload.get("assignment") if isinstance(payload.get("assignment"), dict) else {}
+        if assignment:
+            metadata["parameter_assignment"] = dict(assignment)
+            metadata["parameter_collapsed"] = True
+            metadata.pop("parameter_space", None)
+            metadata["parameter_space_frozen"] = True
     return metadata
 
 

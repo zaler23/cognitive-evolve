@@ -73,6 +73,7 @@ def reproductive_value(
     return (
         value
         + _advisory_selection_adjustment(candidate, advisory_features)
+        + _archive_directive_adjustment(candidate, archives)
         - lineage_penalty
         - constraint_penalty
         - repeated_failure_penalty
@@ -80,6 +81,16 @@ def reproductive_value(
         - incubation_penalty
         - deprioritized_penalty
     )
+
+
+def _archive_directive_adjustment(candidate: CandidateGenome, archives: object | None) -> float:
+    qd = getattr(archives, "quality_diversity", None)
+    if qd is None or not hasattr(qd, "directive_boost"):
+        return 0.0
+    try:
+        return max(0.0, min(0.25, float(qd.directive_boost(candidate))))
+    except Exception:
+        return 0.0
 
 
 def _archive_constraint_penalty(candidate: CandidateGenome, archives: object | None) -> float:

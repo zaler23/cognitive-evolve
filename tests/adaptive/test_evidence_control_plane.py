@@ -34,6 +34,21 @@ from cognitive_evolve_runtime.nexus.adaptive.controller import AdaptiveRuntimeCo
 from cognitive_evolve_runtime.nexus.final_projection import build_final_projection
 from cognitive_evolve_runtime.nexus.loop import EvolutionBudget, EvolutionRound
 from cognitive_evolve_runtime.nexus.synthesis import SynthesizedResult
+from cognitive_evolve_runtime.verification.ladder import VerificationStrength
+from cognitive_evolve_runtime.verification.types import GradedOutput, VerifiedResult
+
+
+def _graded_portfolio() -> GradedOutput:
+    return GradedOutput(mode="graded_portfolio", verification_strength=VerificationStrength.NONE)
+
+
+def _graded_verified() -> GradedOutput:
+    return GradedOutput(
+        mode="verified_result",
+        verification_strength=VerificationStrength.FORMAL,
+        result=VerifiedResult("answer", replayable=True),
+        replay_certificate={"frozen_artifact_hash": "artifact", "verifier_fingerprint": "vf"},
+    )
 
 
 def test_public_evidence_api_excludes_removed_protocols() -> None:
@@ -583,7 +598,7 @@ def test_final_projection_returns_best_current_without_internal_directives() -> 
     )
     synthesis = SynthesizedResult(status="best_current_route", final_answer="internal repair directive should not be reused", best_candidate_id="C1")
 
-    projection = build_final_projection(population=CandidatePopulation([candidate]), synthesis=synthesis, final_certificate={"blocking_reasons": ["external_evaluator_not_passed"]})
+    projection = build_final_projection(population=CandidatePopulation([candidate]), synthesis=synthesis, graded_output=_graded_portfolio(), final_certificate={"blocking_reasons": ["external_evaluator_not_passed"]})
     markdown = projection.to_markdown()
 
     assert projection.status == "best_current"
@@ -615,7 +630,7 @@ def test_final_projection_downgrades_refolded_artifact_even_with_solved_certific
     )
     synthesis = SynthesizedResult(status="solved", final_answer="solved", best_candidate_id="C1")
 
-    projection = build_final_projection(population=CandidatePopulation([candidate]), synthesis=synthesis, final_certificate={"objective_solved": True, "candidate_id": "C1"})
+    projection = build_final_projection(population=CandidatePopulation([candidate]), synthesis=synthesis, graded_output=_graded_verified(), final_certificate={"objective_solved": True, "candidate_id": "C1"})
 
     assert projection.status == "best_current"
     assert projection.objective_solved is False
@@ -627,7 +642,7 @@ def test_final_projection_excludes_failed_and_culled_best_current_candidates() -
     active = CandidateGenome(id="A1", artifact={"ok": 1}, artifact_type="machine", current_fate=CandidateFate.ACTIVE.value, multihead_scores={"frontier_score": 0.4})
     synthesis = SynthesizedResult(status="best_current_route", final_answer="", best_candidate_id="F1")
 
-    projection = build_final_projection(population=CandidatePopulation([failed, active]), synthesis=synthesis, final_certificate={"blocking_reasons": ["not_final"]})
+    projection = build_final_projection(population=CandidatePopulation([failed, active]), synthesis=synthesis, graded_output=_graded_portfolio(), final_certificate={"blocking_reasons": ["not_final"]})
 
     assert projection.status == "best_current"
     assert projection.candidate_id == "A1"

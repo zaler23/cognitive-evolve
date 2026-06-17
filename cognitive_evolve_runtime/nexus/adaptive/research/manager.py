@@ -16,6 +16,7 @@ from cognitive_evolve_runtime.concepts.trace import TraceLedger
 from cognitive_evolve_runtime.evaluators.challenge_memory import ChallengeMemory
 from cognitive_evolve_runtime.evaluators.evidence import EvidenceRecord, SearchPressure, apply_evidence_record
 from cognitive_evolve_runtime.nexus._serde import coerce_dict, utc_now
+from cognitive_evolve_runtime.nexus.adaptive.effect_application import already_consumed, effect_key, record_effect_application
 from cognitive_evolve_runtime.nexus.adaptive.research.protocol import ResearchContext, ResearchExtension
 from cognitive_evolve_runtime.nexus.adaptive.research.registry import ResearchConfig, build_research_extensions
 from cognitive_evolve_runtime.nexus.adaptive.research.signal import ResearchSignal, merge_research_signals
@@ -70,8 +71,68 @@ class ResearchExtensionRegistry:
             out.append(pressure)
         return out
 
+    def budget_directive_features(self) -> list[dict[str, Any]]:
+        return [dict(item) for item in self.state.budget_directives if isinstance(item, dict)]
+
+    def archive_directive_features(self) -> list[dict[str, Any]]:
+        return [dict(item) for item in self.state.archive_directives if isinstance(item, dict)]
+
+    def context_transform_features(self) -> list[dict[str, Any]]:
+        return [dict(item) for item in self.state.context_transforms if isinstance(item, dict)]
+
+    def candidate_transform_features(self) -> list[dict[str, Any]]:
+        return [dict(item) for item in self.state.candidate_transforms if isinstance(item, dict)]
+
+    def verification_obligation_features(self) -> list[dict[str, Any]]:
+        return [dict(item) for item in self.state.verification_obligations if isinstance(item, dict)]
+
+    def effect_consumed(self, channel: str, item: Any, *, key: str | None = None) -> bool:
+        resolved = str(key or effect_key(channel, item))
+        return already_consumed(self.state.consumed_effect_keys, resolved)
+
+    def record_effect_application(
+        self,
+        *,
+        channel: str,
+        item: Any,
+        changed: bool,
+        consumer: str,
+        reason: str = "",
+        result: dict[str, Any] | None = None,
+        key: str | None = None,
+        consume: bool = True,
+    ) -> dict[str, Any]:
+        record = record_effect_application(
+            self.state,
+            channel=channel,
+            item=item,
+            concept_id=str(_item_dict(item).get("origin") or _item_dict(item).get("source") or channel),
+            round_index=int(_item_dict(item).get("round_index") or self.state.metrics.get("round_index") or 0),
+            changed=changed,
+            consumer=consumer,
+            reason=reason,
+            result=result,
+            key=key,
+            consume=consume,
+        )
+        if self.config.trace_enabled:
+            entry = self._trace.record(
+                round_index=int(record.get("round") or 0),
+                concept_id=str(record.get("concept_id") or channel),
+                consumed_refs=[str(record.get("consumer") or consumer), str(record.get("effect_key") or "")],
+                produced_effects={"effect_application": {"channel": channel, "changed": bool(changed), "reason": reason}},
+                cost={},
+                decision_changed=bool(changed),
+                replay_hash=str(record.get("effect_key") or "effect-application"),
+            )
+            self.state.trace_entries = [*self.state.trace_entries, entry][-1000:]
+        if self.config.ablation_enabled:
+            self.state.concept_effect_report = ConceptEffectReport.from_trace_entries(self.state.trace_entries).to_dict()
+        return record
+
     def apply_signal(self, signal: ResearchSignal, *, candidates: list[CandidateGenome] | None = None, challenge_memory: ChallengeMemory | None = None) -> None:
         guarded = self._guard_signal(signal, extension_id=str(signal.source or ""), hook="apply_signal")
+        guarded = _with_effect_origin(guarded, origin=str(guarded.source or signal.source or "research"))
         self._apply_filtered_signal(self._filter_signal_for_mode(guarded), candidates=candidates, challenge_memory=challenge_memory)
 
     def _apply_filtered_signal(self, signal: ResearchSignal, *, candidates: list[CandidateGenome] | None = None, challenge_memory: ChallengeMemory | None = None) -> None:
@@ -178,7 +239,7 @@ class ResearchExtensionRegistry:
             data = _item_dict(item)
             if data:
                 existing.append(data)
-        setattr(self.state, channel, _dedupe_dicts(existing)[-limit:])
+        setattr(self.state, channel, _dedupe_dicts(existing, channel=channel)[-limit:])
 
     def _record_target_event(self, kind: str, *, candidate_id: str, challenge_ids: list[str], pressure_id: str, round_index: int) -> None:
         ids = [str(item) for item in challenge_ids if str(item or "").strip()]
@@ -233,6 +294,7 @@ class ResearchExtensionRegistry:
             except Exception as exc:  # Extensions may not break NexusRuntime.
                 signal = ResearchSignal(source=extension.extension_id, round_index=ctx.round_index, warnings=[f"{hook}_extension_error:{extension.extension_id}:{exc.__class__.__name__}"])
             guarded = self._guard_signal(signal, extension_id=extension.extension_id, hook=hook, contract=getattr(extension, "contract", None))
+            guarded = _with_effect_origin(guarded, origin=extension.extension_id)
             self._record_extension_trace(guarded, concept_id=extension.extension_id, hook=hook)
             signals.append(guarded)
         merged = merge_research_signals(signals)
@@ -321,6 +383,38 @@ def _unknown_final_directive(item: Any) -> bool:
     return not isinstance(item, dict) or str(item.get("kind") or "") not in _KNOWN_FINAL_DIRECTIVE_KINDS
 
 
+
+def _with_effect_origin(signal: ResearchSignal, *, origin: str) -> ResearchSignal:
+    origin_value = str(origin or signal.source or "research")
+
+    def annotate(items: list[Any]) -> list[Any]:
+        out: list[Any] = []
+        for item in items or []:
+            data = _item_dict(item)
+            if not data:
+                continue
+            data.setdefault("origin", origin_value)
+            data.setdefault("source", origin_value)
+            out.append(data)
+        return out
+
+    return ResearchSignal(
+        source=signal.source,
+        round_index=signal.round_index,
+        selection_advisory=dict(signal.selection_advisory),
+        search_pressures=list(signal.search_pressures),
+        evidence_records=list(signal.evidence_records),
+        final_gate_directives=list(signal.final_gate_directives),
+        metrics=dict(signal.metrics),
+        warnings=list(signal.warnings),
+        verification_obligations=annotate(list(signal.verification_obligations)),
+        archive_directives=annotate(list(signal.archive_directives)),
+        budget_directives=annotate(list(signal.budget_directives)),
+        context_transforms=annotate(list(signal.context_transforms)),
+        candidate_transforms=annotate(list(signal.candidate_transforms)),
+        contract_delta_proposals=annotate(list(signal.contract_delta_proposals)),
+    )
+
 def _normalize_final_gate_directives(items: list[dict[str, Any]], *, mode: str, round_index: int) -> list[dict[str, Any]]:
     if mode == "observe":
         return []
@@ -359,11 +453,11 @@ def _item_dict(item: Any) -> dict[str, Any]:
         return {}
 
 
-def _dedupe_dicts(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _dedupe_dicts(items: list[dict[str, Any]], *, channel: str | None = None) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     seen: set[str] = set()
     for item in items:
-        key = str(item.get("id") or item.get("delta_id") or item.get("candidate_id") or sorted(item.items()))
+        key = effect_key(channel, item) if channel else str(item.get("id") or item.get("delta_id") or item.get("candidate_id") or sorted(item.items()))
         if key in seen:
             continue
         seen.add(key)
@@ -372,7 +466,8 @@ def _dedupe_dicts(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 
 def _effective_decision_changed(counts: dict[str, int]) -> bool:
-    return any(key not in {"metrics", "warnings"} and value for key, value in counts.items())
+    effective_channels = {"evidence_records", "search_pressures", "final_gate_directives", "selection_advisory"}
+    return any(key in effective_channels and value for key, value in counts.items())
 
 
 __all__ = ["ResearchExtensionRegistry"]

@@ -20,6 +20,7 @@ from cognitive_evolve_runtime.nexus.project_verification import ProjectCandidate
 from cognitive_evolve_runtime.persistence.checkpoint import build_checkpoint_state
 from cognitive_evolve_runtime.persistence.event_store import EventStore
 from cognitive_evolve_runtime.persistence.transactional_snapshot import NexusSnapshotTransaction, SnapshotWrite
+from cognitive_evolve_runtime.verification.types import GradedOutput
 
 
 class NexusProjectVerificationService:
@@ -115,6 +116,7 @@ class NexusPersistenceService:
                 final_projection = build_final_projection(
                     population=result.population,
                     synthesis=result.synthesis,
+                    graded_output=_graded_output_from_result(result),
                     final_certificate=final_certificate,
                 ).to_dict()
 
@@ -213,8 +215,9 @@ def final_answer_artifact_text(result: EvolutionLoopResult) -> str:
     population = getattr(result, "population", None)
     candidates = getattr(population, "candidates", []) if population is not None else []
     has_evidence = any(isinstance(getattr(candidate, "metadata", None), dict) and (candidate.metadata.get("evidence_state") or candidate.metadata.get("evidence_records")) for candidate in candidates)
-    if population is not None and (final_certificate or has_evidence):
-        projection = build_final_projection(population=population, synthesis=result.synthesis, final_certificate=final_certificate)
+    graded_output = _graded_output_from_result(result)
+    if population is not None and (final_certificate or has_evidence or graded_output.mode == "verified_result"):
+        projection = build_final_projection(population=population, synthesis=result.synthesis, graded_output=graded_output, final_certificate=final_certificate)
         return "\n".join(header) + projection.to_markdown()
     if reference_candidate_id and result.completion_status != "solved":
         header.extend(
@@ -224,6 +227,16 @@ def final_answer_artifact_text(result: EvolutionLoopResult) -> str:
             ]
         )
     return "\n".join(header) + str(result.synthesis.final_answer or "")
+
+
+def _graded_output_from_result(result: EvolutionLoopResult) -> GradedOutput:
+    graded = getattr(result, "graded_output", {}) or {}
+    if isinstance(graded, dict) and graded:
+        return GradedOutput.from_dict(graded)
+    closure = getattr(getattr(result, "synthesis", None), "closure_certificate", {}) or {}
+    if isinstance(closure, dict) and isinstance(closure.get("graded_output"), dict):
+        return GradedOutput.from_dict(closure.get("graded_output"))
+    return GradedOutput.from_dict(None)
 
 
 def _checkpoint_budget_payload(budget: EvolutionBudget | None, *, checkpoint_round: int) -> dict[str, Any]:

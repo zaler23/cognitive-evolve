@@ -163,6 +163,8 @@ def quality_diversity_survivors(
 @dataclass
 class QualityDiversityArchive:
     elites_by_niche: dict[str, dict[str, Any]] = field(default_factory=dict)
+    directive_descriptors: dict[str, dict[str, Any]] = field(default_factory=dict)
+    rebalance_requests: list[dict[str, Any]] = field(default_factory=list)
 
     def update(self, candidate: CandidateGenome) -> None:
         niches = candidate.niche_memberships or candidate.novelty_descriptors or [candidate.core_mechanism or "general"]
@@ -182,12 +184,100 @@ class QualityDiversityArchive:
                     "candidate": candidate.to_dict(),
                 }
 
+
+    def apply_directive(self, directive: dict[str, Any], candidates: list[CandidateGenome] | None = None) -> dict[str, Any]:
+        kind = str(directive.get("kind") or "")
+        raw_descriptor = directive.get("descriptor")
+        descriptor = _descriptor_key(raw_descriptor)
+        payload = directive.get("payload") if isinstance(directive.get("payload"), dict) else {}
+        candidates = list(candidates or [])
+        if kind == "add_descriptor":
+            source_ids = [str(item) for item in payload.get("source_candidate_ids", []) if item] if isinstance(payload.get("source_candidate_ids"), list) else []
+            resolved_ids = [str(item) for item in payload.get("resolved_challenge_ids", []) if item] if isinstance(payload.get("resolved_challenge_ids"), list) else []
+            descriptor_supplied = bool(raw_descriptor) if not isinstance(raw_descriptor, (list, tuple)) else bool(raw_descriptor)
+            token = str(payload.get("descriptor_token") or payload.get("token") or (descriptor if descriptor_supplied else "") or "").strip()
+            matched = _matched_candidate_ids(candidates, source_ids=source_ids, token=token)
+            if not (source_ids or resolved_ids or token):
+                return {"changed": False, "reason": "archive_directive_missing_matchable_payload", "matched_candidate_ids": []}
+            record = {
+                "kind": kind,
+                "descriptor": descriptor,
+                "payload": dict(payload),
+                "source_candidate_ids": source_ids,
+                "resolved_challenge_ids": resolved_ids,
+                "descriptor_token": token,
+                "matched_candidate_ids": matched,
+            }
+            changed = self.directive_descriptors.get(descriptor) != record
+            self.directive_descriptors[descriptor] = record
+            return {"changed": changed, "reason": "archive_descriptor_recorded" if changed else "archive_descriptor_already_present", "matched_candidate_ids": matched}
+        if kind == "rebalance":
+            request = {"kind": kind, "descriptor": descriptor, "payload": dict(payload)}
+            existing = {_descriptor_key(item.get("descriptor")): item for item in self.rebalance_requests if isinstance(item, dict)}
+            changed = existing.get(descriptor) != request
+            existing[descriptor] = request
+            self.rebalance_requests = list(existing.values())[-100:]
+            return {"changed": changed, "reason": "archive_rebalance_recorded" if changed else "archive_rebalance_already_present", "matched_candidate_ids": []}
+        return {"changed": False, "reason": "archive_directive_unknown_kind", "matched_candidate_ids": []}
+
+    def directive_boost(self, candidate: CandidateGenome) -> float:
+        boost = 0.0
+        candidate_tokens = _candidate_descriptor_tokens(candidate)
+        for record in self.directive_descriptors.values():
+            if not isinstance(record, dict):
+                continue
+            if candidate.id in set(record.get("source_candidate_ids") or []) or candidate.id in set(record.get("matched_candidate_ids") or []):
+                boost = max(boost, 0.2)
+            token = str(record.get("descriptor_token") or "").strip().lower()
+            if token and token in candidate_tokens:
+                boost = max(boost, 0.12)
+        for request in self.rebalance_requests:
+            descriptor = str(request.get("descriptor") or "").strip().lower() if isinstance(request, dict) else ""
+            if descriptor and any(part and part in candidate_tokens for part in descriptor.replace("|", ":").split(":")):
+                boost = max(boost, 0.1)
+        return boost
+
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "QualityDiversityArchive":
-        return cls(elites_by_niche=dict(data.get("elites_by_niche") or {}))
+        return cls(
+            elites_by_niche=dict(data.get("elites_by_niche") or {}),
+            directive_descriptors={str(k): dict(v) for k, v in dict(data.get("directive_descriptors") or {}).items() if isinstance(v, dict)},
+            rebalance_requests=[dict(item) for item in data.get("rebalance_requests", []) if isinstance(item, dict)],
+        )
+
+
+def _descriptor_key(value: Any) -> str:
+    if isinstance(value, (list, tuple)):
+        return "|".join(str(item) for item in value if str(item or "").strip()) or "general"
+    return str(value or "general")
+
+
+def _candidate_descriptor_tokens(candidate: CandidateGenome) -> set[str]:
+    values: list[str] = [candidate.id, candidate.core_mechanism, candidate.concise_claim]
+    values.extend(candidate.niche_memberships)
+    values.extend(candidate.novelty_descriptors)
+    out: set[str] = set()
+    for value in values:
+        token = str(value or "").strip().lower()
+        if not token:
+            continue
+        out.add(token)
+        out.update(part for part in token.replace("|", " ").replace(":", " ").split() if part)
+    return out
+
+
+def _matched_candidate_ids(candidates: list[CandidateGenome], *, source_ids: list[str], token: str) -> list[str]:
+    source_set = set(source_ids)
+    normalized = str(token or "").strip().lower()
+    matched: list[str] = []
+    for candidate in candidates:
+        tokens = _candidate_descriptor_tokens(candidate)
+        if candidate.id in source_set or (normalized and normalized in tokens):
+            matched.append(candidate.id)
+    return list(dict.fromkeys(matched))
 
 
 def _score(value: Any) -> float:

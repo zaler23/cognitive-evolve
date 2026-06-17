@@ -54,6 +54,9 @@ class StructuredModelAdapterCore:
     def _call(self, request_type: str, payload: dict[str, Any], schema: dict[str, Any]) -> dict[str, Any]:
         if self.caller is None:
             raise LLMConfigurationError("StructuredModelAdapter requires an explicit JSON caller or from_configured_llm().")
+        controls = self.metadata.get("prompt_context_controls")
+        if isinstance(controls, dict) and controls and "_prompt_context_controls" not in payload:
+            payload = {**payload, "_prompt_context_controls": dict(controls)}
         prompt_view = build_prompt_view(request_type, payload)
         history = self.metadata.setdefault("prompt_view_history", [])
         if isinstance(history, list):

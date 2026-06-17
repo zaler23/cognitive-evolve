@@ -24,9 +24,13 @@ def test_grading_invariant_rejects_low_strength_verified_result() -> None:
 
 def test_synthesizer_selects_executable_for_code_problem_and_reformulates_open_problem() -> None:
     synth = VerificationSynthesizer()
-    assert synth.synthesize("Write a Python function and run pytest").strength is VerificationStrength.EXECUTABLE
+    executable_plan = synth.synthesize("Write a Python function and run pytest")
+    assert executable_plan.modality == "executable"
+    assert executable_plan.metadata.get("diagnostics_only") is True
+    assert executable_plan.strength is VerificationStrength.NONE
     open_plan = synth.synthesize("What is a good theory of this phenomenon?")
-    assert open_plan.strength <= VerificationStrength.DECOMPOSED
+    assert open_plan.modality in {"adversarial", "decomposed"}
+    assert open_plan.strength is VerificationStrength.NONE
 
 
 def test_executable_verifier_runs_in_allowlisted_runner() -> None:

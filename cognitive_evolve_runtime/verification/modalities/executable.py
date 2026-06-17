@@ -8,13 +8,11 @@ from typing import Any
 
 from cognitive_evolve_runtime.tools.runner import ToolRunner
 from cognitive_evolve_runtime.nexus._serde import stable_hash
-from cognitive_evolve_runtime.verification.ladder import VerificationStrength
 from cognitive_evolve_runtime.verification.types import VerificationResult
 
 
 class ExecutableVerifier:
     verifier_id = "executable-verifier"
-    strength = VerificationStrength.EXECUTABLE
 
     def __init__(self, *, command: list[str] | None = None, cwd: str | Path | None = None, timeout_seconds: float = 10.0) -> None:
         self.command = command or []
@@ -25,7 +23,7 @@ class ExecutableVerifier:
     def check(self, candidate: Any) -> VerificationResult:
         command = self.command or _candidate_command(candidate)
         if not command:
-            return VerificationResult(False, score=0.0, strength=self.strength, replayable=False, diagnostics=["no_executable_command_declared"], metadata={"fingerprint": self.fingerprint})
+            return VerificationResult(False, score=0.0, replayable=False, diagnostics=["no_executable_command_declared"], metadata={"fingerprint": self.fingerprint, "oracle_kind": "executable", "diagnostics_only": True})
         cwd = self.cwd or Path(tempfile.mkdtemp(prefix="cogev-exec-verifier-"))
         if getattr(candidate, "artifact", None) and not self.command:
             artifact = getattr(candidate, "artifact")
@@ -37,11 +35,10 @@ class ExecutableVerifier:
         return VerificationResult(
             passed=passed,
             score=1.0 if passed else 0.0,
-            strength=self.strength,
             evidence_ref=evidence_ref,
             replayable=True,
             diagnostics=list(feedback.diagnostics),
-            metadata={"tool_feedback": feedback.to_dict() if hasattr(feedback, "to_dict") else feedback.__dict__, "fingerprint": self.fingerprint},
+            metadata={"tool_feedback": feedback.to_dict() if hasattr(feedback, "to_dict") else feedback.__dict__, "fingerprint": self.fingerprint, "oracle_kind": "executable", "diagnostics_only": True},
         )
 
 

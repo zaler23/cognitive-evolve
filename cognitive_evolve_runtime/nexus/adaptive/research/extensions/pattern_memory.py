@@ -36,7 +36,7 @@ class PatternMemoryExtension:
                 current["resolved_challenge_ids"] = list(dict.fromkeys([*(current.get("resolved_challenge_ids") or []), *resolved]))
                 current["weight"] = bounded_score(0.2 + 0.1 * current["success_count"] - 0.15 * int(current.get("failure_count") or 0))
                 self.patterns[current["id"]] = current
-                directives.append(ArchiveDirective(kind="add_descriptor", descriptor=("pattern", current["id"]), payload={"weight": current["weight"], "resolved_challenge_ids": current["resolved_challenge_ids"]}))
+                directives.append(ArchiveDirective(kind="add_descriptor", descriptor=("pattern", current["id"]), payload={"weight": current["weight"], "source_candidate_ids": current["source_candidate_ids"], "resolved_challenge_ids": current["resolved_challenge_ids"], "descriptor_token": current.get("token", "")}))
                 learned += 1
             elif state.get("terminal_reject"):
                 pattern = _pattern_from_candidate(candidate)

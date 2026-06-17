@@ -22,6 +22,9 @@ class ResearchRegistryState:
     context_transforms: list[dict[str, Any]] = field(default_factory=list)
     candidate_transforms: list[dict[str, Any]] = field(default_factory=list)
     contract_delta_proposals: list[dict[str, Any]] = field(default_factory=list)
+    effect_applications: list[dict[str, Any]] = field(default_factory=list)
+    consumed_effect_keys: list[str] = field(default_factory=list)
+    verification_cache: dict[str, dict[str, Any]] = field(default_factory=dict)
     trace_entries: list[dict[str, Any]] = field(default_factory=list)
     concept_effect_report: dict[str, Any] = field(default_factory=dict)
     cost_ledger: dict[str, Any] = field(default_factory=dict)
@@ -52,6 +55,9 @@ class ResearchRegistryState:
             context_transforms=[dict(item) for item in data.get("context_transforms", []) if isinstance(item, dict)],
             candidate_transforms=[dict(item) for item in data.get("candidate_transforms", []) if isinstance(item, dict)],
             contract_delta_proposals=[dict(item) for item in data.get("contract_delta_proposals", []) if isinstance(item, dict)],
+            effect_applications=[dict(item) for item in data.get("effect_applications", []) if isinstance(item, dict)],
+            consumed_effect_keys=[str(item) for item in data.get("consumed_effect_keys", []) if str(item or "").strip()],
+            verification_cache={str(k): dict(v) for k, v in coerce_dict(data.get("verification_cache")).items() if isinstance(v, dict)},
             trace_entries=[dict(item) for item in data.get("trace_entries", []) if isinstance(item, dict)],
             concept_effect_report=coerce_dict(data.get("concept_effect_report")),
             cost_ledger=coerce_dict(data.get("cost_ledger")),

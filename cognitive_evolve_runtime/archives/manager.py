@@ -191,6 +191,16 @@ class ArchiveManager:
         )
         return assignments
 
+    def apply_archive_directives(self, directives: list[dict[str, Any]], candidates: list[CandidateGenome] | None = None) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        for directive in directives or []:
+            if not isinstance(directive, dict):
+                records.append({"changed": False, "reason": "archive_directive_not_dict", "directive": {}})
+                continue
+            result = self.quality_diversity.apply_directive(directive, candidates or [])
+            records.append({"directive": dict(directive), **result})
+        return records
+
     def reactivate_dormant(self, candidate_id: str | None = None) -> CandidateGenome | None:
         if candidate_id is not None:
             preview = self.dormant_archive.candidates.get(candidate_id)

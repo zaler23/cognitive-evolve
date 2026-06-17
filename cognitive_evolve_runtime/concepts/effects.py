@@ -25,6 +25,10 @@ class VerificationObligation:
     strength_contribution: int = 0
     replayable: bool = False
     origin: str = ""
+    exogeneity_probe: dict[str, Any] = field(default_factory=dict)
+    variety_probe: dict[str, Any] = field(default_factory=dict)
+    falsification_budget: dict[str, Any] = field(default_factory=dict)
+    replay_record: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -46,6 +50,10 @@ class VerificationObligation:
                 strength_contribution=_int(raw.get("strength_contribution"), 0),
                 replayable=_bool(raw.get("replayable")),
                 origin=str(raw.get("origin") or ""),
+                exogeneity_probe=coerce_dict(raw.get("exogeneity_probe")),
+                variety_probe=coerce_dict(raw.get("variety_probe")),
+                falsification_budget=coerce_dict(raw.get("falsification_budget")),
+                replay_record=coerce_dict(raw.get("replay_record")),
             )
         except Exception:
             return cls.empty()

@@ -31,9 +31,12 @@ class ParameterSweepExtension:
                 continue
             combos = _combinations(space, max_combinations=max_combinations)
             collapsed = combos[0] if combos else {}
-            self.sweeps[candidate.id] = {"combination_count": len(combos), "collapsed_assignment": collapsed, "final_eligible": False}
-            transforms.append(CandidateTransform(candidate_id=candidate.id, kind="collapse_params", payload={"assignment": collapsed, "combination_count": len(combos)}, preserve_score_within=float(self.config.get("score_epsilon", 0.0) or 0.0)))
-            records.append(EvidenceRecord(candidate_id=candidate.id, source=self.extension_id, stage="probe", score=bounded_score(min(1.0, len(combos) / max(1, max_combinations))), final_blocked=True, parent_blocked=False, repair_value=0.4, continuation_value=0.6, diagnostics=["parametric_candidate_must_collapse_before_final"], metadata={"authority": "probe", "parameter_sweep": self.sweeps[candidate.id]}))
+            slots = candidate.metadata.get("parameter_slots") if isinstance(candidate.metadata, dict) else None
+            has_slots = isinstance(slots, dict) and bool(slots)
+            self.sweeps[candidate.id] = {"combination_count": len(combos), "collapsed_assignment": collapsed, "final_eligible": False, "has_parameter_slots": has_slots}
+            if has_slots:
+                transforms.append(CandidateTransform(candidate_id=candidate.id, kind="collapse_params", payload={"assignment": collapsed, "combination_count": len(combos), "parameter_slots": dict(slots)}, preserve_score_within=float(self.config.get("score_epsilon", 0.0) or 0.0)))
+            records.append(EvidenceRecord(candidate_id=candidate.id, source=self.extension_id, stage="probe", score=bounded_score(min(1.0, len(combos) / max(1, max_combinations))), final_blocked=True, parent_blocked=False, repair_value=0.4, continuation_value=0.6, diagnostics=["parametric_candidate_must_collapse_before_final" if has_slots else "parametric_candidate_needs_explicit_parameter_slots_before_transform"], metadata={"authority": "probe", "parameter_sweep": self.sweeps[candidate.id]}))
         return ResearchSignal(source=self.extension_id, round_index=ctx.round_index, evidence_records=records, candidate_transforms=transforms, metrics={"parameter_sweep_candidate_count": len(self.sweeps)})
 
     def before_parent_selection(self, ctx: ResearchContext) -> ResearchSignal:

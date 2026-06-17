@@ -72,6 +72,7 @@ class SearchDiagnosis:
     semantic_drift_risk: float = 0.0
     recommended_actions: list[str] = field(default_factory=lambda: ["continue"])
     notes: str = ""
+    grounded_information_gain: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=utc_now)
 
     def __post_init__(self) -> None:
@@ -83,6 +84,7 @@ class SearchDiagnosis:
         self.recommended_actions = coerce_str_list(self.recommended_actions) or ["continue"]
         self.auxiliary_collapse_risk = float(self.auxiliary_collapse_risk or 0.0)
         self.semantic_drift_risk = float(self.semantic_drift_risk or 0.0)
+        self.grounded_information_gain = dict(self.grounded_information_gain) if isinstance(self.grounded_information_gain, dict) else {}
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -99,6 +101,7 @@ class SearchDiagnosis:
             semantic_drift_risk=float(data.get("semantic_drift_risk", 0.0) or 0.0),
             recommended_actions=coerce_str_list(data.get("recommended_actions")),
             notes=str(data.get("notes") or ""),
+            grounded_information_gain=dict(data.get("grounded_information_gain") or {}) if isinstance(data.get("grounded_information_gain"), dict) else {},
             created_at=str(data.get("created_at") or utc_now()),
         )
 
@@ -135,6 +138,15 @@ class SearchStateDiagnoser:
                 return SearchDiagnosis.from_dict(raw)
         if not population:
             return SearchDiagnosis(stagnation_detected=True, stagnation_type="KnowledgeBottleneck", recommended_actions=["rare_inject", "strategy_restart"], notes="empty population")
+        low_gain = _low_grounded_information_gain(history=history, policy=policy, contract=contract)
+        if low_gain:
+            return SearchDiagnosis(
+                stagnation_detected=True,
+                stagnation_type="SemanticLooping",
+                recommended_actions=["increase_rarity_budget", "rare_inject", "strategy_restart"],
+                notes=f"low engine-grounded marginal information gain for {low_gain.get('count')} rounds",
+                grounded_information_gain=low_gain,
+            )
         live_context = live_reproductive_candidates(population)
         frontier = _frontier_candidates(population)
         diagnosis_context = frontier or live_context or population
@@ -288,6 +300,45 @@ def _high_value_failed_repair_targets(candidates: list[CandidateGenome], context
         ):
             return True
     return False
+
+
+def _low_grounded_information_gain(*, history: list[dict[str, Any]] | None, policy: EvolutionPolicy | None, contract: Any | None) -> dict[str, Any]:
+    metadata = getattr(policy, "metadata", {}) if policy is not None else {}
+    current = metadata.get("engine_grounded_information_gain") if isinstance(metadata, dict) else None
+    reports: list[dict[str, Any]] = []
+    if isinstance(current, dict):
+        reports.append(current)
+    for item in reversed(history or []):
+        if not isinstance(item, dict):
+            continue
+        report = item.get("grounded_information_gain")
+        if isinstance(report, dict):
+            reports.append(report)
+        if len(reports) >= _low_gain_patience(contract):
+            break
+    patience = _low_gain_patience(contract)
+    if len(reports) < patience:
+        return {}
+    recent = reports[:patience]
+    if not all(float(report.get("marginal_information_gain") or 0.0) < 0.01 for report in recent):
+        return {}
+    return {
+        "low_gain": True,
+        "count": len(recent),
+        "threshold": 0.01,
+        "recent_gains": [float(report.get("marginal_information_gain") or 0.0) for report in recent],
+        "current_signatures": list(current.get("current_signatures", [])) if isinstance(current, dict) else [],
+    }
+
+
+def _low_gain_patience(contract: Any | None) -> int:
+    metadata = getattr(contract, "metadata", {}) if contract is not None else {}
+    if isinstance(metadata, dict):
+        try:
+            return max(1, int(metadata.get("low_gain_patience") or 5))
+        except (TypeError, ValueError):
+            return 5
+    return 5
 
 
 def _observed_rarity_budget_increment(policy: EvolutionPolicy, archives: ArchiveManager | None) -> float:
