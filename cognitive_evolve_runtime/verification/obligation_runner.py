@@ -39,10 +39,11 @@ def run_obligations_for_population(candidates: list[Any], obligations: list[dict
         if max_workers <= 1 or len(batch) <= 1:
             batch_records = [_check_one(c, obligation, cache, cache_lock) for c in batch]
         else:
-            futures_map: dict[Any, Any] = {}
+            batch_records = [None] * len(batch)  # type: ignore[list-item]
             with ThreadPoolExecutor(max_workers=min(max_workers, len(batch))) as pool:
-                futures_map = {pool.submit(_check_one, c, obligation, cache, cache_lock): c for c in batch}
-                batch_records = [f.result() for f in as_completed(futures_map)]
+                futures_map = {pool.submit(_check_one, c, obligation, cache, cache_lock): idx for idx, c in enumerate(batch)}
+                for fut in as_completed(futures_map):
+                    batch_records[futures_map[fut]] = fut.result()
 
         records.extend(batch_records)
     return records

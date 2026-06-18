@@ -62,6 +62,8 @@ from cognitive_evolve_runtime.verification.strength import measured_strength_fro
 from cognitive_evolve_runtime.verification.types import VerificationPlan, VerificationResult
 from cognitive_evolve_runtime.theory import TheoryConfig, TheoryLayer, build_population_representation
 from cognitive_evolve_runtime.nexus._shared import MODEL_BOUNDARY_ERRORS, positive_int
+from cognitive_evolve_runtime.llm.env import env_int
+from cognitive_evolve_runtime.llm.governor import llm_governor
 from cognitive_evolve_runtime.llm.retry import provider_error_category
 from cognitive_evolve_runtime.ranking.multihead_elo import MultiHeadElo
 from cognitive_evolve_runtime.ranking.parent_selection import ParentSelector
@@ -71,6 +73,8 @@ from .budget import EvolutionBudget
 from .offspring import _best_auxiliary_id, _generate_offspring, _plan_mutations
 from .policy_directives import _attach_policy_directives_to_plans, _critique_actions
 from .stage_helpers import _eligibility_policy, _error_progress_event, _theory_config_from_policy
+
+_VERIFY_MAX_WORKERS_ENV = "COGEV_VERIFY_CONCURRENCY"
 
 @dataclass
 class RoundEvaluation:
@@ -332,19 +336,34 @@ class EvolutionRound:
             if item
         ]
         verification_results: list[Any] = []
-        with ThreadPoolExecutor(max_workers=3) as pool:
-            f_stack = pool.submit(
-                self.verifier_stack.verify_population,
-                population.candidates,
-                contract=contract,
-                blocking_obligation_ids=blocking_obligation_ids,
-                current_round=current_round,
-                round_limit=self.budget.round_limit,
+        max_workers = env_int(_VERIFY_MAX_WORKERS_ENV, llm_governor()._max_concurrent())
+
+        def _run_stack() -> list[Any]:
+            return list(
+                self.verifier_stack.verify_population(
+                    population.candidates,
+                    contract=contract,
+                    blocking_obligation_ids=blocking_obligation_ids,
+                    current_round=current_round,
+                    round_limit=self.budget.round_limit,
+                )
             )
-            f_synth = pool.submit(self._run_synthesized_verifier, population.candidates, current_round=current_round)
-            f_oblig = pool.submit(self._run_verification_obligations, population.candidates, current_round=current_round)
-            for fut in as_completed([f_stack, f_synth, f_oblig]):
-                verification_results.extend(fut.result())
+
+        def _run_synthesized() -> list[Any]:
+            return list(self._run_synthesized_verifier(population.candidates, current_round=current_round))
+
+        def _run_obligations() -> list[Any]:
+            return list(self._run_verification_obligations(population.candidates, current_round=current_round))
+
+        if max_workers <= 1:
+            verification_results.extend(_run_stack())
+            verification_results.extend(_run_synthesized())
+            verification_results.extend(_run_obligations())
+        else:
+            with ThreadPoolExecutor(max_workers=min(3, max_workers)) as pool:
+                futures = [pool.submit(fn) for fn in (_run_stack, _run_synthesized, _run_obligations)]
+                for fut in as_completed(futures):
+                    verification_results.extend(fut.result())
         ingest_latent_feedback(
             contract=contract,
             critiques=critiques,

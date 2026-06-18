@@ -192,3 +192,28 @@ Interpretation:
 - The execution count stayed at 656 because parametrization preserves both job-status cases while removing one redundant function body.
 - `legacy` and `diagnostics_only` remain accepted-with-test safety markers; this pass did not blind-delete compatibility coverage.
 - No outdated test still names `closure_certificate` as the solved authority.
+
+## Concurrent verifier plumbing follow-up — 2026-06-18
+
+Scope: minimal runtime change to make the already configured verification concurrency real in the core round path while preserving serial generation/mutation semantics.
+
+Changes made:
+
+- `verification_stack.verify_population` now runs candidates through a bounded `ThreadPoolExecutor` when `COGEV_VERIFY_CONCURRENCY` permits it. The shared formal-signature accumulator is accessed via a lock and candidates are returned in input order.
+- `verification.obligation_runner.run_obligations_for_population` now checks candidates concurrently inside each obligation, with cache access guarded by a lock and result order preserved by candidate index.
+- `nexus.loop.round.critique_and_verify` now runs the verifier stack, synthesized verifier, and verification-obligation runner as three concurrent entrypoints when concurrency is enabled.
+- `plan_mutations` and offspring generation remain serial because they rely on ordered stateful search controls.
+- `COGEV_VERIFY_CONCURRENCY=1` is the deterministic serial fallback for local debugging and regression isolation.
+
+Local validation added:
+
+- Targeted concurrent verifier tests cover serial fallback, per-candidate overlap, obligation result order, obligation-cache population, three-entrypoint overlap, and journal-line integrity under concurrent writes.
+- Focused regression tests for v2.2.1 honesty activation and proof-progress hardening passed after the concurrency patch.
+- Full local suite after cleanup: `664 passed, 1 skipped`.
+- Doctor: `50/50 checks passed`.
+- Public hygiene test: `5 passed`.
+- Test function definitions: 649; duplicate test function names: 0.
+
+Debt status:
+
+- TD-CONCUR-002 is partially mitigated at the runtime scheduling layer. It is not fully closed until a fresh real-provider smoke demonstrates stable model-call fan-out under the governor and the run still preserves the v2.2.1 authority invariants.
