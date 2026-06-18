@@ -34,6 +34,7 @@ from .journal import safe_json, write_llm_journal
 from .http_provider import DirectHTTPProvider
 from .litellm_provider import LiteLLMProvider, litellm_provider_kwargs
 from .provider_interface import LLMProviderInterface
+from .model_spec import LLMModelSpec
 from .session import _LAST_RETRY_HISTORY
 from .telemetry import record_event
 
@@ -136,12 +137,14 @@ def _result_message_content(result: Any) -> str:
     return content if isinstance(content, str) else ""
 
 
-def llm_json(request_type: str, payload: dict[str, Any], *, system: str, schema_hint: dict[str, Any], provider: LLMProviderInterface | None = None) -> dict[str, Any]:
+def llm_json(request_type: str, payload: dict[str, Any], *, system: str, schema_hint: dict[str, Any], provider: LLMProviderInterface | None = None, model_spec: LLMModelSpec | None = None) -> dict[str, Any]:
     status = require_llm_config()
+    if model_spec is not None:
+        status = model_spec.apply_to_status(status)
     enforce_budget(preflight=True)
     call_id = f"llm-{uuid.uuid4().hex}"
     started = time.time()
-    request_hash = stable_hash({"request_type": request_type, "payload": payload, "schema_hint": schema_hint, "system": system})
+    request_hash = stable_hash({"request_type": request_type, "payload": payload, "schema_hint": schema_hint, "system": system, "model_spec": model_spec.to_dict() if model_spec is not None else {}})
     idem_key = llm_idempotency_key(
         provider=str(status.get("provider")),
         model=str(status.get("model") or status.get("fixture") or ""),
@@ -258,6 +261,7 @@ def llm_json(request_type: str, payload: dict[str, Any], *, system: str, schema_
             provider_result = provider.complete_json(
                 model=str(status["model"]),
                 messages=active_messages,
+                api_base=str(status.get("api_base") or ""),
                 temperature=env_float(LLM_TEMPERATURE_ENV, 0.2),
                 max_tokens=max_tokens_for_request(request_type),
                 response_format={"type": "json_object"},

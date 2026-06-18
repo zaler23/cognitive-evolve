@@ -6,6 +6,7 @@ niches, but clone-heavy bins should not keep every low-value live genome forever
 """
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -13,6 +14,7 @@ from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateG
 from cognitive_evolve_runtime.nexus.adaptive_signals import in_top_band, score
 from cognitive_evolve_runtime.core.scalars import bounded_score
 from cognitive_evolve_runtime.nexus.search_kernel.descriptor_cells import descriptor_cell_key
+from cognitive_evolve_runtime.nexus.v23_theory_config import EntropyCompactionConfig, V23TheoryRuntimeConfig
 
 
 def candidate_quality(candidate: CandidateGenome) -> float:
@@ -75,6 +77,35 @@ def candidate_bin_key(candidate: CandidateGenome) -> str:
     return "|".join(_token(item) for item in (primary, evidence_shape, rare_shape) if item)
 
 
+
+def descriptor_cell_distribution(candidates: list[CandidateGenome]) -> dict[str, int]:
+    """Return the live-compaction descriptor distribution.
+
+    The search-kernel ``descriptor_cell_key`` intentionally includes lineage for
+    fine-grained archive analysis. Live compaction needs a coarser distribution
+    or clone-heavy bins would never compact, so v2.3 entropy uses the existing
+    MAP-Elites-style ``candidate_bin_key`` as the descriptor unit.
+    """
+
+    distribution: dict[str, int] = {}
+    for candidate in candidates:
+        key = candidate_bin_key(candidate)
+        distribution[key] = distribution.get(key, 0) + 1
+    return distribution
+
+
+def descriptor_population_entropy(candidates: list[CandidateGenome]) -> float:
+    distribution = descriptor_cell_distribution(candidates)
+    total = sum(distribution.values())
+    if total <= 0:
+        return 0.0
+    entropy = 0.0
+    for count in distribution.values():
+        probability = count / total
+        if probability > 0.0:
+            entropy -= probability * math.log(probability, 2)
+    return entropy
+
 def live_reproductive_candidates(candidates: list[CandidateGenome]) -> list[CandidateGenome]:
     """Candidates allowed to influence live novelty, saturation, and parents."""
 
@@ -111,54 +142,106 @@ def pareto_frontier_ids(candidates: list[CandidateGenome], *, max_axes: int = 3)
     return frontier
 
 
+def entropy_diversity_survivors(
+    candidates: list[CandidateGenome],
+    *,
+    target_k: int,
+    config: EntropyCompactionConfig | None = None,
+) -> tuple[list[CandidateGenome], list[CandidateGenome]]:
+    """Select survivors by maximum-entropy pressure plus QD quality.
+
+    The selector first protects the best candidate in every live compaction bin,
+    then fills remaining slots with the candidates that best preserve descriptor
+    entropy while retaining rare/frontier/search-quality material.
+    """
+
+    if not candidates:
+        return [], []
+    cfg = config or EntropyCompactionConfig()
+    target = max(1, min(int(target_k or 1), len(candidates)))
+    bins: dict[str, list[CandidateGenome]] = {}
+    for candidate in candidates:
+        bins.setdefault(candidate_bin_key(candidate), []).append(candidate)
+    frontier_ids = pareto_frontier_ids(candidates)
+    chosen: list[CandidateGenome] = []
+    chosen_ids: set[str] = set()
+
+    for key in sorted(bins):
+        for candidate in sorted(bins[key], key=lambda item: (candidate_quality(item), candidate_search_quality(item), item.id), reverse=True)[: cfg.cell_elite_reserve]:
+            if candidate.id not in chosen_ids:
+                chosen.append(candidate)
+                chosen_ids.add(candidate.id)
+
+    if len(chosen) < target and cfg.rare_reserve_per_cell > 0:
+        for key in sorted(bins):
+            rare_candidates = [
+                candidate
+                for candidate in bins[key]
+                if candidate.id not in chosen_ids and (candidate.edge_knowledge_seeds or float(score(candidate, "rarity") or 0.0) > 0.0)
+            ]
+            for candidate in sorted(rare_candidates, key=lambda item: (float(score(item, "rarity") or 0.0), candidate_search_quality(item), item.id), reverse=True)[: cfg.rare_reserve_per_cell]:
+                if len(chosen) >= target:
+                    break
+                chosen.append(candidate)
+                chosen_ids.add(candidate.id)
+            if len(chosen) >= target:
+                break
+
+    def _score(candidate: CandidateGenome, current: list[CandidateGenome]) -> tuple[float, float, float, str]:
+        before = descriptor_population_entropy(current)
+        after = descriptor_population_entropy(current + [candidate])
+        entropy_gain = after - before
+        frontier = 1.0 if candidate.id in frontier_ids else 0.0
+        rarity = max(float(score(candidate, "rarity") or 0.0), 1.0 if candidate.edge_knowledge_seeds else 0.0)
+        search_quality = candidate_search_quality(candidate)
+        weighted = (
+            cfg.entropy_gain_weight * entropy_gain
+            + cfg.frontier_weight * frontier
+            + cfg.rarity_weight * rarity
+            + cfg.search_quality_weight * search_quality
+        )
+        return (weighted, candidate_quality(candidate), search_quality, candidate.id)
+
+    while len(chosen) < target:
+        remaining = [candidate for candidate in candidates if candidate.id not in chosen_ids]
+        if not remaining:
+            break
+        best = max(remaining, key=lambda candidate: _score(candidate, chosen))
+        chosen.append(best)
+        chosen_ids.add(best.id)
+
+    compacted = [candidate for candidate in candidates if candidate.id not in chosen_ids]
+    return chosen, compacted
+
+
 def quality_diversity_survivors(
     candidates: list[CandidateGenome],
     *,
     bin_capacity: int,
     rare_reserve_per_bin: int = 1,
+    config: EntropyCompactionConfig | V23TheoryRuntimeConfig | None = None,
 ) -> tuple[list[CandidateGenome], list[CandidateGenome]]:
-    """Select live survivors by niche bin and return ``(survivors, compacted)``.
+    """Compatibility wrapper for v2.3 entropy-QD live survivors."""
 
-    This is not a fixed total population cap: the number of live candidates can
-    grow with the number of occupied bins.  Inside an overfull bin, it keeps the
-    strongest candidates, a small rare reserve, and low-dimensional Pareto
-    frontier members.
-    """
-
+    if isinstance(config, V23TheoryRuntimeConfig):
+        entropy_config = config.entropy
+    elif isinstance(config, EntropyCompactionConfig):
+        entropy_config = config
+    else:
+        entropy_config = EntropyCompactionConfig(rare_reserve_per_cell=max(0, int(rare_reserve_per_bin or 0)))
     capacity = max(1, int(bin_capacity or 1))
-    rare_reserve = max(0, int(rare_reserve_per_bin or 0))
-    bins: dict[str, list[CandidateGenome]] = {}
+    reserve = max(0, int(rare_reserve_per_bin or entropy_config.rare_reserve_per_cell or 0))
+    grouped: dict[str, dict[str, int]] = {}
     for candidate in candidates:
-        bins.setdefault(candidate_bin_key(candidate), []).append(candidate)
-    frontier_ids = pareto_frontier_ids(candidates)
-    survivors: list[CandidateGenome] = []
-    compacted: list[CandidateGenome] = []
-    seen: set[str] = set()
-    for bin_candidates in bins.values():
-        if len(bin_candidates) <= capacity:
-            chosen = list(bin_candidates)
-        else:
-            chosen = sorted(bin_candidates, key=candidate_quality, reverse=True)[:capacity]
-            rare = [
-                candidate
-                for candidate in sorted(bin_candidates, key=lambda c: c.multihead_scores.get("rarity", 0.0), reverse=True)
-                if (candidate.edge_knowledge_seeds or (score(candidate, "rarity") > 0 and in_top_band(candidate, bin_candidates, "rarity")))
-            ][:rare_reserve]
-            frontier = sorted(
-                [candidate for candidate in bin_candidates if candidate.id in frontier_ids],
-                key=candidate_quality,
-                reverse=True,
-            )[:rare_reserve]
-            chosen = _dedupe_candidates(chosen + rare + frontier)
-        chosen_ids = {candidate.id for candidate in chosen}
-        for candidate in bin_candidates:
-            if candidate.id in chosen_ids:
-                if candidate.id not in seen:
-                    survivors.append(candidate)
-                    seen.add(candidate.id)
-            else:
-                compacted.append(candidate)
-    return survivors, compacted
+        full_key = candidate_bin_key(candidate)
+        group_key = full_key.split("|", 1)[0]
+        group = grouped.setdefault(group_key, {"count": 0, "cells": 0})
+        group["count"] += 1
+    for key in descriptor_cell_distribution(candidates):
+        group_key = key.split("|", 1)[0]
+        grouped.setdefault(group_key, {"count": 0, "cells": 0})["cells"] += 1
+    target = sum(max(group["cells"], min(group["count"], capacity + reserve)) for group in grouped.values())
+    return entropy_diversity_survivors(candidates, target_k=target, config=entropy_config)
 
 
 @dataclass
@@ -342,13 +425,4 @@ def _dedupe_candidates(candidates: list[CandidateGenome]) -> list[CandidateGenom
     return out
 
 
-__all__ = [
-    "QualityDiversityArchive",
-    "candidate_bin_key",
-    "candidate_final_quality",
-    "candidate_quality",
-    "candidate_search_quality",
-    "live_reproductive_candidates",
-    "pareto_frontier_ids",
-    "quality_diversity_survivors",
-]
+__all__ = ["QualityDiversityArchive", "candidate_bin_key", "candidate_final_quality", "candidate_quality", "candidate_search_quality", "descriptor_cell_distribution", "descriptor_population_entropy", "entropy_diversity_survivors", "live_reproductive_candidates", "pareto_frontier_ids", "quality_diversity_survivors"]

@@ -325,7 +325,7 @@ def test_project_checkpoint_resume_preserves_world_envelope() -> None:
     world = _world_from_checkpoint(
         "project",
         {
-            "snapshot": {"root_path": "/tmp/project", "root_hash": "abc", "file_manifest": []},
+            "snapshot": {"root_path": "redacted-test-root", "root_hash": "abc", "file_manifest": []},
             "project_world_model": {"kind": "project", "snapshot_id": "snapshot-abc", "project_summary": "summary"},
         },
     )

@@ -8,6 +8,7 @@ from typing import Any, Callable
 
 from cognitive_evolve_runtime.archives.manager import ArchiveManager
 from cognitive_evolve_runtime.candidates.crossover import crossover
+from cognitive_evolve_runtime.candidates.crossover import crossover, neighborhood_crossover_partner
 from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome, CandidatePopulation, candidate_from_dict
 from cognitive_evolve_runtime.candidates.mutation import MutationEngine, MutationOperator, MutationPlan, MutationPlanner
 from cognitive_evolve_runtime.contracts.objective_contract import NexusObjectiveContract
@@ -51,6 +52,7 @@ from cognitive_evolve_runtime.nexus.reproduction import (
 from cognitive_evolve_runtime.tools.verification_stack import NexusVerifierStack
 from cognitive_evolve_runtime.theory import TheoryConfig, TheoryLayer, build_population_representation
 from cognitive_evolve_runtime.nexus._shared import MODEL_BOUNDARY_ERRORS, positive_int
+from cognitive_evolve_runtime.nexus.v23_theory_config import CACrossoverConfig
 from cognitive_evolve_runtime.nexus.semantic_dedupe import CandidateDeduper
 from cognitive_evolve_runtime.nexus.search_kernel.harvesting import CandidateHarvester, HarvestPolicy, dedupe_plans, plan_signature
 from cognitive_evolve_runtime.nexus.search_kernel.skill_library import search_skill_payload
@@ -134,8 +136,25 @@ def _parent_for_plan(plan: MutationPlan, parents: list[CandidateGenome], index: 
     return None
 
 
-def _generate_offspring(*, model: NexusModelLike | None, mutation_engine: MutationEngine, parents: list[CandidateGenome], plans: list[MutationPlan], world: Any, contract: NexusObjectiveContract, policy: EvolutionPolicy) -> list[CandidateGenome]:
-    fallback = [mutation_engine.mutate(parent, plan) for parent, plan in zip(parents, plans)]
+def _generate_offspring(
+    *,
+    model: NexusModelLike | None,
+    mutation_engine: MutationEngine,
+    parents: list[CandidateGenome],
+    plans: list[MutationPlan],
+    world: Any,
+    contract: NexusObjectiveContract,
+    policy: EvolutionPolicy,
+    candidate_pool: list[CandidateGenome] | None = None,
+    ca_config: CACrossoverConfig | None = None,
+) -> list[CandidateGenome]:
+    fallback = _deterministic_fallback_offspring(
+        mutation_engine=mutation_engine,
+        parents=parents,
+        plans=plans,
+        candidate_pool=candidate_pool or parents,
+        ca_config=ca_config,
+    )
     target = max(1, len(fallback))
     if isinstance(model, NexusOffspringModelProtocol):
         harvester = CandidateHarvester(
@@ -191,6 +210,59 @@ def _generate_offspring(*, model: NexusModelLike | None, mutation_engine: Mutati
                 candidate.metadata.setdefault("offspring_harvest", result.to_dict())
             return offspring
     return fallback
+
+
+def _deterministic_fallback_offspring(
+    *,
+    mutation_engine: MutationEngine,
+    parents: list[CandidateGenome],
+    plans: list[MutationPlan],
+    candidate_pool: list[CandidateGenome],
+    ca_config: CACrossoverConfig | None,
+) -> list[CandidateGenome]:
+    offspring: list[CandidateGenome] = []
+    for index, plan in enumerate(plans):
+        parent = _parent_for_plan(plan, parents, index)
+        if parent is None:
+            continue
+        if str(plan.operator) == MutationOperator.CROSSOVER:
+            child = _deterministic_crossover_child(parent=parent, plan=plan, parents=parents, candidate_pool=candidate_pool, ca_config=ca_config)
+            if child is not None:
+                offspring.append(child)
+                continue
+        offspring.append(mutation_engine.mutate(parent, plan))
+    return offspring
+
+
+def _deterministic_crossover_child(
+    *,
+    parent: CandidateGenome,
+    plan: MutationPlan,
+    parents: list[CandidateGenome],
+    candidate_pool: list[CandidateGenome],
+    ca_config: CACrossoverConfig | None,
+) -> CandidateGenome | None:
+    by_id = {candidate.id: candidate for candidate in [*candidate_pool, *parents]}
+    partner: CandidateGenome | None = None
+    for parent_id in plan.parent_ids:
+        candidate = by_id.get(parent_id)
+        if candidate is not None and candidate.id != parent.id:
+            partner = candidate
+            break
+    if partner is None:
+        partner = neighborhood_crossover_partner(parent, list(by_id.values()), ca_config)
+    if partner is None or partner.id == parent.id:
+        return None
+    child = crossover(parent, partner, instruction=plan.instruction or "descriptor-neighborhood crossover")
+    if not isinstance(child.metadata, dict):
+        child.metadata = {}
+    child.metadata.update(dict(plan.metadata or {}))
+    child.metadata["ca_crossover"] = {
+        "parent_ids": [parent.id, partner.id],
+        "selection": "descriptor_neighborhood_or_configured_global_donor",
+        "operator": MutationOperator.CROSSOVER,
+    }
+    return child
 
 
 

@@ -8,6 +8,7 @@ from typing import Any
 from cognitive_evolve_runtime.archives.manager import ArchiveManager
 from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome
 from cognitive_evolve_runtime.candidates.mutation import MutationOperator
+from cognitive_evolve_runtime.core.scalars import bounded_score
 from cognitive_evolve_runtime.nexus._serde import coerce_dict, coerce_str_list, utc_now
 from cognitive_evolve_runtime.nexus.adaptive_signals import in_top_band, observed_majority, score
 from cognitive_evolve_runtime.nexus.obligations import (
@@ -73,6 +74,7 @@ class SearchDiagnosis:
     recommended_actions: list[str] = field(default_factory=lambda: ["continue"])
     notes: str = ""
     grounded_information_gain: dict[str, Any] = field(default_factory=dict)
+    metadata: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=utc_now)
 
     def __post_init__(self) -> None:
@@ -85,6 +87,7 @@ class SearchDiagnosis:
         self.auxiliary_collapse_risk = float(self.auxiliary_collapse_risk or 0.0)
         self.semantic_drift_risk = float(self.semantic_drift_risk or 0.0)
         self.grounded_information_gain = dict(self.grounded_information_gain) if isinstance(self.grounded_information_gain, dict) else {}
+        self.metadata = coerce_dict(self.metadata)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -102,6 +105,7 @@ class SearchDiagnosis:
             recommended_actions=coerce_str_list(data.get("recommended_actions")),
             notes=str(data.get("notes") or ""),
             grounded_information_gain=dict(data.get("grounded_information_gain") or {}) if isinstance(data.get("grounded_information_gain"), dict) else {},
+            metadata=coerce_dict(data.get("metadata")),
             created_at=str(data.get("created_at") or utc_now()),
         )
 
@@ -455,6 +459,23 @@ class PolicyUpdater:
                 metadata = dict(updated.metadata)
                 metadata["archive_constraints"] = constraints
                 updated.metadata = metadata
+        honesty_control = coerce_dict(diagnosis.metadata.get("honesty_control"))
+        if honesty_control:
+            pressure = _honesty_control_policy_pressure(honesty_control)
+            if pressure:
+                metadata = dict(updated.metadata)
+                metadata["honesty_control"] = {
+                    "source": "v23_honesty_pi_control",
+                    "signal_id": honesty_control.get("signal_id"),
+                    "error_vector": coerce_dict(honesty_control.get("error_vector")),
+                    "pressure": pressure,
+                    "effect": "search_pressure_only_verification_strength_unchanged",
+                }
+                metadata["frontier_exploration_pressure"] = pressure.get("frontier_exploration_pressure", 0.0)
+                eligibility = coerce_dict(metadata.get("eligibility_policy"))
+                eligibility["frontier_exploration_pressure"] = pressure
+                metadata["eligibility_policy"] = eligibility
+                updated.metadata = metadata
         if "increase_rarity_budget" in actions or "rare_inject" in actions:
             rarity_increment = _observed_rarity_budget_increment(updated, archives)
             updated.rarity_budget = min(1.0, updated.rarity_budget + rarity_increment)
@@ -483,6 +504,21 @@ class PolicyUpdater:
         if "reactivate_dormant" in actions and "DormantArchive" not in updated.archive_schema:
             updated.archive_schema["DormantArchive"] = {"enabled": True}
         return updated
+
+
+def _honesty_control_policy_pressure(signal: dict[str, Any]) -> dict[str, float]:
+    raw = coerce_dict(signal.get("pressure"))
+    if not raw:
+        return {}
+    keys = (
+        "adversarial_budget_pressure",
+        "rarity_budget_pressure",
+        "edge_seed_pressure",
+        "frontier_exploration_pressure",
+        "replay_verifier_pressure",
+        "verification_pressure",
+    )
+    return {key: bounded_score(raw.get(key)) for key in keys if key in raw}
 
 
 __all__ = ["CONTROL_ACTIONS", "STAGNATION_TYPES", "SearchDiagnosis", "SearchStateDiagnoser", "PolicyUpdater"]

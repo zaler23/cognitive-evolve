@@ -4,6 +4,8 @@ from __future__ import annotations
 from .genome import CandidateGenome
 from .project_candidate import ProjectCandidateGenome
 from .patch_merge import project_patch_crossover
+from cognitive_evolve_runtime.archives.quality_diversity import candidate_final_quality, candidate_search_quality
+from cognitive_evolve_runtime.nexus.v23_theory_config import CACrossoverConfig
 
 
 def crossover(parent_a: CandidateGenome, parent_b: CandidateGenome, *, instruction: str = "combine complementary genes") -> CandidateGenome:
@@ -46,7 +48,90 @@ def crossover(parent_a: CandidateGenome, parent_b: CandidateGenome, *, instructi
         failure_lessons=list(dict.fromkeys(parent_a.failure_lessons + parent_b.failure_lessons)),
         contract_hash=parent_a.contract_hash or parent_b.contract_hash,
         metadata={"crossover_instruction": instruction},
-)
+    )
+
+
+def descriptor_tokens(candidate: CandidateGenome) -> set[str]:
+    """Return deterministic descriptor tokens for local-neighborhood crossover."""
+
+    values: list[str] = [
+        candidate.id,
+        candidate.artifact_type,
+        candidate.concise_claim,
+        candidate.core_mechanism,
+    ]
+    values.extend(candidate.novelty_descriptors)
+    values.extend(candidate.niche_memberships)
+    values.extend(candidate.edge_knowledge_seeds)
+    metadata = candidate.metadata if isinstance(candidate.metadata, dict) else {}
+    for key in ("descriptor_cell", "bin_key", "search_family", "family", "seed_type"):
+        if metadata.get(key):
+            values.append(str(metadata.get(key)))
+    out: set[str] = set()
+    for value in values:
+        text = str(value or "").strip().lower()
+        if not text:
+            continue
+        normalized = text.replace("|", " ").replace(":", " ").replace(",", " ")
+        out.add("_".join(normalized.split()))
+        out.update(part for part in normalized.split() if part)
+    return {token for token in out if token}
+
+
+def jaccard_similarity(a: set[str] | list[str] | tuple[str, ...], b: set[str] | list[str] | tuple[str, ...]) -> float:
+    left = {str(item) for item in a if str(item or "").strip()}
+    right = {str(item) for item in b if str(item or "").strip()}
+    union = left | right
+    if not union:
+        return 0.0
+    return len(left & right) / len(union)
+
+
+def neighborhood_crossover_partner(
+    pivot: CandidateGenome,
+    population: list[CandidateGenome],
+    config: CACrossoverConfig | None = None,
+) -> CandidateGenome | None:
+    """Select a deterministic descriptor-neighborhood donor for ``pivot``.
+
+    If no candidate shares descriptor tokens, the config-specified global donor
+    policy chooses a deterministic donor rather than falling back to random.
+    """
+
+    cfg = config or CACrossoverConfig()
+    donors = [candidate for candidate in population if candidate.id != pivot.id]
+    if not donors:
+        return None
+    pivot_tokens = descriptor_tokens(pivot)
+
+    def _local_key(candidate: CandidateGenome) -> tuple[float, float, float, str]:
+        tokens = descriptor_tokens(candidate)
+        shared = pivot_tokens & tokens
+        if len(shared) < max(1, int(cfg.min_shared_descriptor_tokens or 1)):
+            return (-1.0, -1.0, -1.0, candidate.id)
+        return (
+            jaccard_similarity(pivot_tokens, tokens),
+            candidate_search_quality(candidate),
+            candidate_final_quality(candidate),
+            candidate.id,
+        )
+
+    local = [candidate for candidate in donors if _local_key(candidate)[0] >= 0.0]
+    if local:
+        return max(local, key=_local_key)
+    return _global_donor(pivot, donors, cfg)
+
+
+def _global_donor(pivot: CandidateGenome, donors: list[CandidateGenome], cfg: CACrossoverConfig) -> CandidateGenome | None:
+    policy = str(cfg.global_donor_policy or "").strip().lower()
+    if not donors:
+        return None
+    if policy == "highest_final_quality":
+        return max(donors, key=lambda candidate: (candidate_final_quality(candidate), candidate_search_quality(candidate), candidate.id))
+    if policy == "lowest_similarity":
+        pivot_tokens = descriptor_tokens(pivot)
+        return max(donors, key=lambda candidate: (-jaccard_similarity(pivot_tokens, descriptor_tokens(candidate)), candidate_search_quality(candidate), candidate.id))
+    return max(donors, key=lambda candidate: (candidate_search_quality(candidate), candidate_final_quality(candidate), candidate.id))
 
 
 def _delta_items(candidate: CandidateGenome, key: str) -> list[str]:
@@ -64,4 +149,4 @@ def _evidence_delta_items(candidate: CandidateGenome, key: str) -> list[str]:
     return [str(value)] if value else []
 
 
-__all__ = ["crossover"]
+__all__ = ["crossover", "descriptor_tokens", "jaccard_similarity", "neighborhood_crossover_partner"]

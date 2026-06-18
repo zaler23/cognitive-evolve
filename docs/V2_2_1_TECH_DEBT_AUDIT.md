@@ -250,3 +250,97 @@ Debt status:
 
 - TD-CONCUR-002 is closed at the code and deterministic-test level: the runtime can now schedule real independent model batches concurrently under the provider governor.
 - A fresh real-provider smoke is still recommended before a long external-model run, but it is now validation of provider/account behavior rather than missing runtime scheduling capability.
+
+## v2.3 theory runtime and model-route implementation — 2026-06-18
+
+Scope: implement the v2.3 theory-strengthened runtime as first-class behavior, without v2.3 feature switches, without hardcoded seed-model names, and with an explicit model route allowing seed generation to use a different model from the default Nexus control-plane model.
+
+SOTA basis checked before implementation:
+
+- Quality-diversity / MAP-Elites: Mouret and Clune's MAP-Elites framing supports maintaining high-performing elites across behavior descriptor cells instead of optimizing only for one winner: https://arxiv.org/abs/1504.04909.
+- Novelty plus local competition: novelty/local competition literature supports preserving diverse morphologies/mechanisms while still selecting high-value local elites: https://doi.org/10.1145/2001576.2001606.
+- PI/PID control: PI-style proportional and integral error terms are a mature control pattern for turning measured error into bounded corrective pressure: https://ctms.engin.umich.edu/CTMS/index.php?example=Introduction&section=ControlPID.
+- Adaptive budget allocation: budget-allocation literature supports treating fixed verification/inference budget distribution as a first-class algorithmic decision rather than a constant per item: https://arxiv.org/html/2605.26849v1.
+
+Implemented changes:
+
+- Added explicit model routing:
+  - `nexus/model_routes.py` defines `NexusModelRole`, `NexusModelRoutes`, and `coerce_model_routes`.
+  - `NexusRuntime(model=...)` remains compatible.
+  - `NexusRuntime(model_routes=NexusModelRoutes(default_model=A, seed_model=B))` sends only `nexus_seed_population` to the seed model and keeps world/contract/policy/ranking/critique/diagnosis/mutation/offspring/synthesis/stop on the default model.
+  - Seed-model failure does not silently fall back to default seed generation; the existing seed error handling records `model_seed_error` and continues via deterministic amplification/recovery.
+  - Runtime serialization and run metadata include a sanitized `model_routes` summary.
+- Added safe per-call model specs:
+  - `llm/model_spec.py` defines `LLMModelSpec` with provider/model/api_base/fixture coordinates only, no credentials.
+  - `StructuredModelAdapter.from_configured_llm(model_spec=...)` and `.with_configured_model(model_spec=...)` pass the model spec through to `llm_json`.
+  - `llm_json(..., model_spec=...)` uses the actual per-call model spec for status, request hashing, idempotency, provider payload, ledger status, and journal status.
+  - Public summaries redact fixture paths and credential-shaped URL material.
+- Added v2.3 typed config:
+  - `nexus/v23_theory_config.py` centralizes entropy compaction, minimax budget, honesty PI control, and CA crossover numeric parameters.
+  - Deprecated v2.3 switch names are diagnostics-only. They do not change behavior.
+  - No `COGEV_COMPACT_MODE`, `COGEV_DYNAMIC_ADVERSARIAL_BUDGET`, `COGEV_HONESTY_CONTROL`, or `COGEV_CROSSOVER_MODE` algorithm branch was added.
+- Implemented entropy-QD live compaction:
+  - Added descriptor cell distribution and entropy metrics.
+  - Live compaction records entropy before/after, descriptor cell counts before/after, and `v23_theory_config_hash`.
+  - Survivor selection preserves descriptor-cell elites, rare/edge/frontier candidates, and high search-quality candidates while retaining legacy per-primary-bin capacity semantics.
+- Implemented minimax adversarial budget allocation:
+  - `verification/minimax_budget.py` allocates actual candidate budgets from measured `candidate_verification_strength` only.
+  - Stronger measured candidates receive budget greater than or equal to weaker measured candidates; all-NONE candidates receive uniform nonzero allocation.
+  - `compile_grounding_regime(..., override_adversarial_budget=...)` gives the actual allocated budget priority over obligation/plan defaults.
+  - Obligation cache keys include actual adversarial budget to prevent budget-mismatched reuse.
+  - Obligation records include `minimax_budget_allocation_summary`.
+- Implemented honesty PI control:
+  - `nexus/honesty_control.py` computes a JSON-safe `HonestyControlSignal` from engine-owned honesty measurements.
+  - `SearchDiagnosis.metadata` stores `honesty_control` without changing solved or verification authority.
+  - `AdaptiveRuntimeState` persists `honesty_error_history` for resume-safe integral behavior.
+  - `PolicyUpdater` converts honesty errors into bounded search pressure only: adversarial budget pressure, rarity/edge/frontier pressure, and replay/verifier pressure.
+- Implemented CA descriptor-neighborhood crossover:
+  - `candidates/crossover.py` now provides `descriptor_tokens`, `jaccard_similarity`, and `neighborhood_crossover_partner`.
+  - `CrossOver` plans now have a deterministic two-parent fallback path instead of being treated as single-parent text mutation.
+  - CA crossover records `ca_crossover` metadata on children.
+  - Generation plans record `cell_activation_map`; `AdaptiveRuntimeState` persists `cell_activation_history`.
+
+Authority boundaries preserved:
+
+- Runtime metrics explain search pressure and candidate fate only; they do not grant `solved`, `verified_result`, or verification strength.
+- `GradedOutput` remains the solved/verified authority; `closure_certificate` remains legacy closure signal.
+- Verification strength still comes from honesty-core measurements and strength aggregation only.
+- Replay evidence remains scoped to verifier-on-frozen-artifact replay, not LLM generation replay.
+- Edge knowledge remains a seed and never a fact without source binding / verifier / honesty measurement support.
+- GitHub change provenance is not implemented in runtime code; it remains owned by protected main, PR review, required CI, and CodeQL.
+
+Tests added:
+
+- `tests/test_model_routes_seed_model.py`
+- `tests/test_v23_theory_config.py`
+- `tests/test_entropy_compaction.py`
+- `tests/test_minimax_budget.py`
+- `tests/test_honesty_control_signal.py`
+- `tests/test_ca_crossover.py`
+- `tests/test_v23_no_legacy_switches_or_magic_numbers.py`
+
+Local validation so far:
+
+- New v2.3 focused suite: `29 passed`.
+- Full local pytest after compatibility fix: `698 passed, 1 skipped`.
+- Acceptance chain: compileall passed; pytest `698 passed, 1 skipped`; doctor `50/50 checks passed`; package-clean command completed; generated `dist/` removed; pycache directories removed; public hygiene scan clean; `source-current` mirror synced.
+- Compatibility fix made during validation: entropy survivor target now combines primary descriptor group capacity with full descriptor-cell elite coverage, preserving existing per-bin cap behavior while adding v2.3 cell preservation.
+
+Debt ledger:
+
+| Debt ID | Category | Closure status | Evidence / notes |
+|---|---|---|---|
+| TD-V23-MODEL-ROUTES-SEED | Model routing | Closed in code + tests | Explicit `NexusModelRoutes`; seed route isolation and no default fallback covered by tests. |
+| TD-V23-CONFIG-NO-SWITCH | Config / runtime behavior | Closed in code + tests | v2.3 behavior is config-driven; deprecated switches are diagnostics-only. |
+| TD-V23-NO-MAGIC-NUMBERS | Config hygiene | Closed in code + tests | v2.3 numeric defaults centralized in typed config; tests guard against switch leakage and config bypass. |
+| TD-V23-P1-ENTROPY | Entropy compaction | Closed in code + tests | Entropy/cell metrics and survivor behavior covered by focused tests and existing compaction regression. |
+| TD-V23-P2-MINIMAX-BUDGET | Dynamic verification budget | Closed in code + tests | Stronger >= weaker, all-NONE uniform, sum conserved, override priority, and budget-sensitive cache keys covered. |
+| TD-V23-P3-HONESTY-CONTROL | Honesty PI control | Closed in code + tests | Neutral signal, exogeneity/falsification pressure, variety pressure, and policy-pressure conversion covered. |
+| TD-V23-P4-CA-CROSSOVER | CA crossover | Closed in code + tests | Descriptor token similarity, global donor policy, deterministic two-parent fallback, and cell activation map covered. |
+| TD-V23-HIGH-CEILING-SMOKE | Fixture high-ceiling smoke | Closed at deterministic fixture-test level | v2.3 focused tests and full local pytest passed; real-provider high-ceiling run remains a post-merge local `test-runs/` activity. |
+| TD-V23-PUBLIC-HYGIENE | Public-source hygiene | Closed locally before commit | Artifact directory scan clean; secret-shaped scan clean; local absolute path scan clean after replacing a test fixture path and constructing sanitizer prefixes at runtime; `source-current` mirror synced after validation. |
+
+Remaining before PR publication:
+
+- Re-run final hygiene immediately before staging/commit if additional files change.
+- Open draft PR from `mzz/v2.3-theory-runtime-model-routes` after successful local validation.

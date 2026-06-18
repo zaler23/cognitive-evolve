@@ -24,6 +24,8 @@ from cognitive_evolve_runtime.nexus.live_store import LiveNexusStore
 from cognitive_evolve_runtime.nexus.budget_factory import evolution_budget_from_params, resume_evolution_budget
 from cognitive_evolve_runtime.nexus.loop import EvolutionBudget, EvolutionLoopResult, evolve_once, seed_population
 from cognitive_evolve_runtime.nexus.model_adapter import StructuredModelAdapter
+from cognitive_evolve_runtime.nexus.model_routes import NexusModelRole, NexusModelRoutes, coerce_model_routes
+from cognitive_evolve_runtime.llm.model_spec import LLMModelSpec
 from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy, EvolutionPolicyBuilder
 from cognitive_evolve_runtime.verification.synthesizer import VerificationSynthesizer
 from cognitive_evolve_runtime.verification.types import VerificationPlan
@@ -56,8 +58,9 @@ class NexusRunResult:
 
 
 class NexusRuntime:
-    def __init__(self, *, model: NexusModelLike | None = None, output_dir: str | Path | None = None) -> None:
-        self.model = model
+    def __init__(self, *, model: NexusModelLike | None = None, model_routes: NexusModelRoutes | dict[str, Any] | None = None, output_dir: str | Path | None = None) -> None:
+        self.model_routes = coerce_model_routes(model=model, model_routes=model_routes)
+        self.model = self.model_routes.model_for(NexusModelRole.DEFAULT)
         self.output_dir = Path(output_dir) if output_dir is not None else None
         self.contract_builder = NexusObjectiveContractBuilder()
         self.policy_builder = EvolutionPolicyBuilder()
@@ -80,6 +83,7 @@ class NexusRuntime:
             "runtime_path": "nexus",
             "output_dir": str(self.output_dir) if self.output_dir is not None else None,
             "model_type": type(self.model).__name__ if self.model is not None else None,
+            "model_routes": self.model_routes.public_summary(),
             "event_nonce": uuid.uuid4().hex,
         }
         if extra is not None:
@@ -96,14 +100,16 @@ class NexusRuntime:
         }
 
     @classmethod
-    def with_configured_llm(cls, *, output_dir: str | Path | None = None) -> "NexusRuntime":
+    def with_configured_llm(cls, *, output_dir: str | Path | None = None, default_model_spec: LLMModelSpec | None = None, seed_model_spec: LLMModelSpec | None = None) -> "NexusRuntime":
         """Construct an explicit LLM-backed Nexus runtime.
 
         This is deliberately opt-in so tests and offline runs never silently use
         a real provider or an API key.
         """
 
-        return cls(model=StructuredModelAdapter.from_configured_llm(), output_dir=output_dir)
+        default_model = StructuredModelAdapter.from_configured_llm(model_spec=default_model_spec)
+        seed_model = StructuredModelAdapter.from_configured_llm(model_spec=seed_model_spec) if seed_model_spec is not None else None
+        return cls(model_routes=NexusModelRoutes(default_model=default_model, seed_model=seed_model), output_dir=output_dir)
 
     def run_text(
         self,
@@ -142,7 +148,7 @@ class NexusRuntime:
         )
         _resolve_budget_width_from_policy(budget, policy)
         min_population_size = min_population_size if min_population_size is not None else budget.initial_candidate_count
-        population = seed_population(contract=contract, world=world, policy=policy, model=self.model, min_population_size=min_population_size)
+        population = seed_population(contract=contract, world=world, policy=policy, model=self.model_routes.model_for(NexusModelRole.SEED), min_population_size=min_population_size)
         archives = ArchiveManager(policy.archive_schema)
         verification_plan = VerificationSynthesizer(model=self.model).synthesize({"goal": goal, "contract": contract.to_dict()})
         world_payload = _world_to_dict_with_latent_metadata(world, contract)
@@ -168,8 +174,9 @@ class NexusRuntime:
             evolution=result.to_dict(),
             pipeline_events=list(result.pipeline_events),
         )
+        run.evolution.setdefault("runtime_metadata", {})["model_routes"] = self.model_routes.public_summary()
         if runtime_metadata:
-            run.evolution["runtime_metadata"] = dict(runtime_metadata)
+            run.evolution["runtime_metadata"].update(dict(runtime_metadata))
         prompt_metadata = _model_prompt_metadata(self.model)
         if prompt_metadata:
             run.evolution["prompt_view_metadata"] = prompt_metadata
@@ -214,7 +221,7 @@ class NexusRuntime:
         )
         _resolve_budget_width_from_policy(budget, policy)
         min_population_size = min_population_size if min_population_size is not None else budget.initial_candidate_count
-        population = seed_population(contract=contract, world=world, policy=policy, model=self.model, min_population_size=min_population_size)
+        population = seed_population(contract=contract, world=world, policy=policy, model=self.model_routes.model_for(NexusModelRole.SEED), min_population_size=min_population_size)
         archives = ArchiveManager(policy.archive_schema)
         verification_plan = VerificationSynthesizer(model=self.model).synthesize({"goal": user_goal, "contract": contract.to_dict(), "mode": "project"})
         context_result = self.context_orchestrator.build_for_parents(
@@ -259,6 +266,7 @@ class NexusRuntime:
             context_protocol=context_result.to_dict(),
             verification_summaries=[summary.to_dict() for summary in verification_summaries],
         )
+        run.evolution.setdefault("runtime_metadata", {})["model_routes"] = self.model_routes.public_summary()
         prompt_metadata = _model_prompt_metadata(self.model)
         if prompt_metadata:
             run.evolution["prompt_view_metadata"] = prompt_metadata
