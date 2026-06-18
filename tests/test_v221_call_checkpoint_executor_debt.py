@@ -21,6 +21,20 @@ def test_completed_unattached_call_explained_by_ledger(tmp_path, monkeypatch) ->
     assert ledger_summary(path)["unattached_completed_count"] == 0
 
 
+def test_call_ledger_reports_observed_concurrency(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "llm-call-ledger.jsonl"
+    monkeypatch.setenv("COGEV_LLM_CALL_LEDGER", str(path))
+    record_call_state("started", call_id="c1", request_type="nexus_generate_offspring", extra={"event_time": 10.0})
+    record_call_state("started", call_id="c2", request_type="nexus_generate_offspring", extra={"event_time": 11.0})
+    record_call_state("completed", call_id="c1", request_type="nexus_generate_offspring", extra={"event_time": 12.0})
+    record_call_state("completed", call_id="c2", request_type="nexus_generate_offspring", extra={"event_time": 13.0})
+
+    summary = ledger_summary(path)
+
+    assert summary["completed_interval_count"] == 2
+    assert summary["max_observed_concurrent_calls"] == 2
+
+
 def test_thin_checkpoint_roundtrip_keeps_last_three_verification_entries(monkeypatch) -> None:
     monkeypatch.setenv("COGEV_CHECKPOINT_PROFILE", "thin")
     candidate = CandidateGenome(id="C", artifact="x", verification_trace=[{"passed": bool(i % 2), "score": i, "metadata": {"cache_key": str(i)}} for i in range(6)])
