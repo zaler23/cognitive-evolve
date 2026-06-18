@@ -202,7 +202,7 @@ Changes made:
 - `verification_stack.verify_population` now runs candidates through a bounded `ThreadPoolExecutor` when `COGEV_VERIFY_CONCURRENCY` permits it. The shared formal-signature accumulator is accessed via a lock and candidates are returned in input order.
 - `verification.obligation_runner.run_obligations_for_population` now checks candidates concurrently inside each obligation, with cache access guarded by a lock and result order preserved by candidate index.
 - `nexus.loop.round.critique_and_verify` now runs the verifier stack, synthesized verifier, and verification-obligation runner as three concurrent entrypoints when concurrency is enabled.
-- `plan_mutations` and offspring generation remain serial because they rely on ordered stateful search controls.
+- At this verifier-only follow-up stage, `plan_mutations` and offspring generation remained serial because they relied on ordered stateful search controls; see the TD-CONCUR-002 closure section below for the later model batch fan-out change.
 - `COGEV_VERIFY_CONCURRENCY=1` is the deterministic serial fallback for local debugging and regression isolation.
 
 Local validation added:
@@ -216,4 +216,37 @@ Local validation added:
 
 Debt status:
 
-- TD-CONCUR-002 is partially mitigated at the runtime scheduling layer. It is not fully closed until a fresh real-provider smoke demonstrates stable model-call fan-out under the governor and the run still preserves the v2.2.1 authority invariants.
+- TD-CONCUR-002 was partially mitigated at the runtime scheduling layer by this verifier-only patch; this status is superseded by the TD-CONCUR-002 model fan-out closure section below.
+
+## TD-CONCUR-002 model fan-out closure — 2026-06-18
+
+Scope: close the remaining scheduling gap where the LLM governor allowed concurrency but the Nexus seed/offspring model-call loops still submitted batches synchronously.
+
+SOTA/implementation basis:
+
+- Use bounded parallel submission for independent I/O-bound model requests.
+- Keep provider-facing concurrency, RPM, TPM, retry/backoff, and jitter under the existing LLM governor and retry layer.
+- Preserve deterministic aggregation by processing completed batch results in batch-index order.
+- Keep stateful mutation planning serial; only model seed and offspring batch harvesting fan out.
+
+Changes made:
+
+- Added a model fan-out helper controlled by `COGEV_MODEL_FANOUT_CONCURRENCY`.
+- Default model fan-out follows `llm_governor()._max_concurrent()`, so the scheduler does not exceed `COGEV_LLM_MAX_CONCURRENT`.
+- `CandidateHarvester.harvest` now uses bounded windowed fan-out for independent seed/offspring batches. Each window is submitted concurrently, then accepted/rejected candidates are deduped and scored in stable batch order.
+- `COGEV_MODEL_FANOUT_CONCURRENCY=1` forces the old serial path for deterministic debugging.
+- Runtime call ledger records event timestamps and reports `max_observed_concurrent_calls` plus `completed_interval_count`, giving smoke tests a runtime-owned overlap metric.
+
+Local validation added:
+
+- Deterministic model fan-out tests prove batch overlap, serial fallback, stable order, seed fan-out, and offspring fan-out.
+- Call-ledger tests prove runtime-owned overlap summary generation.
+- Full local suite after cleanup: `669 passed, 1 skipped`.
+- Doctor: `50/50 checks passed`.
+- Public hygiene test: `5 passed`; strict public-tree offender scan: 0.
+- Test function definitions: 654; duplicate test function names: 0.
+
+Debt status:
+
+- TD-CONCUR-002 is closed at the code and deterministic-test level: the runtime can now schedule real independent model batches concurrently under the provider governor.
+- A fresh real-provider smoke is still recommended before a long external-model run, but it is now validation of provider/account behavior rather than missing runtime scheduling capability.

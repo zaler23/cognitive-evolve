@@ -6,6 +6,7 @@ from typing import Any, Callable, Iterable
 
 from cognitive_evolve_runtime.candidates.genome import CandidateGenome
 from cognitive_evolve_runtime.candidates.mutation import MutationPlan
+from cognitive_evolve_runtime.llm.fanout import model_fanout_workers, run_ordered_fanout
 from cognitive_evolve_runtime.nexus._serde import stable_hash
 from cognitive_evolve_runtime.nexus.semantic_dedupe import CandidateDeduper
 from .descriptor_cells import descriptor_cell_key
@@ -58,51 +59,74 @@ class CandidateHarvester:
         result = HarvestResult()
         low_gain_streak = 0
         context = dict(context or {})
-        for batch_index in range(max(1, self.policy.max_batches)):
-            try:
-                batch = list(request_batch(batch_index, result.accepted, result.rejected))
-            except Exception as exc:  # caller decides which boundary errors are recoverable
-                if not recoverable_errors or not isinstance(exc, recoverable_errors):
-                    raise
-                result.model_error = exc
-                if on_error is not None and on_error(exc):
-                    raise
-                result.stopped_reason = "model_error"
-                break
-            result.batches += 1
-            before = len(result.accepted)
-            relevant = 0
-            novel = 0
-            for candidate in batch:
-                rel = relevance_score(candidate, **context)
-                candidate.metadata.setdefault("search_kernel_stage", self.policy.stage)
-                candidate.metadata["search_kernel_batch"] = batch_index
-                candidate.metadata["search_kernel_relevance"] = rel
-                candidate.metadata["search_kernel_fingerprint"] = candidate_fingerprint(candidate).to_dict()
-                candidate.metadata["descriptor_cell"] = descriptor_cell_key(candidate)
-                if rel < self.policy.relevance_floor:
-                    result.rejected.append({"batch": batch_index, "candidate_id": candidate.id, "reason": "low_relevance", "relevance": rel})
-                    continue
-                relevant += 1
-                if self.deduper.add(candidate):
-                    novel += 1
-                    result.accepted.append(candidate)
+        max_batches = max(1, self.policy.max_batches)
+        workers = model_fanout_workers(max_batches)
+        batch_index = 0
+        while batch_index < max_batches and not result.stopped_reason:
+            window = list(range(batch_index, min(max_batches, batch_index + workers)))
+            accepted_snapshot = list(result.accepted)
+            rejected_snapshot = list(result.rejected)
+
+            def _request(index: int) -> tuple[int, list[CandidateGenome], Exception | None]:
+                try:
+                    return index, list(request_batch(index, accepted_snapshot, rejected_snapshot)), None
+                except Exception as exc:  # caller decides which boundary errors are recoverable
+                    if not recoverable_errors or not isinstance(exc, recoverable_errors):
+                        raise
+                    return index, [], exc
+
+            for current_index, batch, error in run_ordered_fanout(window, _request, max_workers=workers):
+                if error is not None:
+                    result.model_error = error
+                    if on_error is not None and on_error(error):
+                        raise error
+                    result.stopped_reason = "model_error"
+                    break
+                result.batches += 1
+                gain = self._apply_batch(result, batch_index=current_index, batch=batch, context=context)
+                if result.batches >= max(1, self.policy.min_batches) and len(result.accepted) >= self.policy.target_size:
+                    result.stopped_reason = "target_reached"
+                    break
+                if gain <= 0.01:
+                    low_gain_streak += 1
                 else:
-                    result.rejected.append({"batch": batch_index, "candidate_id": candidate.id, "reason": "duplicate_semantic_signature", "signature": candidate.metadata.get("dedupe_signature")})
-            gain = batch_gain(accepted_count=len(result.accepted) - before, novel_count=novel, batch_size=max(1, len(batch)), relevant_count=relevant)
-            if result.batches >= max(1, self.policy.min_batches) and len(result.accepted) >= self.policy.target_size:
-                result.stopped_reason = "target_reached"
-                break
-            if gain <= 0.01:
-                low_gain_streak += 1
-            else:
-                low_gain_streak = 0
-            if low_gain_streak >= max(1, self.policy.low_gain_patience):
-                result.stopped_reason = "low_gain_patience"
-                break
+                    low_gain_streak = 0
+                if low_gain_streak >= max(1, self.policy.low_gain_patience):
+                    result.stopped_reason = "low_gain_patience"
+                    break
+            batch_index = window[-1] + 1
         if not result.stopped_reason:
             result.stopped_reason = "batch_limit"
         return result
+
+    def _apply_batch(
+        self,
+        result: HarvestResult,
+        *,
+        batch_index: int,
+        batch: list[CandidateGenome],
+        context: dict[str, Any],
+    ) -> float:
+        before = len(result.accepted)
+        relevant = 0
+        novel = 0
+        for candidate in batch:
+            rel = relevance_score(candidate, **context)
+            candidate.metadata.setdefault("search_kernel_stage", self.policy.stage)
+            candidate.metadata["search_kernel_batch"] = batch_index
+            candidate.metadata["search_kernel_relevance"] = rel
+            candidate.metadata["search_kernel_fingerprint"] = candidate_fingerprint(candidate).to_dict()
+            candidate.metadata["descriptor_cell"] = descriptor_cell_key(candidate)
+            if rel < self.policy.relevance_floor:
+                result.rejected.append({"batch": batch_index, "candidate_id": candidate.id, "reason": "low_relevance", "relevance": rel})
+                continue
+            relevant += 1
+            if self.deduper.add(candidate):
+                novel += 1
+                result.accepted.append(candidate)
+            else:
+                result.rejected.append({"batch": batch_index, "candidate_id": candidate.id, "reason": "duplicate_semantic_signature", "signature": candidate.metadata.get("dedupe_signature")})
+        return batch_gain(accepted_count=len(result.accepted) - before, novel_count=novel, batch_size=max(1, len(batch)), relevant_count=relevant)
 
 
 def plan_signature(plan: MutationPlan) -> str:
