@@ -7,7 +7,9 @@ from cognitive_evolve_runtime.evaluators.evidence import EvidenceRecord, apply_e
 from cognitive_evolve_runtime.nexus._serde import stable_hash
 from .cache import candidate_artifact_hash
 from .honesty_core import measure_verification_result
+from .probe_executor import execute_probes
 from .regime import compile_grounding_regime
+from .replay_runner import build_replay_record
 from .strength import measured_strength_from_result
 from .types import VerificationResult
 
@@ -79,13 +81,6 @@ def _check_obligation(candidate: Any, obligation: dict[str, Any], *, cache: dict
         },
     )
     artifact_sha = candidate_artifact_hash(candidate)
-    replay_record = {
-        "frozen_artifact_hash": artifact_sha,
-        "artifact_sha256": artifact_sha,
-        "verifier_fingerprint": fingerprint,
-        "replay_verified": replayable,
-        "replay_scope": "verifier_on_frozen_artifact" if replayable else "diagnostic_matcher_only",
-    }
     regime = compile_grounding_regime(
         candidate=candidate,
         verifier_fingerprint=fingerprint,
@@ -93,10 +88,18 @@ def _check_obligation(candidate: Any, obligation: dict[str, Any], *, cache: dict
         raw_obligation=obligation,
         oracle_kind=str(raw_result.metadata.get("oracle_kind") or ""),
     )
+    actual_probe_verdicts = execute_probes(raw_result, regime, candidate=candidate, raw_obligation=obligation)
+    replay_record = build_replay_record(
+        candidate,
+        raw_result,
+        verifier_fingerprint=fingerprint,
+        cache_key=key,
+        oracle_kind=str(raw_result.metadata.get("oracle_kind") or ""),
+    )
     result = measure_verification_result(
         raw_result,
         regime,
-        actual_probe_verdicts=obligation.get("engine_honesty_observations") if isinstance(obligation.get("engine_honesty_observations"), dict) else {},
+        actual_probe_verdicts=actual_probe_verdicts,
         replay_record=replay_record,
     ).to_verification_result()
     cache[key] = {
@@ -106,6 +109,8 @@ def _check_obligation(candidate: Any, obligation: dict[str, Any], *, cache: dict
         "obligation_id": oid,
         "verifier_fingerprint": fingerprint,
         "replay_record": replay_record,
+        "actual_probe_verdicts": actual_probe_verdicts,
+        "grounding_regime": regime.to_dict(),
     }
     return result
 

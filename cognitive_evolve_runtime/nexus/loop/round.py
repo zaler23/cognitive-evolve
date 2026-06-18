@@ -30,6 +30,7 @@ from cognitive_evolve_runtime.nexus.repair_reactivation import recover_failure_a
 from cognitive_evolve_runtime.nexus.synthesis import SynthesizedResult, synthesize_result
 from cognitive_evolve_runtime.nexus.stop_decision import StopDecisionEngine
 from cognitive_evolve_runtime.nexus.semantic_dedupe import CandidateDeduper
+from cognitive_evolve_runtime.nexus.source_binding_resolver import annotate_candidate_source_bindings
 from cognitive_evolve_runtime.outcomes.latent_audit import audit_latent_replay_bundle
 from cognitive_evolve_runtime.outcomes.runtime_bridge import (
     annotate_candidates_with_latent_signals,
@@ -318,6 +319,12 @@ class EvolutionRound:
             archives=archives,
         )
         self.critique_engine.apply(candidates=population.candidates, critiques=critiques)
+        for candidate in population.candidates:
+            try:
+                annotate_candidate_source_bindings(candidate)
+            except Exception:
+                if isinstance(candidate.metadata, dict):
+                    candidate.metadata.setdefault("source_binding_manifest", {"binding_class": "no_binding", "admission_route": "repair_only", "diagnostics": ["source_binding_annotation_failed"]})
         blocking_obligation_ids = [
             str(item)
             for item in (policy.metadata or {}).get("blocked_or_overexplored_obligations", [])

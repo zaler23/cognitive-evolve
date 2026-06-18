@@ -7,6 +7,7 @@ from typing import Any, Callable
 from jsonschema import Draft202012Validator
 
 from cognitive_evolve_runtime.llm.env import LLMConfigurationError, LLMResponseError
+from cognitive_evolve_runtime.nexus.prompt_audit import maybe_record_prompt_audit
 from cognitive_evolve_runtime.nexus.prompt_view import build_prompt_view
 
 from .model_adapter_repair import (
@@ -63,6 +64,7 @@ class StructuredModelAdapterCore:
             history.append(dict(prompt_view.metadata))
             del history[:-20]
         self.metadata["last_prompt_view"] = dict(prompt_view.metadata)
+        maybe_record_prompt_audit(request_type, prompt_view, metadata=self.metadata)
         result = self.caller(request_type, prompt_view.payload, schema)
         if not isinstance(result, dict):
             raise ModelResponseSchemaError(f"{request_type} model response must be a JSON object")

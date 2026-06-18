@@ -9,7 +9,9 @@ from typing import Any
 from cognitive_evolve_runtime.archives.manager import ArchiveManager
 from cognitive_evolve_runtime.candidates.genome import CandidatePopulation
 from cognitive_evolve_runtime.durable.file_lock import atomic_write_json
+from cognitive_evolve_runtime.llm.call_ledger import ledger_summary
 from cognitive_evolve_runtime.nexus._serde import coerce_dict, utc_now
+from cognitive_evolve_runtime.persistence.checkpoint_profile import apply_checkpoint_profile_to_history, apply_checkpoint_profile_to_population, checkpoint_profile_from_env
 
 
 @dataclass
@@ -34,6 +36,8 @@ class NexusCheckpoint:
     verification_plan: dict[str, Any] = field(default_factory=dict)
     graded_output: dict[str, Any] = field(default_factory=dict)
     search_kernel: dict[str, Any] = field(default_factory=dict)
+    checkpoint_profile: dict[str, Any] = field(default_factory=dict)
+    call_ledger_summary: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=utc_now)
 
     def to_dict(self) -> dict[str, Any]:
@@ -62,6 +66,8 @@ class NexusCheckpoint:
             verification_plan=coerce_dict(data.get("verification_plan")),
             graded_output=coerce_dict(data.get("graded_output")),
             search_kernel=coerce_dict(data.get("search_kernel")),
+            checkpoint_profile=coerce_dict(data.get("checkpoint_profile")) or {"name": "full", "legacy_checkpoint": True},
+            call_ledger_summary=coerce_dict(data.get("call_ledger_summary")),
             created_at=str(data.get("created_at") or utc_now()),
         )
 
@@ -118,6 +124,8 @@ class CheckpointStore:
             "verification_plan": dict(checkpoint.verification_plan),
             "graded_output": dict(checkpoint.graded_output),
             "search_kernel": dict(checkpoint.search_kernel),
+            "checkpoint_profile": dict(checkpoint.checkpoint_profile),
+            "call_ledger_summary": dict(checkpoint.call_ledger_summary),
             "contract": checkpoint.contract,
             "world": checkpoint.world,
             "mode": checkpoint.mode,
@@ -199,10 +207,13 @@ def build_checkpoint_state(
     search_kernel: dict[str, Any] | None = None,
     allow_progress_round_repair: bool = False,
 ) -> NexusCheckpoint:
+    profile = checkpoint_profile_from_env()
+    population_payload = apply_checkpoint_profile_to_population(population.to_dict(), profile)
+    budget_history_payload = apply_checkpoint_profile_to_history(budget_history or [], profile)
     checkpoint = NexusCheckpoint(
         round=round,
         max_rounds=max_rounds,
-        population=population.to_dict(),
+        population=population_payload,
         archives=archives.to_dict(),
         policy=policy.to_dict() if hasattr(policy, "to_dict") else coerce_dict(policy),
         diagnosis=diagnosis.to_dict() if hasattr(diagnosis, "to_dict") else coerce_dict(diagnosis),
@@ -210,7 +221,7 @@ def build_checkpoint_state(
         contract=contract.to_dict() if hasattr(contract, "to_dict") else coerce_dict(contract),
         world=world.to_dict() if hasattr(world, "to_dict") else coerce_dict(world),
         mode=mode,
-        budget_history=budget_history or [],
+        budget_history=budget_history_payload,
         budget=coerce_dict(budget),
         adaptive_state=coerce_dict(adaptive_state),
         trace_state=coerce_dict(trace_state),
@@ -220,6 +231,8 @@ def build_checkpoint_state(
         verification_plan=coerce_dict(verification_plan),
         graded_output=coerce_dict(graded_output),
         search_kernel=coerce_dict(search_kernel),
+        checkpoint_profile=profile.to_dict(),
+        call_ledger_summary=ledger_summary(),
     )
     checkpoint = _repair_progress_event_round(checkpoint) if allow_progress_round_repair else checkpoint
     if checkpoint.progress_event:

@@ -10,6 +10,7 @@ from cognitive_evolve_runtime.nexus.obligations import candidate_has_obligation_
 from cognitive_evolve_runtime.nexus._serde import coerce_dict
 from cognitive_evolve_runtime.nexus.population_vitality import repair_slot_count
 from cognitive_evolve_runtime.nexus.stage_policy import stage_eligibility
+from cognitive_evolve_runtime.nexus.source_binding_resolver import annotate_candidate_source_bindings, candidate_admission_route, candidate_source_binding_class
 from .novelty import population_novelty
 from .lineage_saturation import detect_lineage_saturation
 from cognitive_evolve_runtime.nexus.search_kernel.diverse_selector import select_diverse
@@ -75,6 +76,7 @@ def reproductive_value(
         value
         + _advisory_selection_adjustment(candidate, advisory_features)
         + _archive_directive_adjustment(candidate, archives)
+        + _source_binding_selection_adjustment(candidate)
         - lineage_penalty
         - constraint_penalty
         - repeated_failure_penalty
@@ -83,6 +85,26 @@ def reproductive_value(
         - deprioritized_penalty
     )
 
+
+
+def _source_binding_selection_adjustment(candidate: CandidateGenome) -> float:
+    metadata = candidate.metadata if isinstance(candidate.metadata, dict) else {}
+    if "source_binding_manifest" not in metadata and getattr(candidate, "source_bindings", None):
+        try:
+            annotate_candidate_source_bindings(candidate)
+        except Exception:
+            return -0.05
+    binding_class = candidate_source_binding_class(candidate)
+    route = candidate_admission_route(candidate)
+    if binding_class == "resolved" and route == "normal":
+        return 0.08
+    if binding_class == "negative_fixture_only":
+        return 0.02
+    if binding_class in {"invented", "unresolved"}:
+        return -0.25
+    if binding_class == "no_binding":
+        return -0.08
+    return 0.0
 
 def _archive_directive_adjustment(candidate: CandidateGenome, archives: object | None) -> float:
     qd = getattr(archives, "quality_diversity", None)

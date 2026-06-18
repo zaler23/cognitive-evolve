@@ -38,7 +38,7 @@ class _Contract:
         return {"objective": self.objective}
 
 
-def test_ast_signature_ignores_variable_rename() -> None:
+def test_search_kernel_ast_signature_ignores_variable_rename() -> None:
     left = "def solve(x):\n    y = x + 1\n    return y\n"
     right = "def other(a):\n    b = a + 1\n    return b\n"
     assert normalized_ast_signature(left) == normalized_ast_signature(right)

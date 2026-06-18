@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from typing import Any
 
 from cognitive_evolve_runtime.api.config import DEFAULT_MODELS, round_cap_for_model
@@ -88,14 +90,10 @@ def test_api_model_caps_default_to_adaptive_profiles() -> None:
     assert {model: round_cap_for_model(model) for model in DEFAULT_MODELS} == {model: "0" for model in DEFAULT_MODELS}
 
 
-def test_job_status_reflects_needs_continuation() -> None:
-    data = {"evolution": {"completion_status": "needs_continuation", "synthesis": {"status": "needs_continuation"}}}
-    assert _status_from_nexus_data(data, fallback="completed") == "needs_continuation"
-
-
-def test_job_status_reflects_paused_quota() -> None:
-    data = {"evolution": {"completion_status": "paused_quota", "synthesis": {"status": "paused_quota"}}}
-    assert _status_from_nexus_data(data, fallback="completed") == "paused_quota"
+@pytest.mark.parametrize("status", ["needs_continuation", "paused_quota"])
+def test_job_status_reflects_continuation_axis_status(status: str) -> None:
+    data = {"evolution": {"completion_status": status, "synthesis": {"status": status}}}
+    assert _status_from_nexus_data(data, fallback="completed") == status
 
 
 def test_best_current_route_is_contract_policy_driven_not_task_type_hardcoded() -> None:

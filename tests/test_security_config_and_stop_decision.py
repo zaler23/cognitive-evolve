@@ -126,7 +126,7 @@ def _candidate_with_measured_formal(candidate_id: str) -> CandidateGenome:
     return candidate
 
 
-def test_closure_certificate_is_the_objective_solved_gate() -> None:
+def test_closure_certificate_records_legacy_solved_signal_but_is_not_v2_authority() -> None:
     budget = EvolutionBudget(max_rounds=3)
     budget.stop_reason = "objective_solved"
     solved_synthesis = SynthesizedResult(status="completed", final_answer="answer", best_candidate_id="C1")
@@ -141,6 +141,8 @@ def test_closure_certificate_is_the_objective_solved_gate() -> None:
 
     assert completion_status == "solved"
     assert certificate["version"] == "closure_certificate_v1"
+    # This remains a legacy closure signal. Public/API solved authority is
+    # GradedOutput, covered by test_api_verification_passed_requires_v2_graded_verified_result.
     assert certificate["objective_solved"] is True
     assert certificate["terminal_status"] == "solved"
     assert not certificate["critical_failures"]
