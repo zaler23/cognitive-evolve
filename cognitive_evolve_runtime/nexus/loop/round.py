@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable
 
@@ -330,15 +331,20 @@ class EvolutionRound:
             for item in (policy.metadata or {}).get("blocked_or_overexplored_obligations", [])
             if item
         ]
-        verification_results = self.verifier_stack.verify_population(
-            population.candidates,
-            contract=contract,
-            blocking_obligation_ids=blocking_obligation_ids,
-            current_round=current_round,
-            round_limit=self.budget.round_limit,
-        )
-        verification_results.extend(self._run_synthesized_verifier(population.candidates, current_round=current_round))
-        verification_results.extend(self._run_verification_obligations(population.candidates, current_round=current_round))
+        verification_results: list[Any] = []
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            f_stack = pool.submit(
+                self.verifier_stack.verify_population,
+                population.candidates,
+                contract=contract,
+                blocking_obligation_ids=blocking_obligation_ids,
+                current_round=current_round,
+                round_limit=self.budget.round_limit,
+            )
+            f_synth = pool.submit(self._run_synthesized_verifier, population.candidates, current_round=current_round)
+            f_oblig = pool.submit(self._run_verification_obligations, population.candidates, current_round=current_round)
+            for fut in as_completed([f_stack, f_synth, f_oblig]):
+                verification_results.extend(fut.result())
         ingest_latent_feedback(
             contract=contract,
             critiques=critiques,
