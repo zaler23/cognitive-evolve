@@ -1,12 +1,17 @@
 """Verifier-on-frozen-artifact cache."""
 from __future__ import annotations
 
+import threading
 from typing import Any
 
 from cognitive_evolve_runtime.nexus._serde import stable_hash
 from .honesty_core import measure_verification_result
+from .probe_executor import execute_probes
 from .regime import compile_grounding_regime
+from .replay_runner import build_replay_record
 from .types import VerificationResult, SynthesizedVerifier
+
+_CACHE_LOCK = threading.RLock()
 
 
 def candidate_artifact_hash(candidate: Any) -> str:
@@ -23,8 +28,14 @@ def verification_cache_key(candidate: Any, verifier_fingerprint: str) -> str:
 
 
 def check_with_cache(candidate: Any, verifier: SynthesizedVerifier, cache: dict[str, dict[str, Any]]) -> tuple[VerificationResult, str, bool]:
+    with _CACHE_LOCK:
+        return _check_with_cache_locked(candidate, verifier, cache)
+
+
+def _check_with_cache_locked(candidate: Any, verifier: SynthesizedVerifier, cache: dict[str, dict[str, Any]]) -> tuple[VerificationResult, str, bool]:
     fingerprint = str(getattr(verifier, "fingerprint", "") or getattr(verifier, "verifier_id", ""))
     key = verification_cache_key(candidate, fingerprint)
+    legacy_entry_seen = False
     if key in cache and isinstance(cache[key], dict):
         entry = cache[key]
         if isinstance(entry.get("measured_result"), dict):
@@ -40,6 +51,7 @@ def check_with_cache(candidate: Any, verifier: SynthesizedVerifier, cache: dict[
         # diagnostics, but rerun instead of certifying from stale strength.
         entry["legacy_cache"] = True
         entry["diagnostics_only"] = True
+        legacy_entry_seen = True
 
     raw_result = verifier.check(candidate)
     artifact_sha = candidate_artifact_hash(candidate)
@@ -54,14 +66,6 @@ def check_with_cache(candidate: Any, verifier: SynthesizedVerifier, cache: dict[
         "diagnostics_only": bool(metadata.get("diagnostics_only", True)),
     })
     raw_result = VerificationResult(raw_result.passed, raw_result.score, raw_result.strength, raw_result.evidence_ref, raw_result.replayable, list(raw_result.diagnostics), metadata)
-    replay_record = {
-        "frozen_artifact_hash": artifact_sha,
-        "artifact_sha256": artifact_sha,
-        "verifier_fingerprint": fingerprint,
-        "verification_cache_key": key,
-        "replay_verified": bool(raw_result.replayable),
-        "replay_scope": "verifier_on_frozen_artifact",
-    }
     regime = compile_grounding_regime(
         candidate=candidate,
         verifier_fingerprint=fingerprint,
@@ -69,10 +73,18 @@ def check_with_cache(candidate: Any, verifier: SynthesizedVerifier, cache: dict[
         plan=getattr(verifier, "plan", None) if isinstance(getattr(verifier, "plan", None), dict) else None,
         oracle_kind=oracle_kind,
     )
+    actual_probe_verdicts = execute_probes(raw_result, regime, candidate=candidate)
+    replay_record = build_replay_record(
+        candidate,
+        raw_result,
+        verifier_fingerprint=fingerprint,
+        cache_key=key,
+        oracle_kind=oracle_kind,
+    )
     measured = measure_verification_result(
         raw_result,
         regime,
-        actual_probe_verdicts=raw_result.metadata.get("engine_honesty_observations") if isinstance(raw_result.metadata.get("engine_honesty_observations"), dict) else {},
+        actual_probe_verdicts=actual_probe_verdicts,
         replay_record=replay_record,
     )
     result = measured.to_verification_result()
@@ -83,6 +95,10 @@ def check_with_cache(candidate: Any, verifier: SynthesizedVerifier, cache: dict[
         "artifact_sha256": artifact_sha,
         "verifier_fingerprint": fingerprint,
         "replay_record": replay_record,
+        "actual_probe_verdicts": actual_probe_verdicts,
+        "grounding_regime": regime.to_dict(),
+        "legacy_cache": legacy_entry_seen,
+        "diagnostics_only": legacy_entry_seen,
     }
     return result, key, False
 

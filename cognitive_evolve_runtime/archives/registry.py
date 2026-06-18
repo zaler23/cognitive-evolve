@@ -7,6 +7,7 @@ from typing import Any
 from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome
 from cognitive_evolve_runtime.candidates.project_candidate import ProjectCandidateGenome
 from cognitive_evolve_runtime.nexus._serde import coerce_str_list
+from cognitive_evolve_runtime.nexus.source_binding_resolver import annotate_candidate_source_bindings, candidate_admission_route, candidate_source_binding_class
 
 from .latent_pareto import _candidate_is_latent_pareto_frontier
 from .quality_diversity import candidate_quality
@@ -23,7 +24,14 @@ class ArchiveRegistry:
 
     def route_candidate(self, candidate: CandidateGenome, assignment: FateAssignment) -> None:
         fate = CandidateFate.normalize(assignment.fate)
-        if fate in TERMINAL_FAILURE_FATES:
+        try:
+            annotate_candidate_source_bindings(candidate)
+        except Exception:
+            if isinstance(candidate.metadata, dict):
+                candidate.metadata.setdefault("source_binding_manifest", {"binding_class": "no_binding", "admission_route": "repair_only", "diagnostics": ["source_binding_annotation_failed"]})
+        admission_route = candidate_admission_route(candidate)
+        binding_class = candidate_source_binding_class(candidate)
+        if fate in TERMINAL_FAILURE_FATES or admission_route == "negative_archive_only":
             self.manager.failure_archive.add(candidate, signature=assignment.failure_signature)
             assignment.archive_targets.append("FailureArchive")
             return
@@ -48,12 +56,17 @@ class ArchiveRegistry:
                 data["quality"] = candidate_quality(candidate)
                 self.manager.mechanism_archive[mechanism_key] = data
                 assignment.archive_targets.append("MechanismArchive")
-        if isinstance(candidate, ProjectCandidateGenome) or candidate.artifact_type in {"project_patch", "patch", "code_patch"}:
+        source_blocked = binding_class in {"invented", "unresolved"}
+        if not source_blocked and (isinstance(candidate, ProjectCandidateGenome) or candidate.artifact_type in {"project_patch", "patch", "code_patch"}):
             self.manager.project_patch_archive[candidate.id] = candidate.to_dict()
             assignment.archive_targets.append("ProjectPatchArchive")
-        if fate == CandidateFate.ELITE.value:
+        elif isinstance(candidate, ProjectCandidateGenome) or candidate.artifact_type in {"project_patch", "patch", "code_patch"}:
+            assignment.archive_targets.append(f"ProjectPatchArchiveBlocked:{binding_class}")
+        if fate == CandidateFate.ELITE.value and not source_blocked:
             self.manager.answer_archive[candidate.id] = candidate.to_dict()
             assignment.archive_targets.append("AnswerArchive")
+        elif fate == CandidateFate.ELITE.value:
+            assignment.archive_targets.append(f"AnswerArchiveBlocked:{binding_class}")
         elif fate == CandidateFate.AUXILIARY.value:
             self.manager.auxiliary_archive.add(candidate)
             assignment.archive_targets.append("AuxiliaryArchive")

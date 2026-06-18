@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 import uuid
 from pathlib import Path
 from typing import Any
@@ -9,6 +10,8 @@ from typing import Any
 from ..durable import append_jsonl
 from ..core.redaction import redact
 from .session import current_llm_session
+
+_JOURNAL_LOCK = threading.RLock()
 
 
 def journal_dir() -> Path | None:
@@ -24,17 +27,18 @@ def write_llm_journal(record: dict[str, Any], *, raw_response: Any | None = None
     directory.mkdir(parents=True, exist_ok=True)
     call_id = str(record.get("call_id") or uuid.uuid4())
     record = dict(record)
-    if raw_response is not None:
-        raw_path = directory / "raw" / f"{call_id}.json"
-        raw_path.parent.mkdir(parents=True, exist_ok=True)
-        raw_path.write_text(json.dumps(redact(safe_json(raw_response)), ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")
-        record["raw_response_path"] = str(raw_path)
-    if parsed_response is not None:
-        parsed_path = directory / "parsed" / f"{call_id}.json"
-        parsed_path.parent.mkdir(parents=True, exist_ok=True)
-        parsed_path.write_text(json.dumps(redact(parsed_response), ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")
-        record["parsed_response_path"] = str(parsed_path)
-    append_jsonl(directory / "llm-calls.jsonl", redact(record))
+    with _JOURNAL_LOCK:
+        if raw_response is not None:
+            raw_path = directory / "raw" / f"{call_id}.json"
+            raw_path.parent.mkdir(parents=True, exist_ok=True)
+            raw_path.write_text(json.dumps(redact(safe_json(raw_response)), ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")
+            record["raw_response_path"] = str(raw_path)
+        if parsed_response is not None:
+            parsed_path = directory / "parsed" / f"{call_id}.json"
+            parsed_path.parent.mkdir(parents=True, exist_ok=True)
+            parsed_path.write_text(json.dumps(redact(parsed_response), ensure_ascii=False, indent=2, default=str) + "\n", encoding="utf-8")
+            record["parsed_response_path"] = str(parsed_path)
+        append_jsonl(directory / "llm-calls.jsonl", redact(record))
 
 
 def safe_json(value: Any) -> Any:

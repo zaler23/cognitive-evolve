@@ -29,6 +29,7 @@ from .retry import provider_error_category, timeout_seconds
 from .retry import retry_attempts as configured_retry_attempts
 from ..durable import llm_idempotency_key, stable_hash
 from ..durable.provider_circuit_breaker import ProviderUnavailableError, default_provider_circuit_breaker
+from .call_ledger import record_call_state
 from .journal import safe_json, write_llm_journal
 from .http_provider import DirectHTTPProvider
 from .litellm_provider import LiteLLMProvider, litellm_provider_kwargs
@@ -150,6 +151,15 @@ def llm_json(request_type: str, payload: dict[str, Any], *, system: str, schema_
         seed=os.environ.get("COGEV_LLM_SEED"),
         contract_version=str((payload.get("contract") or payload.get("evaluation_contract") or {}).get("version", "unknown")) if isinstance(payload, dict) else "unknown",
     )
+    record_call_state(
+        "started",
+        call_id=call_id,
+        request_type=request_type,
+        request_hash=request_hash,
+        round_id=os.environ.get("COGEV_ROUND_ID", "runtime"),
+        step_id=os.environ.get("COGEV_STEP_ID", request_type),
+        extra={"idempotency_key": idem_key, "provider": status.get("provider"), "model": status.get("model") or status.get("fixture")},
+    )
     write_llm_journal({
         "call_id": call_id,
         "run_id": os.environ.get("COGEV_RUN_ID", "run"),
@@ -186,6 +196,7 @@ def llm_json(request_type: str, payload: dict[str, Any], *, system: str, schema_
             "ended_at": time.time(),
             "usage": {},
         }, parsed_response=response)
+        record_call_state("completed", call_id=call_id, request_type=request_type, request_hash=request_hash, round_id=os.environ.get("COGEV_ROUND_ID", "runtime"), step_id=os.environ.get("COGEV_STEP_ID", request_type), extra={"attempt": 1})
         return response
     provider = provider or _default_provider_for_status(status)
     breaker = default_provider_circuit_breaker()
@@ -208,6 +219,7 @@ def llm_json(request_type: str, payload: dict[str, Any], *, system: str, schema_
             "ended_at": time.time(),
             "error": str(exc),
         })
+        record_call_state("failed", call_id=call_id, request_type=request_type, request_hash=request_hash, round_id=os.environ.get("COGEV_ROUND_ID", "runtime"), step_id=os.environ.get("COGEV_STEP_ID", request_type), extra={"error": str(exc), "status": "provider_unavailable"})
         raise LLMResponseError(str(exc)) from exc
 
     request = {"request_type": request_type, "schema_hint": schema_hint, "payload": payload}
@@ -281,6 +293,7 @@ def llm_json(request_type: str, payload: dict[str, Any], *, system: str, schema_
                 "category": category,
                 "circuit_breaker": circuit_state.to_dict(),
             })
+            record_call_state("failed", call_id=call_id, request_type=request_type, request_hash=request_hash, round_id=os.environ.get("COGEV_ROUND_ID", "runtime"), step_id=os.environ.get("COGEV_STEP_ID", request_type), extra={"error": str(exc), "category": category})
             raise LLMResponseError(f"LLM provider call failed after retry policy ({category}): {exc}") from exc
         try:
             content = _result_message_content(result)
@@ -337,5 +350,6 @@ def llm_json(request_type: str, payload: dict[str, Any], *, system: str, schema_
         "ended_at": time.time(),
         "usage": usage,
     }, raw_response=safe_json(result), parsed_response=response)
+    record_call_state("completed", call_id=call_id, request_type=request_type, request_hash=request_hash, round_id=os.environ.get("COGEV_ROUND_ID", "runtime"), step_id=os.environ.get("COGEV_STEP_ID", request_type), extra={"attempt": attempts, "usage": usage})
     enforce_budget(preflight=False)
     return response

@@ -1,62 +1,90 @@
 """Run verification obligations through real verifier/cache boundaries."""
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from cognitive_evolve_runtime.evaluators.evidence import EvidenceRecord, apply_evidence_record
+from cognitive_evolve_runtime.llm.env import env_int
+from cognitive_evolve_runtime.llm.governor import llm_governor
 from cognitive_evolve_runtime.nexus._serde import stable_hash
 from .cache import candidate_artifact_hash
+
+_VERIFY_MAX_WORKERS_ENV = "COGEV_VERIFY_CONCURRENCY"
 from .honesty_core import measure_verification_result
+from .probe_executor import execute_probes
 from .regime import compile_grounding_regime
+from .replay_runner import build_replay_record
 from .strength import measured_strength_from_result
 from .types import VerificationResult
 
 
 def run_obligations_for_population(candidates: list[Any], obligations: list[dict[str, Any]], *, cache: dict[str, dict[str, Any]] | None = None, max_checks: int = 8) -> list[dict[str, Any]]:
     cache = cache if cache is not None else {}
+    cache_lock = threading.Lock()
     records: list[dict[str, Any]] = []
     checks = 0
+    max_workers = env_int(_VERIFY_MAX_WORKERS_ENV, llm_governor()._max_concurrent())
+
     for obligation in obligations or []:
         if checks >= max(0, int(max_checks or 0)):
             records.append({"changed": False, "reason": "obligation_budget_exhausted", "obligation": dict(obligation)})
             continue
-        for candidate in candidates:
-            checks += 1
-            result = _check_obligation(candidate, obligation, cache=cache)
-            changed = False
-            if obligation.get("must_pass") and not result.passed:
-                evidence = EvidenceRecord(
-                    candidate_id=str(getattr(candidate, "id", "")),
-                    source="verification_obligation_runner",
-                    stage="verification_obligation",
-                    score=float(result.score),
-                    confidence=0.8,
-                    final_blocked=True,
-                    parent_blocked=False,
-                    terminal_reject=False,
-                    repair_value=0.5,
-                    continuation_value=0.6,
-                    diagnostics=list(result.diagnostics),
-                    hints=["satisfy the must-pass verification obligation before final projection"],
-                    metadata={"obligation": dict(obligation), "verification_result": result.to_dict()},
-                )
-                apply_evidence_record(candidate, evidence)
-                changed = True
-            _append_verification_result(candidate, result)
-            records.append({"changed": changed, "reason": "obligation_checked", "candidate_id": str(getattr(candidate, "id", "")), "obligation": dict(obligation), "verification_result": result.to_dict()})
+
+        remaining = max(0, int(max_checks or 0)) - checks
+        batch = candidates[:remaining]
+        checks += len(batch)
+
+        if max_workers <= 1 or len(batch) <= 1:
+            batch_records = [_check_one(c, obligation, cache, cache_lock) for c in batch]
+        else:
+            batch_records = [None] * len(batch)  # type: ignore[list-item]
+            with ThreadPoolExecutor(max_workers=min(max_workers, len(batch))) as pool:
+                futures_map = {pool.submit(_check_one, c, obligation, cache, cache_lock): idx for idx, c in enumerate(batch)}
+                for fut in as_completed(futures_map):
+                    batch_records[futures_map[fut]] = fut.result()
+
+        records.extend(batch_records)
     return records
 
 
-def _check_obligation(candidate: Any, obligation: dict[str, Any], *, cache: dict[str, dict[str, Any]]) -> VerificationResult:
+def _check_one(candidate: Any, obligation: dict[str, Any], cache: dict[str, dict[str, Any]], cache_lock: threading.Lock) -> dict[str, Any]:
+    result = _check_obligation(candidate, obligation, cache=cache, cache_lock=cache_lock)
+    changed = False
+    if obligation.get("must_pass") and not result.passed:
+        evidence = EvidenceRecord(
+            candidate_id=str(getattr(candidate, "id", "")),
+            source="verification_obligation_runner",
+            stage="verification_obligation",
+            score=float(result.score),
+            confidence=0.8,
+            final_blocked=True,
+            parent_blocked=False,
+            terminal_reject=False,
+            repair_value=0.5,
+            continuation_value=0.6,
+            diagnostics=list(result.diagnostics),
+            hints=["satisfy the must-pass verification obligation before final projection"],
+            metadata={"obligation": dict(obligation), "verification_result": result.to_dict()},
+        )
+        apply_evidence_record(candidate, evidence)
+        changed = True
+    _append_verification_result(candidate, result)
+    return {"changed": changed, "reason": "obligation_checked", "candidate_id": str(getattr(candidate, "id", "")), "obligation": dict(obligation), "verification_result": result.to_dict()}
+
+
+def _check_obligation(candidate: Any, obligation: dict[str, Any], *, cache: dict[str, dict[str, Any]], cache_lock: threading.Lock | None = None) -> VerificationResult:
     oid = str(obligation.get("id") or "obligation")
     fingerprint = str(obligation.get("verifier_fingerprint") or "obligation:" + stable_hash(obligation)[:16])
     key = "obligation:" + stable_hash({"candidate": getattr(candidate, "id", ""), "artifact": getattr(candidate, "artifact", ""), "fingerprint": fingerprint})
-    if key in cache and isinstance(cache[key], dict):
-        entry = cache[key]
-        if isinstance(entry.get("measured_result"), dict):
-            return VerificationResult.from_dict(entry["measured_result"])
-        entry["legacy_cache"] = True
-        entry["diagnostics_only"] = True
+    with (cache_lock or threading.Lock()):
+        if key in cache and isinstance(cache[key], dict):
+            entry = cache[key]
+            if isinstance(entry.get("measured_result"), dict):
+                return VerificationResult.from_dict(entry["measured_result"])
+            entry["legacy_cache"] = True
+            entry["diagnostics_only"] = True
     text = str(getattr(candidate, "artifact", "") or getattr(candidate, "concise_claim", "") or getattr(candidate, "core_mechanism", ""))
     matcher = str(obligation.get("diagnostic_matcher") or obligation.get("signature") or "")
     # Text obligations are low-strength unless backed by an executable/project oracle.
@@ -79,13 +107,6 @@ def _check_obligation(candidate: Any, obligation: dict[str, Any], *, cache: dict
         },
     )
     artifact_sha = candidate_artifact_hash(candidate)
-    replay_record = {
-        "frozen_artifact_hash": artifact_sha,
-        "artifact_sha256": artifact_sha,
-        "verifier_fingerprint": fingerprint,
-        "replay_verified": replayable,
-        "replay_scope": "verifier_on_frozen_artifact" if replayable else "diagnostic_matcher_only",
-    }
     regime = compile_grounding_regime(
         candidate=candidate,
         verifier_fingerprint=fingerprint,
@@ -93,20 +114,32 @@ def _check_obligation(candidate: Any, obligation: dict[str, Any], *, cache: dict
         raw_obligation=obligation,
         oracle_kind=str(raw_result.metadata.get("oracle_kind") or ""),
     )
+    actual_probe_verdicts = execute_probes(raw_result, regime, candidate=candidate, raw_obligation=obligation)
+    replay_record = build_replay_record(
+        candidate,
+        raw_result,
+        verifier_fingerprint=fingerprint,
+        cache_key=key,
+        oracle_kind=str(raw_result.metadata.get("oracle_kind") or ""),
+    )
     result = measure_verification_result(
         raw_result,
         regime,
-        actual_probe_verdicts=obligation.get("engine_honesty_observations") if isinstance(obligation.get("engine_honesty_observations"), dict) else {},
+        actual_probe_verdicts=actual_probe_verdicts,
         replay_record=replay_record,
     ).to_verification_result()
-    cache[key] = {
+    entry = {
         "raw_result": raw_result.to_dict(),
         "measured_result": result.to_dict(),
         "honesty_measurements": result.metadata.get("honesty_measurements"),
         "obligation_id": oid,
         "verifier_fingerprint": fingerprint,
         "replay_record": replay_record,
+        "actual_probe_verdicts": actual_probe_verdicts,
+        "grounding_regime": regime.to_dict(),
     }
+    with (cache_lock or threading.Lock()):
+        cache[key] = entry
     return result
 
 

@@ -7,11 +7,18 @@ separate validation architecture.
 """
 from __future__ import annotations
 
+import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 import ast
 import re
 from typing import Any
+
+from cognitive_evolve_runtime.llm.env import env_int
+from cognitive_evolve_runtime.llm.governor import llm_governor
+
+_VERIFY_MAX_WORKERS_ENV = "COGEV_VERIFY_CONCURRENCY"
 
 from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome
 from cognitive_evolve_runtime.candidates.project_candidate import ProjectCandidateGenome
@@ -288,21 +295,35 @@ class NexusVerifierStack:
         current_round: int = 0,
         round_limit: int = 0,
     ) -> list[VerificationStackResult]:
-        results: list[VerificationStackResult] = []
         seen_formal: set[str] = set()
-        for candidate in candidates:
+        seen_lock = threading.Lock()
+        max_workers = env_int(_VERIFY_MAX_WORKERS_ENV, llm_governor()._max_concurrent())
+
+        def _verify_one(candidate: CandidateGenome) -> VerificationStackResult:
+            with seen_lock:
+                seen_snapshot = set(seen_formal)
             result = self.verify_candidate(
                 candidate,
                 contract=contract,
-                existing_formal_signatures=seen_formal,
+                existing_formal_signatures=seen_snapshot,
                 blocking_obligation_ids=blocking_obligation_ids,
                 current_round=current_round,
                 round_limit=round_limit,
             )
-            signature = formal_signature(candidate)
-            if signature:
-                seen_formal.add(signature)
-            results.append(result)
+            sig = formal_signature(candidate)
+            if sig:
+                with seen_lock:
+                    seen_formal.add(sig)
+            return result
+
+        if max_workers <= 1 or len(candidates) <= 1:
+            return [_verify_one(c) for c in candidates]
+
+        results: list[VerificationStackResult] = [None] * len(candidates)  # type: ignore[list-item]
+        with ThreadPoolExecutor(max_workers=min(max_workers, len(candidates))) as pool:
+            future_to_idx = {pool.submit(_verify_one, c): i for i, c in enumerate(candidates)}
+            for fut in as_completed(future_to_idx):
+                results[future_to_idx[fut]] = fut.result()
         return results
 
 

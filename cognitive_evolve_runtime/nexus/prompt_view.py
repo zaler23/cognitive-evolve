@@ -18,6 +18,7 @@ from cognitive_evolve_runtime.candidates.project_candidate import ProjectCandida
 from cognitive_evolve_runtime.llm.env import LLM_MAX_PROMPT_CHARS_ENV
 from cognitive_evolve_runtime.nexus.activation import ACTIVATION_REQUESTS, activation_prompt_contract
 from cognitive_evolve_runtime.nexus.search_space import build_search_space_map
+from cognitive_evolve_runtime.nexus.prompt_profiles import apply_prompt_profile
 
 NEXUS_PROMPT_MAX_CHARS_ENV = "COGEV_NEXUS_PROMPT_MAX_CHARS"
 NEXUS_LONG_CONTEXT_MAX_CHARS_ENV = "COGEV_NEXUS_LONG_CONTEXT_MAX_CHARS"
@@ -76,8 +77,9 @@ def build_prompt_view(request_type: str, payload: dict[str, Any], *, max_chars: 
     protected_paths = _protected_paths_from_controls(controls)
     raw_chars = _json_chars(payload)
     compressed = _apply_prompt_context_controls(_compress_payload(request_type, payload), controls)
-    compressed_chars = _json_chars(compressed)
-    bounded = _fit_payload(compressed, max_chars=limit, protected_paths=protected_paths)
+    profiled, profile_metadata = apply_prompt_profile(request_type, compressed)
+    compressed_chars = _json_chars(profiled)
+    bounded = _fit_payload(profiled, max_chars=limit, protected_paths=protected_paths)
     sent_chars = _json_chars(bounded)
     metadata = {
         "type": "nexus_prompt_view",
@@ -95,6 +97,9 @@ def build_prompt_view(request_type: str, payload: dict[str, Any], *, max_chars: 
         "protected_paths_applied": protected_paths,
         "protected_over_budget": bool(protected_paths and sent_chars > limit),
         "context_transform_applied": bool(controls),
+        "profile_applied": bool(profile_metadata.get("profile_applied")),
+        "profile_name": profile_metadata.get("profile_name"),
+        "removed_strength_shortcut_keys": profile_metadata.get("removed_strength_shortcut_keys", []),
     }
     return PromptView(payload=bounded, metadata=metadata)
 

@@ -23,6 +23,7 @@ from cognitive_evolve_runtime.nexus.obligations import (
     requires_source_grounding,
 )
 from cognitive_evolve_runtime.nexus.source_lineage import analyze_source_lineage
+from cognitive_evolve_runtime.nexus.source_binding_resolver import annotate_candidate_source_bindings, final_candidate_source_bindings_allowed
 from cognitive_evolve_runtime.nexus.artifact_contract import (
     contract_requires_adapter,
     dynamic_artifact_contract_from,
@@ -85,6 +86,13 @@ def final_gate_summary(
     missing_symbols: list[dict[str, str]] = []
     root = _resolved_project_root(project_root)
     metadata = coerce_dict(getattr(candidate, "metadata", {}))
+    try:
+        manifest = annotate_candidate_source_bindings(candidate, project_root=root)
+        if not final_candidate_source_bindings_allowed(candidate):
+            diagnostics.append("source_binding_unresolved_or_invented")
+            diagnostics.extend(str(item) for item in manifest.diagnostics[:4])
+    except Exception:
+        diagnostics.append("source_binding_manifest_unavailable")
 
     if _has_final_blocking_metadata(candidate):
         for key in FINAL_BLOCKING_METADATA_FLAGS:
