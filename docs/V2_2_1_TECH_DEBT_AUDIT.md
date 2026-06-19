@@ -410,3 +410,13 @@ Status: closed in this phase branch.
 - `TD-V3-P0-ADVISORY-GUARD` — Closed. Added advisory authority-key guards and regression tests to ensure new fabric advisory payloads cannot carry verification-authority fields.
 
 Validation requirements for the phase remain: compileall, full pytest, doctor, package clean, and public hygiene before PR.
+
+## v3 Exploration Fabric Phase 1A ledger — 2026-06-19
+
+Status: closed in this phase branch.
+
+- `TD-V3-P1A-SHADOW-SCHEDULER` — Closed. Added coarse-grained `TaskGraphScheduler` shadow path with `EVALUATE → ROUND_GATE → REPRODUCE` graph, preserving existing `EvolutionRound.evaluate()` and `EvolutionRound.reproduce()` method boundaries.
+- `TD-V3-P1A-OFFSPRING-VERIFIER-CONTEXT` — Closed. Added `FabricExecutionContext.offspring_verifier` contract and `ReproduceExecutor` pass-through so project runtime verifier closures remain bound by `NexusRuntime`.
+- `TD-V3-P1A-MODEL-POOL-DIAGNOSTICS` — Closed. Unknown `model_pool` values fall back to default only with `fabric_state.diagnostics` warning coverage.
+
+Validation requirements for the phase remain: compileall, full pytest, doctor, package clean, and public hygiene before PR.
