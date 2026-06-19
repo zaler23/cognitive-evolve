@@ -10,6 +10,7 @@ from cognitive_evolve_runtime.llm.env import env_int
 from cognitive_evolve_runtime.llm.governor import llm_governor
 from cognitive_evolve_runtime.nexus._serde import stable_hash
 from .cache import candidate_artifact_hash
+from .minimax_budget import _allocate_adversarial_budget, allocation_summary
 
 _VERIFY_MAX_WORKERS_ENV = "COGEV_VERIFY_CONCURRENCY"
 from .honesty_core import measure_verification_result
@@ -18,14 +19,16 @@ from .regime import compile_grounding_regime
 from .replay_runner import build_replay_record
 from .strength import measured_strength_from_result
 from .types import VerificationResult
+from cognitive_evolve_runtime.nexus.v23_theory_config import V23TheoryRuntimeConfig
 
 
-def run_obligations_for_population(candidates: list[Any], obligations: list[dict[str, Any]], *, cache: dict[str, dict[str, Any]] | None = None, max_checks: int = 8) -> list[dict[str, Any]]:
+def run_obligations_for_population(candidates: list[Any], obligations: list[dict[str, Any]], *, cache: dict[str, dict[str, Any]] | None = None, max_checks: int = 8, policy: Any | None = None, v23_config: V23TheoryRuntimeConfig | None = None) -> list[dict[str, Any]]:
     cache = cache if cache is not None else {}
     cache_lock = threading.Lock()
     records: list[dict[str, Any]] = []
     checks = 0
     max_workers = env_int(_VERIFY_MAX_WORKERS_ENV, llm_governor()._max_concurrent())
+    config = v23_config or V23TheoryRuntimeConfig.from_runtime_context(policy=policy, population_size=len(candidates))
 
     for obligation in obligations or []:
         if checks >= max(0, int(max_checks or 0)):
@@ -35,13 +38,17 @@ def run_obligations_for_population(candidates: list[Any], obligations: list[dict
         remaining = max(0, int(max_checks or 0)) - checks
         batch = candidates[:remaining]
         checks += len(batch)
+        base_budget = _obligation_base_budget(obligation)
+        total_override = _budget_total_override(obligation)
+        allocation = _allocate_adversarial_budget(batch, base_budget=base_budget, config=config.minimax_budget, total_override=total_override)
+        summary = allocation_summary(allocation, base_budget=base_budget, total_override=total_override)
 
         if max_workers <= 1 or len(batch) <= 1:
-            batch_records = [_check_one(c, obligation, cache, cache_lock) for c in batch]
+            batch_records = [_check_one(c, obligation, cache, cache_lock, allocation.get(str(getattr(c, "id", "")), base_budget), summary) for c in batch]
         else:
             batch_records = [None] * len(batch)  # type: ignore[list-item]
             with ThreadPoolExecutor(max_workers=min(max_workers, len(batch))) as pool:
-                futures_map = {pool.submit(_check_one, c, obligation, cache, cache_lock): idx for idx, c in enumerate(batch)}
+                futures_map = {pool.submit(_check_one, c, obligation, cache, cache_lock, allocation.get(str(getattr(c, "id", "")), base_budget), summary): idx for idx, c in enumerate(batch)}
                 for fut in as_completed(futures_map):
                     batch_records[futures_map[fut]] = fut.result()
 
@@ -49,8 +56,8 @@ def run_obligations_for_population(candidates: list[Any], obligations: list[dict
     return records
 
 
-def _check_one(candidate: Any, obligation: dict[str, Any], cache: dict[str, dict[str, Any]], cache_lock: threading.Lock) -> dict[str, Any]:
-    result = _check_obligation(candidate, obligation, cache=cache, cache_lock=cache_lock)
+def _check_one(candidate: Any, obligation: dict[str, Any], cache: dict[str, dict[str, Any]], cache_lock: threading.Lock, adversarial_budget: int, budget_summary: dict[str, Any]) -> dict[str, Any]:
+    result = _check_obligation(candidate, obligation, cache=cache, cache_lock=cache_lock, adversarial_budget=adversarial_budget, budget_summary=budget_summary)
     changed = False
     if obligation.get("must_pass") and not result.passed:
         evidence = EvidenceRecord(
@@ -71,13 +78,13 @@ def _check_one(candidate: Any, obligation: dict[str, Any], cache: dict[str, dict
         apply_evidence_record(candidate, evidence)
         changed = True
     _append_verification_result(candidate, result)
-    return {"changed": changed, "reason": "obligation_checked", "candidate_id": str(getattr(candidate, "id", "")), "obligation": dict(obligation), "verification_result": result.to_dict()}
+    return {"changed": changed, "reason": "obligation_checked", "candidate_id": str(getattr(candidate, "id", "")), "obligation": dict(obligation), "verification_result": result.to_dict(), "minimax_budget_allocation_summary": dict(budget_summary)}
 
 
-def _check_obligation(candidate: Any, obligation: dict[str, Any], *, cache: dict[str, dict[str, Any]], cache_lock: threading.Lock | None = None) -> VerificationResult:
+def _check_obligation(candidate: Any, obligation: dict[str, Any], *, cache: dict[str, dict[str, Any]], cache_lock: threading.Lock | None = None, adversarial_budget: int | None = None, budget_summary: dict[str, Any] | None = None) -> VerificationResult:
     oid = str(obligation.get("id") or "obligation")
     fingerprint = str(obligation.get("verifier_fingerprint") or "obligation:" + stable_hash(obligation)[:16])
-    key = "obligation:" + stable_hash({"candidate": getattr(candidate, "id", ""), "artifact": getattr(candidate, "artifact", ""), "fingerprint": fingerprint})
+    key = "obligation:" + stable_hash({"candidate": getattr(candidate, "id", ""), "artifact": getattr(candidate, "artifact", ""), "fingerprint": fingerprint, "adversarial_budget": adversarial_budget})
     with (cache_lock or threading.Lock()):
         if key in cache and isinstance(cache[key], dict):
             entry = cache[key]
@@ -113,6 +120,7 @@ def _check_obligation(candidate: Any, obligation: dict[str, Any], *, cache: dict
         artifact_hash=artifact_sha,
         raw_obligation=obligation,
         oracle_kind=str(raw_result.metadata.get("oracle_kind") or ""),
+        override_adversarial_budget=adversarial_budget,
     )
     actual_probe_verdicts = execute_probes(raw_result, regime, candidate=candidate, raw_obligation=obligation)
     replay_record = build_replay_record(
@@ -122,6 +130,7 @@ def _check_obligation(candidate: Any, obligation: dict[str, Any], *, cache: dict
         cache_key=key,
         oracle_kind=str(raw_result.metadata.get("oracle_kind") or ""),
     )
+    replay_record["actual_adversarial_budget"] = int(adversarial_budget or 0)
     result = measure_verification_result(
         raw_result,
         regime,
@@ -137,11 +146,33 @@ def _check_obligation(candidate: Any, obligation: dict[str, Any], *, cache: dict
         "replay_record": replay_record,
         "actual_probe_verdicts": actual_probe_verdicts,
         "grounding_regime": regime.to_dict(),
+        "minimax_budget_allocation_summary": dict(budget_summary or {}),
     }
     with (cache_lock or threading.Lock()):
         cache[key] = entry
     return result
 
+
+
+def _obligation_base_budget(obligation: dict[str, Any]) -> int:
+    raw = obligation.get("falsification_budget") or obligation.get("adversarial_budget")
+    if isinstance(raw, dict):
+        value = raw.get("count") or raw.get("budget")
+    else:
+        value = raw
+    try:
+        return max(1, int(value))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _budget_total_override(obligation: dict[str, Any]) -> int | None:
+    raw = obligation.get("adversarial_total_budget")
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
 
 def _append_verification_result(candidate: Any, result: VerificationResult) -> None:
     if not hasattr(candidate, "verification_trace"):

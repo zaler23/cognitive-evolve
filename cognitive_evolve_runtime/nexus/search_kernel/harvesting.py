@@ -23,6 +23,9 @@ class HarvestPolicy:
     low_gain_patience: int = 2
     relevance_floor: float = 0.20
     stage: str = "candidate"
+    fanout_workers: int | None = None
+    stop_at_target: bool = True
+    exhaust_on_no_new: bool = False
 
 
 @dataclass
@@ -60,7 +63,7 @@ class CandidateHarvester:
         low_gain_streak = 0
         context = dict(context or {})
         max_batches = max(1, self.policy.max_batches)
-        workers = model_fanout_workers(max_batches)
+        workers = _harvest_workers(max_batches=max_batches, configured=self.policy.fanout_workers)
         batch_index = 0
         while batch_index < max_batches and not result.stopped_reason:
             window = list(range(batch_index, min(max_batches, batch_index + workers)))
@@ -83,11 +86,14 @@ class CandidateHarvester:
                     result.stopped_reason = "model_error"
                     break
                 result.batches += 1
+                accepted_before = len(result.accepted)
                 gain = self._apply_batch(result, batch_index=current_index, batch=batch, context=context)
-                if result.batches >= max(1, self.policy.min_batches) and len(result.accepted) >= self.policy.target_size:
+                accepted_delta = len(result.accepted) - accepted_before
+                if self.policy.stop_at_target and result.batches >= max(1, self.policy.min_batches) and len(result.accepted) >= self.policy.target_size:
                     result.stopped_reason = "target_reached"
                     break
-                if gain <= 0.01:
+                exhausted_batch = accepted_delta <= 0 if self.policy.exhaust_on_no_new else gain <= 0.01
+                if exhausted_batch:
                     low_gain_streak += 1
                 else:
                     low_gain_streak = 0
@@ -127,6 +133,12 @@ class CandidateHarvester:
             else:
                 result.rejected.append({"batch": batch_index, "candidate_id": candidate.id, "reason": "duplicate_semantic_signature", "signature": candidate.metadata.get("dedupe_signature")})
         return batch_gain(accepted_count=len(result.accepted) - before, novel_count=novel, batch_size=max(1, len(batch)), relevant_count=relevant)
+
+
+def _harvest_workers(*, max_batches: int, configured: int | None) -> int:
+    if configured is None:
+        return model_fanout_workers(max_batches)
+    return min(max(1, int(configured or 1)), max(1, int(max_batches or 1)))
 
 
 def plan_signature(plan: MutationPlan) -> str:

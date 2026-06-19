@@ -60,6 +60,32 @@ class _FanoutSeedModel:
             self.probe.exit()
 
 
+class _NoveltyExhaustionSeedModel:
+    def __init__(self) -> None:
+        self.calls: list[int] = []
+
+    def seed_population(self, *, contract: Any, world: Any, policy: EvolutionPolicy) -> list[dict[str, Any]]:
+        batch = int((policy.metadata or {}).get("seed_batch_index") or 0)
+        self.calls.append(batch)
+        if batch < 3:
+            return [
+                {
+                    "id": f"N{batch}",
+                    "artifact": f"novel seed artifact {batch}",
+                    "concise_claim": f"novel seed claim {batch}",
+                    "core_mechanism": f"novel seed mechanism {batch}",
+                }
+            ]
+        return [
+            {
+                "id": "N0-duplicate",
+                "artifact": "novel seed artifact 0",
+                "concise_claim": "novel seed claim 0",
+                "core_mechanism": "novel seed mechanism 0",
+            }
+        ]
+
+
 class _FanoutOffspringModel:
     def __init__(self, probe: _ConcurrencyProbe) -> None:
         self.probe = probe
@@ -130,7 +156,7 @@ def test_candidate_harvester_model_fanout_serial_fallback(monkeypatch) -> None:
     assert [candidate.id for candidate in result.accepted[:3]] == ["C0", "C1", "C2"]
 
 
-def test_seed_generation_uses_bounded_model_fanout(monkeypatch) -> None:
+def test_seed_generation_decouples_batch_count_from_global_model_fanout(monkeypatch) -> None:
     monkeypatch.setenv("COGEV_MODEL_FANOUT_CONCURRENCY", "3")
     monkeypatch.setenv("COGEV_NEXUS_SEED_MIN_BATCHES", "4")
     monkeypatch.setenv("COGEV_NEXUS_SEED_BATCH_LIMIT", "4")
@@ -141,6 +167,48 @@ def test_seed_generation_uses_bounded_model_fanout(monkeypatch) -> None:
         contract=_Contract(),
         world=_World(),
         policy=EvolutionPolicy(),
+        target_size=4,
+    )
+
+    assert error is None
+    assert probe.max_active == 1
+    assert rejected == []
+    assert [candidate.id for candidate in accepted[:4]] == ["S0", "S1", "S2", "S3"]
+
+
+def test_seed_generation_continues_past_target_until_novelty_exhaustion(monkeypatch) -> None:
+    monkeypatch.setenv("COGEV_MODEL_FANOUT_CONCURRENCY", "1")
+    monkeypatch.setenv("COGEV_NEXUS_SEED_BATCH_LIMIT", "8")
+    monkeypatch.delenv("COGEV_NEXUS_SEED_MIN_BATCHES", raising=False)
+    monkeypatch.delenv("COGEV_NEXUS_SEED_LOW_NOVELTY_PATIENCE", raising=False)
+    model = _NoveltyExhaustionSeedModel()
+
+    accepted, rejected, error = _generate_model_seed_batches(
+        model=model,
+        contract=_Contract(),
+        world=_World(),
+        policy=EvolutionPolicy(),
+        target_size=1,
+    )
+
+    assert error is None
+    assert model.calls == [0, 1, 2, 3]
+    assert [candidate.id for candidate in accepted] == ["N0", "N1", "N2"]
+    assert accepted[0].metadata["seed_harvest"]["stopped_reason"] == "low_gain_patience"
+    assert rejected[-1]["reason"] == "duplicate_semantic_signature"
+
+
+def test_seed_generation_can_opt_into_seed_specific_fanout(monkeypatch) -> None:
+    monkeypatch.setenv("COGEV_MODEL_FANOUT_CONCURRENCY", "1")
+    monkeypatch.setenv("COGEV_NEXUS_SEED_MIN_BATCHES", "4")
+    monkeypatch.setenv("COGEV_NEXUS_SEED_BATCH_LIMIT", "4")
+    probe = _ConcurrencyProbe()
+
+    accepted, rejected, error = _generate_model_seed_batches(
+        model=_FanoutSeedModel(probe),
+        contract=_Contract(),
+        world=_World(),
+        policy=EvolutionPolicy(metadata={"seed_fanout_concurrency": 3}),
         target_size=4,
     )
 

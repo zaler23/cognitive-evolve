@@ -16,6 +16,7 @@ def compile_grounding_regime(
     raw_obligation: dict[str, Any] | None = None,
     plan: dict[str, Any] | None = None,
     oracle_kind: str = "",
+    override_adversarial_budget: int | None = None,
 ) -> GroundingRegime:
     """Turn semantic verifier hints into a regime controlled by the engine.
 
@@ -31,6 +32,8 @@ def compile_grounding_regime(
     artifact_hash = str(artifact_hash or "")
     fingerprint = str(verifier_fingerprint or obligation.get("verifier_fingerprint") or "")
     kind = str(oracle_kind or obligation.get("oracle_kind") or plan_data.get("modality") or "").strip().lower()
+    probes = _compile_probes(candidate_id=candidate_id, obligation=obligation, plan=plan_data)
+    budget = _engine_falsification_budget(obligation=obligation, plan=plan_data, oracle_kind=kind) if override_adversarial_budget is None else max(0, int(override_adversarial_budget or 0))
     regime_id = "regime-" + stable_hash(
         {
             "candidate_id": candidate_id,
@@ -38,10 +41,9 @@ def compile_grounding_regime(
             "verifier_fingerprint": fingerprint,
             "obligation_id": obligation.get("id"),
             "oracle_kind": kind,
+            "adversarial_budget": budget,
         }
     )[:16]
-    probes = _compile_probes(candidate_id=candidate_id, obligation=obligation, plan=plan_data)
-    budget = _engine_falsification_budget(obligation=obligation, plan=plan_data, oracle_kind=kind)
     return GroundingRegime(
         regime_id=regime_id,
         probes=probes,
@@ -82,12 +84,16 @@ def _compile_probes(*, candidate_id: str, obligation: dict[str, Any], plan: dict
 
 
 def _engine_falsification_budget(*, obligation: dict[str, Any], plan: dict[str, Any], oracle_kind: str) -> int:
-    raw_budget = obligation.get("falsification_budget")
+    raw_budget = obligation.get("falsification_budget") or obligation.get("adversarial_budget")
     count: Any = None
     if isinstance(raw_budget, dict):
         count = raw_budget.get("count") or raw_budget.get("budget")
     if count is None and isinstance(plan.get("falsification_budget"), dict):
         count = plan["falsification_budget"].get("count") or plan["falsification_budget"].get("budget")
+    if count is None and isinstance(plan.get("adversarial_budget"), dict):
+        count = plan["adversarial_budget"].get("count") or plan["adversarial_budget"].get("budget")
+    if count is None and not isinstance(plan.get("adversarial_budget"), dict):
+        count = plan.get("adversarial_budget")
     try:
         value = int(count)
     except (TypeError, ValueError):

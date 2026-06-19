@@ -36,8 +36,8 @@ class DirectHTTPSettings:
     api_key: str
 
 
-def direct_http_settings() -> DirectHTTPSettings:
-    api_base = os.environ.get(LLM_API_BASE_ENV, "").strip() or os.environ.get(LLM_BASE_URL_ENV, "").strip()
+def direct_http_settings(*, api_base_override: str | None = None) -> DirectHTTPSettings:
+    api_base = str(api_base_override or "").strip() or os.environ.get(LLM_API_BASE_ENV, "").strip() or os.environ.get(LLM_BASE_URL_ENV, "").strip()
     if not api_base:
         raise LLMConfigurationError(f"direct_http provider requires {LLM_API_BASE_ENV}=<openai-compatible-base-url>.")
     api_key = os.environ.get(LLM_API_KEY_ENV, "").strip()
@@ -129,7 +129,7 @@ class DirectHTTPProvider:
         return LLMProviderResult(response=result, attempts=attempts, estimated_cost_usd=None)
 
     def _completion(self, **kwargs: Any) -> Any:
-        settings = direct_http_settings()
+        settings = direct_http_settings(api_base_override=str(kwargs.get("api_base") or "").strip() or None)
         url = f"{settings.api_base}/chat/completions"
         payload: dict[str, Any] = {
             "model": normalize_direct_http_model(str(kwargs.get("model") or "")),

@@ -17,6 +17,8 @@ from cognitive_evolve_runtime.api.jobs import JobQueue, _get_job, _job_public, _
 from cognitive_evolve_runtime.api.payloads import _completion_payload, _nexus_verification_passed
 from cognitive_evolve_runtime.api.server import status as api_status, status_cli
 from cognitive_evolve_runtime.api.streaming import _heartbeat_seconds, _stream_engine_chunks, _stream_heartbeat_chunks
+from cognitive_evolve_runtime.verification.ladder import VerificationStrength
+from cognitive_evolve_runtime.verification.types import GradedOutput, VerifiedResult
 
 
 def _fake_nexus(rounds: int = 1) -> dict[str, Any]:
@@ -28,11 +30,11 @@ def _fake_nexus(rounds: int = 1) -> dict[str, Any]:
 
 
 def _graded_output_verified() -> dict[str, Any]:
-    return {
-        "mode": "verified_result",
-        "verification_strength": 4,
-        "result": {"replayable": True, "evidence_ref": "e1", "verifier_fingerprint": "vf"},
-        "replay_certificate": {
+    return GradedOutput(
+        mode="verified_result",
+        verification_strength=VerificationStrength.FORMAL,
+        result=VerifiedResult(answer="verified answer", replayable=True, evidence_ref="e1", verifier_fingerprint="vf"),
+        replay_certificate={
             "scope": "verifier_on_frozen_artifact_only",
             "verification_cache_key": "ck",
             "frozen_artifact_hash": "artifact-1",
@@ -46,7 +48,14 @@ def _graded_output_verified() -> dict[str, Any]:
                 "replay_score": 1.0,
             },
         },
-    }
+    ).to_dict()
+
+
+def _graded_output_verified_legacy_numeric_strength() -> dict[str, Any]:
+    data = _graded_output_verified()
+    data.pop("verification_strength_value", None)
+    data["verification_strength"] = 4
+    return data
 
 
 def _graded_output_portfolio() -> dict[str, Any]:
@@ -77,6 +86,7 @@ def _solved_nexus(*, objective_solved: bool, graded_output: dict[str, Any] | Non
 
 def test_api_verification_passed_requires_v2_graded_verified_result() -> None:
     assert _nexus_verification_passed(_solved_nexus(objective_solved=True, graded_output=_graded_output_verified())) is True
+    assert _nexus_verification_passed(_solved_nexus(objective_solved=True, graded_output=_graded_output_verified_legacy_numeric_strength())) is True
     assert _nexus_verification_passed(_solved_nexus(objective_solved=True)) is False
     assert _nexus_verification_passed(_solved_nexus(objective_solved=True, graded_output=_graded_output_portfolio())) is False
     assert _nexus_verification_passed(_solved_nexus(objective_solved=False, graded_output=_graded_output_verified())) is False

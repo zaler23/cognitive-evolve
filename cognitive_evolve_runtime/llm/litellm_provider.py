@@ -9,10 +9,10 @@ from .provider_interface import LLMProviderResult
 from .retry import completion_with_retry
 
 
-def litellm_provider_kwargs() -> dict[str, Any]:
+def litellm_provider_kwargs(*, api_base_override: str | None = None) -> dict[str, Any]:
     kwargs: dict[str, Any] = {}
     api_key = os.environ.get(LLM_API_KEY_ENV, "").strip()
-    api_base = os.environ.get(LLM_API_BASE_ENV, "").strip() or os.environ.get(LLM_BASE_URL_ENV, "").strip()
+    api_base = str(api_base_override or "").strip() or os.environ.get(LLM_API_BASE_ENV, "").strip() or os.environ.get(LLM_BASE_URL_ENV, "").strip()
     if api_key:
         kwargs["api_key"] = api_key
     if api_base:
@@ -29,7 +29,8 @@ class LiteLLMProvider:
         except Exception as exc:  # pragma: no cover - only hit when dependency missing in a real install
             raise LLMConfigurationError("litellm is required for LiteLLM execution. Install project dependencies first.") from exc
 
-        result, attempts = completion_with_retry(completion, **kwargs, **litellm_provider_kwargs())
+        api_base_override = str(kwargs.pop("api_base", "") or "").strip() or None
+        result, attempts = completion_with_retry(completion, **kwargs, **litellm_provider_kwargs(api_base_override=api_base_override))
         try:
             estimated_cost = float(completion_cost(completion_response=result) or 0.0)
         except Exception:

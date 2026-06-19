@@ -7,6 +7,7 @@ from typing import Any, Callable
 from jsonschema import Draft202012Validator
 
 from cognitive_evolve_runtime.llm.env import LLMConfigurationError, LLMResponseError
+from cognitive_evolve_runtime.llm.model_spec import LLMModelSpec
 from cognitive_evolve_runtime.nexus.prompt_audit import maybe_record_prompt_audit
 from cognitive_evolve_runtime.nexus.prompt_view import build_prompt_view
 
@@ -38,7 +39,7 @@ class StructuredModelAdapterCore:
     metadata: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_configured_llm(cls) -> "StructuredModelAdapterCore":
+    def from_configured_llm(cls, model_spec: LLMModelSpec | None = None) -> "StructuredModelAdapterCore":
         """Create an adapter backed by the existing ``llm_json`` transport.
 
         This method is intentionally explicit.  Merely constructing
@@ -48,9 +49,17 @@ class StructuredModelAdapterCore:
         def _call(request_type: str, payload: dict[str, Any], schema: dict[str, Any]) -> dict[str, Any]:
             from cognitive_evolve_runtime.llm.transport import llm_json
 
-            return llm_json(request_type, payload, system=cls().system, schema_hint=schema)
+            return llm_json(request_type, payload, system=cls().system, schema_hint=schema, model_spec=model_spec)
 
-        return cls(caller=_call, metadata={"transport": "cogev_llm_json"})
+        metadata = {"transport": "cogev_llm_json"}
+        if model_spec is not None:
+            metadata["model_spec"] = model_spec.public_summary()
+            metadata["model_spec_hash"] = model_spec.spec_hash
+        return cls(caller=_call, metadata=metadata)
+
+    @classmethod
+    def with_configured_model(cls, model_spec: LLMModelSpec | None = None) -> "StructuredModelAdapterCore":
+        return cls.from_configured_llm(model_spec=model_spec)
 
     def _call(self, request_type: str, payload: dict[str, Any], schema: dict[str, Any]) -> dict[str, Any]:
         if self.caller is None:

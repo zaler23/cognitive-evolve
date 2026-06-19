@@ -7,8 +7,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable
 
+from cognitive_evolve_runtime.archives.quality_diversity import candidate_bin_key
 from cognitive_evolve_runtime.archives.manager import ArchiveManager
-from cognitive_evolve_runtime.candidates.crossover import crossover
+from cognitive_evolve_runtime.candidates.crossover import crossover, neighborhood_crossover_partner
 from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome, CandidatePopulation, candidate_from_dict
 from cognitive_evolve_runtime.candidates.mutation import MutationEngine, MutationOperator, MutationPlan, MutationPlanner
 from cognitive_evolve_runtime.contracts.objective_contract import NexusObjectiveContract
@@ -21,6 +22,7 @@ from cognitive_evolve_runtime.nexus._serde import utc_now
 from cognitive_evolve_runtime.nexus.exploration import action_palette_for_round, amplify_population
 from cognitive_evolve_runtime.nexus.diagnosis import PolicyUpdater, SearchDiagnosis, SearchStateDiagnoser
 from cognitive_evolve_runtime.nexus.generation_plan import GenerationPlan, apply_generation_plan, assert_stage_ready, build_generation_plan, expected_generation_plan_id
+from cognitive_evolve_runtime.nexus.honesty_control import compute_honesty_control_signal
 from cognitive_evolve_runtime.nexus.model_errors import is_quota_error
 from cognitive_evolve_runtime.nexus.obligations import candidate_obligation_delta, candidate_source_bindings
 from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy
@@ -62,6 +64,7 @@ from cognitive_evolve_runtime.verification.strength import measured_strength_fro
 from cognitive_evolve_runtime.verification.types import VerificationPlan, VerificationResult
 from cognitive_evolve_runtime.theory import TheoryConfig, TheoryLayer, build_population_representation
 from cognitive_evolve_runtime.nexus._shared import MODEL_BOUNDARY_ERRORS, positive_int
+from cognitive_evolve_runtime.nexus.v23_theory_config import CACrossoverConfig, V23TheoryRuntimeConfig
 from cognitive_evolve_runtime.llm.env import env_int
 from cognitive_evolve_runtime.llm.governor import llm_governor
 from cognitive_evolve_runtime.llm.retry import provider_error_category
@@ -353,7 +356,7 @@ class EvolutionRound:
             return list(self._run_synthesized_verifier(population.candidates, current_round=current_round))
 
         def _run_obligations() -> list[Any]:
-            return list(self._run_verification_obligations(population.candidates, current_round=current_round))
+            return list(self._run_verification_obligations(population.candidates, current_round=current_round, policy=policy, contract=contract))
 
         if max_workers <= 1:
             verification_results.extend(_run_stack())
@@ -404,12 +407,13 @@ class EvolutionRound:
         self.adaptive.update_verification_cache(cache)
         return results
 
-    def _run_verification_obligations(self, candidates: list[CandidateGenome], *, current_round: int) -> list[Any]:
+    def _run_verification_obligations(self, candidates: list[CandidateGenome], *, current_round: int, policy: EvolutionPolicy, contract: NexusObjectiveContract) -> list[Any]:
         obligations = self.adaptive.verification_obligation_features()
         if not obligations:
             return []
         cache = self.adaptive.verification_cache()
-        records = run_obligations_for_population(candidates, obligations, cache=cache, max_checks=max(1, self._branch_limit()))
+        v23_config = V23TheoryRuntimeConfig.from_runtime_context(policy=policy, contract=contract, branch_factor=self.budget.branch_factor, population_size=len(candidates))
+        records = run_obligations_for_population(candidates, obligations, cache=cache, max_checks=max(1, self._branch_limit()), policy=policy, v23_config=v23_config)
         self.adaptive.update_verification_cache(cache)
         for record in records:
             obligation = record.get("obligation") if isinstance(record.get("obligation"), dict) else {}
@@ -437,6 +441,17 @@ class EvolutionRound:
         policy.metadata["engine_grounded_information_gain"] = gain_report
         diagnosis = self.diagnoser.diagnose(population=population.candidates, archives=archives, history=self.budget.history, contract=contract, policy=policy)
         diagnosis.grounded_information_gain = gain_report
+        v23_config = V23TheoryRuntimeConfig.from_runtime_context(policy=policy, contract=contract, branch_factor=self.budget.branch_factor, population_size=len(population.candidates))
+        signal = compute_honesty_control_signal(
+            candidates=population.candidates,
+            config=v23_config.honesty_control,
+            history=self.adaptive.state.honesty_error_history,
+        )
+        diagnosis.metadata["honesty_control"] = signal.to_dict()
+        diagnosis.metadata["v23_theory_config_hash"] = v23_config.config_hash
+        if v23_config.diagnostics:
+            diagnosis.metadata["v23_theory_config_diagnostics"] = list(v23_config.diagnostics)
+        self.adaptive.record_honesty_control_signal(signal, history_limit=v23_config.honesty_control.history_limit)
         return diagnosis, self.updater.update(policy, diagnosis, model=self.model, archives=archives)
 
     def reproduce(
@@ -491,6 +506,8 @@ class EvolutionRound:
         plans, latent_exploration_plan = apply_latent_exploration_to_mutation_plans(plans, contract, exploration=latent_exploration_plan)
         plans = self._apply_search_pressure_to_plans(plans, parents=parents)
         plans = self._apply_candidate_transforms_to_plans(plans, parents=parents)
+        v23_config = V23TheoryRuntimeConfig.from_runtime_context(policy=policy, contract=contract, branch_factor=self.budget.branch_factor, population_size=len(population.candidates))
+        plans = self._apply_ca_crossover_to_plans(plans, parents=parents, population=population.candidates, config=v23_config.ca_crossover)
         if plan is not None:
             completed_stage_ops.append("plan_mutations")
             self.last_generation_plan["mutation_objectives"] = list(actions)
@@ -513,9 +530,13 @@ class EvolutionRound:
             diagnosis=diagnosis,
         )
         offspring = dedupe_offspring_against_population(offspring, population)
+        activation_map = _cell_activation_map(parents=parents, plans=plans, offspring=offspring)
+        if activation_map:
+            self.adaptive.record_cell_activation_map(activation_map, round_index=current_round, history_limit=v23_config.ca_crossover.activation_history_limit)
         if plan is not None:
             completed_stage_ops.append("generate_offspring")
             self.last_generation_plan["offspring_ids"] = [candidate.id for candidate in offspring]
+            self.last_generation_plan["cell_activation_map"] = activation_map
             self._record_generation_stage_progress(completed_stage_ops)
         if not offspring:
             return "no_new_unique_offspring", [], {}
@@ -810,6 +831,47 @@ class EvolutionRound:
             out.append(MutationPlan.from_dict({**plan.to_dict(), "instruction": instruction, "metadata": metadata}))
         return out
 
+    def _apply_ca_crossover_to_plans(
+        self,
+        plans: list[MutationPlan],
+        *,
+        parents: list[CandidateGenome],
+        population: list[CandidateGenome],
+        config: CACrossoverConfig,
+    ) -> list[MutationPlan]:
+        if not plans or not parents:
+            return plans
+        by_id = {candidate.id: candidate for candidate in [*population, *parents]}
+        out: list[MutationPlan] = []
+        for index, plan in enumerate(plans):
+            if str(plan.operator) != MutationOperator.CROSSOVER:
+                out.append(plan)
+                continue
+            pivot = _parent_for_plan_id(plan, parents, index)
+            if pivot is None:
+                out.append(plan)
+                continue
+            partner = None
+            for parent_id in plan.parent_ids:
+                candidate = by_id.get(parent_id)
+                if candidate is not None and candidate.id != pivot.id:
+                    partner = candidate
+                    break
+            if partner is None:
+                partner = neighborhood_crossover_partner(pivot, list(by_id.values()), config)
+            if partner is None:
+                out.append(plan)
+                continue
+            metadata = dict(plan.metadata or {})
+            metadata["ca_crossover"] = {
+                "pivot_id": pivot.id,
+                "partner_id": partner.id,
+                "selection": "descriptor_neighborhood_or_configured_global_donor",
+            }
+            parent_ids = list(dict.fromkeys([pivot.id, partner.id]))
+            out.append(MutationPlan.from_dict({**plan.to_dict(), "parent_ids": parent_ids, "metadata": metadata}))
+        return out
+
     def _build_reproduction_offspring(
         self,
         *,
@@ -825,7 +887,18 @@ class EvolutionRound:
         diagnosis: SearchDiagnosis,
     ) -> list[CandidateGenome]:
         sync_repair_parent_attempts_to_dormant_archive(archives, parents)
-        offspring = _generate_offspring(model=self.model, mutation_engine=self.mutation_engine, parents=parents, plans=plans, world=world, contract=contract, policy=policy)
+        v23_config = V23TheoryRuntimeConfig.from_runtime_context(policy=policy, contract=contract, branch_factor=self.budget.branch_factor, population_size=len(population.candidates))
+        offspring = _generate_offspring(
+            model=self.model,
+            mutation_engine=self.mutation_engine,
+            parents=parents,
+            plans=plans,
+            world=world,
+            contract=contract,
+            policy=policy,
+            candidate_pool=population.candidates,
+            ca_config=v23_config.ca_crossover,
+        )
         for child in offspring:
             metadata = child.metadata if isinstance(child.metadata, dict) else {}
             targets = [str(item) for item in metadata.get("target_challenge_ids", []) if item] if isinstance(metadata.get("target_challenge_ids"), list) else []
@@ -833,7 +906,13 @@ class EvolutionRound:
                 self.adaptive.record_generated_targets(candidate_id=child.id, challenge_ids=targets, pressure_id=str(metadata.get("search_pressure_id") or ""), round_index=current_round)
         if len(parents) >= 2 and rankings.crossover_pairs:
             first, second = parents_for_crossover(parents, rankings.crossover_pairs[0])
-            offspring.append(crossover(first, second))
+            ranked_child = crossover(first, second)
+            ranked_child.metadata["ca_crossover"] = {
+                "parent_ids": [first.id, second.id],
+                "selection": "ranking_pair",
+                "operator": MutationOperator.CROSSOVER,
+            }
+            offspring.append(ranked_child)
         offspring.extend(elite_gap_merge_offspring(population.candidates, archives=archives, policy=policy, branch_factor=self.budget.branch_factor))
         reactivated = archives.reactivate_dormant() if "reactivate_dormant" in diagnosis.recommended_actions else None
         if reactivated:
@@ -898,6 +977,49 @@ def _search_pressure_has_effect(pressure: Any) -> bool:
         or getattr(pressure, "success_criteria", None)
         or str(getattr(pressure, "mutation_instruction", "") or "").strip()
     )
+
+
+def _parent_for_plan_id(plan: MutationPlan, parents: list[CandidateGenome], index: int) -> CandidateGenome | None:
+    by_id = {parent.id: parent for parent in parents}
+    for parent_id in plan.parent_ids:
+        parent = by_id.get(parent_id)
+        if parent is not None:
+            return parent
+    if parents:
+        return parents[index % len(parents)]
+    return None
+
+
+def _cell_activation_map(*, parents: list[CandidateGenome], plans: list[MutationPlan], offspring: list[CandidateGenome]) -> dict[str, Any]:
+    activation: dict[str, dict[str, Any]] = {}
+
+    def _entry(cell: str) -> dict[str, Any]:
+        return activation.setdefault(cell, {"parent_ids": [], "offspring_ids": [], "operators": []})
+
+    for parent in parents:
+        cell = candidate_bin_key(parent)
+        entry = _entry(cell)
+        if parent.id not in entry["parent_ids"]:
+            entry["parent_ids"].append(parent.id)
+    for plan in plans:
+        operator = str(plan.operator or "")
+        parent_ids = [str(item) for item in plan.parent_ids if item]
+        for parent in parents:
+            if parent_ids and parent.id not in parent_ids:
+                continue
+            entry = _entry(candidate_bin_key(parent))
+            if operator and operator not in entry["operators"]:
+                entry["operators"].append(operator)
+    for child in offspring:
+        cell = candidate_bin_key(child)
+        entry = _entry(cell)
+        if child.id not in entry["offspring_ids"]:
+            entry["offspring_ids"].append(child.id)
+        for operator in getattr(child, "mutation_history", []) or []:
+            op = str(operator or "")
+            if op and op not in entry["operators"]:
+                entry["operators"].append(op)
+    return {cell: entry for cell, entry in activation.items() if entry.get("parent_ids") or entry.get("offspring_ids")}
 
 
 def _prompt_verification_regime_item(obligation: dict[str, Any]) -> dict[str, Any]:

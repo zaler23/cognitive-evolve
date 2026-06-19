@@ -278,6 +278,37 @@ class AdaptiveRuntimeController:
         self.research_registry.record_resolved_targets(candidate_id=candidate_id, challenge_ids=challenge_ids, record=record, round_index=round_index)
         self._sync_research_state()
 
+    def record_honesty_control_signal(self, signal: Any, *, history_limit: int) -> None:
+        data = signal.to_dict() if hasattr(signal, "to_dict") else dict(signal or {})
+        if not data:
+            return
+        item = {
+            "signal_id": str(data.get("signal_id") or ""),
+            "round_index": int(self.state.round_index or 0),
+            "sample_count": int(data.get("sample_count") or 0),
+            "error_vector": coerce_dict(data.get("error_vector")),
+            "pressure": coerce_dict(data.get("pressure")),
+        }
+        self.state.honesty_error_history.append(item)
+        self.state.honesty_error_history = self.state.honesty_error_history[-max(1, int(history_limit or 1)) :]
+        self.state.metrics["honesty_control_sample_count"] = item["sample_count"]
+        self.state.metrics["honesty_control_frontier_pressure"] = float(item["pressure"].get("frontier_exploration_pressure", 0.0) or 0.0)
+        self.state.record_event(adaptive_event("honesty_control_signal", **item))
+
+    def record_cell_activation_map(self, activation_map: dict[str, Any], *, round_index: int, history_limit: int) -> None:
+        data = coerce_dict(activation_map)
+        if not data:
+            return
+        item = {
+            "round_index": int(round_index or 0),
+            "cell_count": len(data),
+            "cell_activation_map": data,
+        }
+        self.state.cell_activation_history.append(item)
+        self.state.cell_activation_history = self.state.cell_activation_history[-max(1, int(history_limit or 1)) :]
+        self.state.metrics["cell_activation_cell_count"] = len(data)
+        self.state.record_event(adaptive_event("cell_activation_map", round=round_index, cell_count=len(data)))
+
 
     def _research_context(self, *, round_index: int, candidates: list[Any] | None = None, parent: Any | None = None, policy: Any | None = None, contract: Any | None = None, world: Any | None = None, final_certificate: dict[str, Any] | None = None) -> ResearchContext:
         return ResearchContext(

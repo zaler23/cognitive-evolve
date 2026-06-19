@@ -14,10 +14,13 @@ from typing import Any
 from cognitive_evolve_runtime.archives.manager import ArchiveManager, FateAssignment, TERMINAL_FAILURE_FATES
 from cognitive_evolve_runtime.archives.quality_diversity import (
     candidate_bin_key,
+    descriptor_cell_distribution,
+    descriptor_population_entropy,
     quality_diversity_survivors,
 )
 from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome, CandidatePopulation
 from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy
+from cognitive_evolve_runtime.nexus.v23_theory_config import V23TheoryRuntimeConfig
 
 
 @dataclass
@@ -28,7 +31,12 @@ class PopulationCompactionResult:
     tombstone_count: int
     bin_capacity: int
     rare_reserve_per_bin: int
-    reason: str = "quality_diversity_live_compaction"
+    reason: str = "v23_entropy_quality_diversity_live_compaction"
+    population_entropy_before: float = 0.0
+    population_entropy_after: float = 0.0
+    descriptor_cell_count_before: int = 0
+    descriptor_cell_count_after: int = 0
+    v23_theory_config_hash: str = ""
 
     @property
     def changed(self) -> bool:
@@ -87,11 +95,17 @@ def compact_live_population(
             protected.append(candidate)
         else:
             qd_input.append(candidate)
+    v23_config = V23TheoryRuntimeConfig.from_runtime_context(policy=policy, branch_factor=branch_factor, population_size=len(qd_input))
+    entropy_before = descriptor_population_entropy(qd_input)
+    cells_before = len(descriptor_cell_distribution(qd_input))
     survivors, compacted = quality_diversity_survivors(
         qd_input,
         bin_capacity=bin_capacity,
         rare_reserve_per_bin=rare_reserve,
+        config=v23_config,
     )
+    entropy_after = descriptor_population_entropy(survivors)
+    cells_after = len(descriptor_cell_distribution(survivors))
     if compacted:
         assignments: list[FateAssignment] = []
         for candidate in compacted:
@@ -125,6 +139,11 @@ def compact_live_population(
         tombstone_count=len(archives.terminal_tombstones),
         bin_capacity=bin_capacity,
         rare_reserve_per_bin=rare_reserve,
+        population_entropy_before=entropy_before,
+        population_entropy_after=entropy_after,
+        descriptor_cell_count_before=cells_before,
+        descriptor_cell_count_after=cells_after,
+        v23_theory_config_hash=v23_config.config_hash,
     )
 
 

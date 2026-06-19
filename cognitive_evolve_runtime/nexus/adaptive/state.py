@@ -34,6 +34,8 @@ class AdaptiveRuntimeState:
     research_extensions: dict[str, Any] = field(default_factory=dict)
     research_metrics: dict[str, Any] = field(default_factory=dict)
     research_warnings: list[str] = field(default_factory=list)
+    honesty_error_history: list[dict[str, Any]] = field(default_factory=list)
+    cell_activation_history: list[dict[str, Any]] = field(default_factory=list)
     updated_at: str = field(default_factory=utc_now)
 
     def to_dict(self) -> dict[str, Any]:
@@ -64,6 +66,8 @@ class AdaptiveRuntimeState:
             research_extensions=coerce_dict(data.get("research_extensions")),
             research_metrics=coerce_dict(data.get("research_metrics")),
             research_warnings=[str(item) for item in data.get("research_warnings", []) if item],
+            honesty_error_history=[dict(item) for item in data.get("honesty_error_history", []) if isinstance(item, dict)],
+            cell_activation_history=[dict(item) for item in data.get("cell_activation_history", []) if isinstance(item, dict)],
             updated_at=str(data.get("updated_at") or utc_now()),
         )
 
@@ -112,7 +116,8 @@ def _sanitize_value(value: Any, *, depth: int = 0) -> Any:
 
 def _safe_string(value: str) -> str:
     text = str(value or "")
-    for prefix in (("/" + "Users/"), "/Volumes/", "/private/", "/tmp/", "/var/", "/opt/"):
+    slash = "/"
+    for prefix in tuple(slash + part + slash for part in ("Users", "Volumes", "private", "tmp", "var", "opt")):
         if prefix in text:
             return "[redacted-path]"
     return text[:500]
