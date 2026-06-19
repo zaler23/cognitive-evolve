@@ -111,6 +111,7 @@ def _notify_observer(
     budget_history: list[dict[str, Any]],
     error: dict[str, Any] | None = None,
     adaptive_state: dict[str, Any] | None = None,
+    fabric_state: dict[str, Any] | None = None,
 ) -> None:
     if observer is None:
         return
@@ -126,6 +127,7 @@ def _notify_observer(
             "budget_history": list(budget_history),
             "error": error,
             "adaptive_state": dict(adaptive_state or {}),
+            "fabric": dict(fabric_state or {}),
         }
     )
 

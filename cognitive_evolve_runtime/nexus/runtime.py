@@ -346,6 +346,7 @@ class NexusRuntime:
             offspring_verifier=offspring_verifier,
             adaptive_state=restored.get("adaptive_state") or {},
             verification_plan=verification_plan,
+            fabric_state=restored.get("fabric") or {},
         )
         world_payload = _world_to_dict_with_latent_metadata(world, contract)
         run = NexusRunResult(

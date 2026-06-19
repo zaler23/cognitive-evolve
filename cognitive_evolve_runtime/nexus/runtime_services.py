@@ -106,6 +106,7 @@ class NexusPersistenceService:
             concept_snapshots=dict((adaptive_state.get("research_extensions") or {}).get("extensions") or {}),
             verification_plan=dict((adaptive_state.get("research_extensions") or {}).get("verification_plan") or {}),
             graded_output=dict(getattr(result, "graded_output", {}) or {}),
+            fabric=dict(getattr(result, "fabric_state", {}) or {}),
             allow_progress_round_repair=bool(result.interrupted),
         )
         adaptive_dir = self.output_dir / "adaptive"

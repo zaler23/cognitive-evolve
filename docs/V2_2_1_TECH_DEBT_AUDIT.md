@@ -420,3 +420,13 @@ Status: closed in this phase branch.
 - `TD-V3-P1A-MODEL-POOL-DIAGNOSTICS` — Closed. Unknown `model_pool` values fall back to default only with `fabric_state.diagnostics` warning coverage.
 
 Validation requirements for the phase remain: compileall, full pytest, doctor, package clean, and public hygiene before PR.
+
+## v3 Exploration Fabric Phase 1B ledger — 2026-06-19
+
+Status: closed in this phase branch.
+
+- `TD-V3-P1B-SINGLE-SCHEDULER` — Closed. Production `EvolutionLoopController.run()` now delegates each epoch to the coarse `TaskGraphScheduler`; `evolve_once()` remains the public API and reaches the same scheduler-backed controller path.
+- `TD-V3-P1B-OLD-LOOP-REMOVAL` — Closed. Removed the old `_run_round()` and `_reproduce()` execution bodies; controller retains only scheduler orchestration plus recording/finalization helpers.
+- `TD-V3-P1B-RESUME-COMPAT` — Closed. `fabric_state` is accepted by `evolve_once()`/controller, restored checkpoints pass fabric state into resumed runs, scheduler graph state is recoverable, and final persistence writes bounded fabric checkpoint data.
+
+Validation requirements for the phase remain: compileall, full pytest, doctor, package clean, and public hygiene before PR.
