@@ -86,6 +86,7 @@ class EvolutionLoopController:
         adaptive_config: dict[str, Any] | None = None,
         adaptive_state: dict[str, Any] | None = None,
         verification_plan: VerificationPlan | dict[str, Any] | None = None,
+        fabric_state: dict[str, Any] | None = None,
     ) -> None:
         self.population = population
         self.archives = archives
@@ -123,12 +124,13 @@ class EvolutionLoopController:
         self.diagnosis = SearchDiagnosis()
         self.error: dict[str, Any] = {}
         self.interrupted = False
+        self.fabric_state: dict[str, Any] = dict(fabric_state or {})
 
     def run(self) -> EvolutionLoopResult:
         while self.budget.remaining():
             current_round = self.budget.current_round + 1
             try:
-                stop = self._run_round(current_round)
+                stop = self._run_scheduler_epoch(current_round)
                 if stop:
                     break
             except InterruptedError as exc:
@@ -148,28 +150,62 @@ class EvolutionLoopController:
                 break
         return self._finalize()
 
-    def _run_round(self, planned_round: int) -> bool:
+    def _run_scheduler_epoch(self, planned_round: int) -> bool:
+        from cognitive_evolve_runtime.fabric.executors import FabricExecutionContext
+        from cognitive_evolve_runtime.fabric.scheduler import EpochConfig, TaskGraphScheduler
+
         _raise_if_cancelled(self.cancellation_callback)
-        current_round = self.budget.step()
-        _raise_if_cancelled(self.cancellation_callback)
-        evaluation = self.round_pipeline.evaluate(
-            current_round=current_round,
+        graph = self._graph_for_scheduler_epoch(planned_round)
+        context = FabricExecutionContext(
             population=self.population,
             archives=self.archives,
             policy=self.policy,
             contract=self.contract,
+            world=self.world,
+            budget=self.budget,
+            model=self.model,
+            observer=self.observer,
+            adaptive=self.adaptive,
+            offspring_verifier=self.offspring_verifier,
+            cancellation_callback=self.cancellation_callback,
+            record_evaluation=self._record_scheduler_evaluation,
+            record_reproduction=self._record_reproduction_result,
+            fabric_state=self.fabric_state,
+            round_pipeline=self.round_pipeline,
+            diagnosis=self.diagnosis,
         )
+        result = TaskGraphScheduler(
+            graph=graph,
+            context=context,
+            epoch_config=EpochConfig(barrier="full", raise_task_exceptions=True),
+        ).run()
+        self.fabric_state = context.fabric_state
+        self.fabric_state["last_scheduler_result"] = result.to_dict()
+        self.policy = context.policy
+        self.diagnosis = context.diagnosis
+        self.round_pipeline = context.pipeline()
+        return bool(self.budget.stop_reason)
+
+    def _graph_for_scheduler_epoch(self, planned_round: int) -> Any:
+        from cognitive_evolve_runtime.fabric.epoch_builder import build_round_parity_epoch_graph
+        from cognitive_evolve_runtime.fabric.task_graph import TaskGraph
+
+        raw_graph = self.fabric_state.get("graph")
+        if isinstance(raw_graph, dict):
+            try:
+                graph = TaskGraph.from_dict(raw_graph)
+                if not graph.is_drained():
+                    return graph
+            except Exception as exc:
+                diagnostics = self.fabric_state.setdefault("diagnostics", [])
+                if isinstance(diagnostics, list):
+                    diagnostics.append({"type": "fabric_graph_restore_failed", "message": f"{exc.__class__.__name__}: {exc}"})
+        return build_round_parity_epoch_graph(round_index=planned_round)
+
+    def _record_scheduler_evaluation(self, current_round: int, evaluation: RoundEvaluation, context: Any) -> None:
         self.policy = evaluation.policy
         self.diagnosis = evaluation.diagnosis
         self._record_evaluation(current_round, evaluation)
-        if evaluation.stop_reason:
-            self.budget.stop_reason = evaluation.stop_reason
-            return True
-        if current_round >= self.budget.round_limit:
-            self.budget.stop_reason = "adaptive_safety_checkpoint" if self.budget.adaptive else "max_rounds"
-            return True
-        _raise_if_cancelled(self.cancellation_callback)
-        return self._reproduce(current_round, evaluation)
 
     def _record_evaluation(self, current_round: int, evaluation: RoundEvaluation) -> None:
         event = evaluation.progress_event
@@ -206,20 +242,15 @@ class EvolutionLoopController:
         )
         self._notify("post_ranking_critique", current_round, event)
 
-    def _reproduce(self, current_round: int, evaluation: RoundEvaluation) -> bool:
-        reproduction_stop, offspring_verification, reproduction_compaction = self.round_pipeline.reproduce(
-            current_round=current_round,
-            population=self.population,
-            archives=self.archives,
-            policy=self.policy,
-            contract=self.contract,
-            world=self.world,
-            rankings=evaluation.rankings,
-            diagnosis=self.diagnosis,
-            critiques=evaluation.critiques,
-            offspring_verifier=self.offspring_verifier,
-            repair_parent_candidates=evaluation.repair_parent_candidates,
-        )
+    def _record_reproduction_result(
+        self,
+        current_round: int,
+        evaluation: RoundEvaluation,
+        reproduction_stop: str,
+        offspring_verification: list[Any],
+        reproduction_compaction: dict[str, Any],
+        context: Any,
+    ) -> None:
         if self.round_pipeline.last_generation_plan:
             self.budget.history[-1]["generation_plan"] = dict(self.round_pipeline.last_generation_plan)
         if offspring_verification:
@@ -228,9 +259,8 @@ class EvolutionLoopController:
             self.budget.history[-1]["reproduction_compaction"] = reproduction_compaction
         if reproduction_stop:
             self.budget.stop_reason = reproduction_stop
-            return True
+            return
         self._notify("post_mutation", current_round, evaluation.progress_event)
-        return False
 
     def _checkpoint_interruption(self, current_round: int, exc: Exception, *, stop_reason: str, stagnation_type: str, actions: list[str]) -> None:
         self.error = {"type": exc.__class__.__name__, "message": str(exc), "round": current_round}
@@ -366,6 +396,7 @@ class EvolutionLoopController:
             completion_status=completion_status,
             adaptive_state=self.adaptive.to_dict(),
             graded_output=graded_output.to_dict(),
+            fabric_state=dict(self.fabric_state),
         )
 
     def _notify(self, phase: str, round_index: int, progress_event: dict[str, Any], *, error: dict[str, Any] | None = None) -> None:
@@ -381,6 +412,7 @@ class EvolutionLoopController:
             budget_history=self.budget.history,
             error=error,
             adaptive_state=self.adaptive.to_dict(),
+            fabric_state=self.fabric_state,
         )
 
 
@@ -473,6 +505,7 @@ def evolve_once(
     adaptive_config: dict[str, Any] | None = None,
     adaptive_state: dict[str, Any] | None = None,
     verification_plan: VerificationPlan | dict[str, Any] | None = None,
+    fabric_state: dict[str, Any] | None = None,
 ) -> EvolutionLoopResult:
     return EvolutionLoopController(
         population=population,
@@ -488,6 +521,7 @@ def evolve_once(
         adaptive_config=adaptive_config,
         adaptive_state=adaptive_state,
         verification_plan=verification_plan,
+        fabric_state=fabric_state,
     ).run()
 
 

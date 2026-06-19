@@ -110,6 +110,7 @@ class EvolutionLoopResult:
     completion_status: str = "running"
     adaptive_state: dict[str, Any] = field(default_factory=dict)
     graded_output: dict[str, Any] = field(default_factory=dict)
+    fabric_state: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -131,6 +132,7 @@ class EvolutionLoopResult:
             "completion_status": self.completion_status,
             "adaptive_state": self.adaptive_state,
             "graded_output": self.graded_output,
+            "fabric_state": self.fabric_state,
         }
 
 

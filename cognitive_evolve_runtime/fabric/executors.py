@@ -31,6 +31,9 @@ class FabricExecutionContext:
     observer: Callable[[dict[str, Any]], None] | None = None
     adaptive: AdaptiveRuntimeController | None = None
     offspring_verifier: Callable[[list[CandidateGenome]], list[Any]] | None = None
+    cancellation_callback: Callable[[], bool] | None = None
+    record_evaluation: Callable[[int, RoundEvaluation, "FabricExecutionContext"], None] | None = None
+    record_reproduction: Callable[[int, RoundEvaluation, str, list[Any], dict[str, Any], "FabricExecutionContext"], None] | None = None
     fabric_state: dict[str, Any] = field(default_factory=dict)
     round_pipeline: Any | None = None
     diagnosis: SearchDiagnosis = field(default_factory=SearchDiagnosis)
@@ -49,6 +52,10 @@ class FabricExecutionContext:
             self.fabric_state["diagnostics"] = diagnostics
         return diagnostics
 
+    def raise_if_cancelled(self) -> None:
+        if self.cancellation_callback is not None and self.cancellation_callback():
+            raise InterruptedError("nexus evolution cancellation requested")
+
 
 class TaskExecutor(Protocol):
     def execute(self, task: ExplorationTask, context: FabricExecutionContext) -> TaskResult: ...
@@ -58,6 +65,7 @@ class EvaluateExecutor:
     """Direct wrapper around ``EvolutionRound.evaluate``; no internal splitting."""
 
     def execute(self, task: ExplorationTask, context: FabricExecutionContext) -> TaskResult:
+        context.raise_if_cancelled()
         current_round = int(task.payload.get("current_round") or task.payload.get("planned_round") or 0)
         if current_round <= 0:
             current_round = context.budget.step()
@@ -73,6 +81,8 @@ class EvaluateExecutor:
         context.policy = evaluation.policy
         context.diagnosis = evaluation.diagnosis
         context.last_evaluation = evaluation
+        if context.record_evaluation is not None:
+            context.record_evaluation(current_round, evaluation, context)
         return TaskResult(
             task_id=task.task_id,
             status=TaskStatus.DONE,
@@ -85,6 +95,7 @@ class RoundGateExecutor:
     """Apply the same post-evaluate gate used by the legacy controller."""
 
     def execute(self, task: ExplorationTask, context: FabricExecutionContext) -> TaskResult:
+        context.raise_if_cancelled()
         evaluation = context.last_evaluation
         current_round = int(context.budget.current_round or task.payload.get("current_round") or 0)
         stop_reason = ""
@@ -110,6 +121,7 @@ class ReproduceExecutor:
     """Direct wrapper around ``EvolutionRound.reproduce`` using the bound verifier closure."""
 
     def execute(self, task: ExplorationTask, context: FabricExecutionContext) -> TaskResult:
+        context.raise_if_cancelled()
         evaluation = context.last_evaluation
         current_round = int(context.budget.current_round or task.payload.get("current_round") or 0)
         if not context.should_reproduce or evaluation is None:
@@ -133,6 +145,8 @@ class ReproduceExecutor:
         )
         if reproduction_stop:
             context.budget.stop_reason = reproduction_stop
+        if context.record_reproduction is not None:
+            context.record_reproduction(current_round, evaluation, reproduction_stop, offspring_verification, reproduction_compaction, context)
         return TaskResult(
             task_id=task.task_id,
             status=TaskStatus.DONE,

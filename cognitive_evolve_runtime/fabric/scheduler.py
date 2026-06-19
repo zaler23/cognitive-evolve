@@ -16,6 +16,7 @@ from .task_graph import TaskGraph
 class EpochConfig:
     barrier: str = "full"
     checkpoint_each_epoch: bool = True
+    raise_task_exceptions: bool = False
 
 
 @dataclass
@@ -54,6 +55,7 @@ class TaskGraphScheduler:
 
     def run(self) -> FabricSchedulerResult:
         self.graph.recover_inflight()
+        self._sync_graph_state()
         results: list[dict[str, Any]] = []
         while not self.graph.is_drained():
             ready = self.graph.ready_tasks()
@@ -70,30 +72,44 @@ class TaskGraphScheduler:
                         results.append(fut.result().to_dict())
             if self.epoch_config.barrier == "full":
                 continue
+        self._sync_graph_state()
         return FabricSchedulerResult(graph=self.graph, task_results=results, diagnostics=list(self.context.fabric_state.get("diagnostics", []) or []))
 
     def _run_task(self, task: Any) -> TaskResult:
         pool = resolve_model_pool(task.model_pool, config=self.config, fabric_state=self.context.fabric_state)
         task.model_pool = pool
         self.graph.mark(task.task_id, TaskStatus.RUNNING)
+        self._sync_graph_state()
         executor = self.executors.get(task.kind)
         if executor is None:
             result = TaskResult(task_id=task.task_id, status=TaskStatus.FAILED, error={"type": "MissingExecutor", "kind": str(task.kind)})
             self.graph.mark(task.task_id, TaskStatus.FAILED, error=result.error)
+            self._sync_graph_state()
             return result
         try:
             result = executor.execute(task, self.context)
         except Exception as exc:
             result = TaskResult(task_id=task.task_id, status=TaskStatus.FAILED, error={"type": exc.__class__.__name__, "message": str(exc)})
             self.graph.mark(task.task_id, TaskStatus.FAILED, error=result.error)
+            self._sync_graph_state()
+            if self.epoch_config.raise_task_exceptions:
+                raise
             return result
         self.graph.mark(task.task_id, result.status, result_ref=result.to_dict(), error=result.error or None)
+        self._sync_graph_state()
         return result
 
     def _max_workers(self, ready_count: int) -> int:
         configured = max(1, int(self.config.scheduler.max_active_tasks or 1))
         governor_limit = max(1, int(self.governor._max_concurrent())) if hasattr(self.governor, "_max_concurrent") else configured
         return max(1, min(ready_count, configured, governor_limit))
+
+    def _sync_graph_state(self) -> None:
+        self.context.fabric_state["graph"] = self.graph.to_dict()
+        self.context.fabric_state["scheduler"] = {
+            "barrier": self.epoch_config.barrier,
+            "checkpoint_each_epoch": self.epoch_config.checkpoint_each_epoch,
+        }
 
 
 __all__ = ["EpochConfig", "FabricSchedulerResult", "TaskGraphScheduler"]
