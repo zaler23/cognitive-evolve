@@ -430,3 +430,13 @@ Status: closed in this phase branch.
 - `TD-V3-P1B-RESUME-COMPAT` — Closed. `fabric_state` is accepted by `evolve_once()`/controller, restored checkpoints pass fabric state into resumed runs, scheduler graph state is recoverable, and final persistence writes bounded fabric checkpoint data.
 
 Validation requirements for the phase remain: compileall, full pytest, doctor, package clean, and public hygiene before PR.
+
+## v3 Exploration Fabric Phase 2 ledger — 2026-06-19
+
+Status: closed in this phase branch.
+
+- `TD-V3-P2-POOL-PREPROCESS` — Closed. Added advisory pool clustering, descriptor coverage reporting, model-facing `nexus_pool_preprocess` request support, and a `PREPROCESS` executor that runs before the first scheduler-backed evaluation epoch.
+- `TD-V3-P2-CLUSTER-SUPPORT-ADVISORY` — Closed. Exact duplicates use existing semantic signatures, near duplicates use existing search-kernel similarity, support counts and representatives are written as advisory metadata only, and no candidate is deleted by preprocessing.
+- `TD-V3-P2-PROMPT-BOUNDS` — Closed. Pool preprocessing prompts use bounded candidate prompt views, typed config limits, and checkpointed pool reports exclude full prompt payloads / large candidate artifacts.
+
+Validation requirements for the phase remain: compileall, full pytest, doctor, package clean, and public hygiene before PR.

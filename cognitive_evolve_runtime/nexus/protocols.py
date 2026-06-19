@@ -30,6 +30,11 @@ class NexusSeedModelProtocol(Protocol):
 
 
 @runtime_checkable
+class NexusPoolPreprocessModelProtocol(Protocol):
+    def preprocess_candidate_pool(self, *, contract: Any, policy: Any, coverage_report: dict[str, Any], clusters: list[dict[str, Any]], representatives: list[dict[str, Any]], instructions: dict[str, Any] | None = None, **extra: Any) -> dict[str, Any]: ...
+
+
+@runtime_checkable
 class NexusRankingModelProtocol(Protocol):
     def relative_rank(self, *, candidates: list[Any], contract: Any, policy: Any, archives: Any) -> dict[str, Any]: ...
 
@@ -80,6 +85,7 @@ class NexusStopModelProtocol(Protocol):
 class NexusModelProtocol(
     NexusContractModelProtocol,
     NexusPolicyModelProtocol,
+    NexusPoolPreprocessModelProtocol,
     NexusSeedModelProtocol,
     NexusRankingModelProtocol,
     NexusCritiqueModelProtocol,
@@ -109,6 +115,7 @@ NexusModelLike: TypeAlias = (
     NexusModelProtocol
     | NexusContractModelProtocol
     | NexusPolicyModelProtocol
+    | NexusPoolPreprocessModelProtocol
     | NexusSeedModelProtocol
     | NexusRankingModelProtocol
     | NexusCritiqueModelProtocol
@@ -133,6 +140,7 @@ __all__ = [
     "NexusMutationPlannerModelProtocol",
     "NexusOffspringModelProtocol",
     "NexusPolicyModelProtocol",
+    "NexusPoolPreprocessModelProtocol",
     "NexusRankingModelProtocol",
     "NexusSeedModelProtocol",
     "NexusStopModelProtocol",

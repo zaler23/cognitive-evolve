@@ -9,6 +9,7 @@ from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy
 ROOT = Path(__file__).resolve().parents[1]
 V3_FILES = [
     ROOT / "cognitive_evolve_runtime" / "fabric",
+    ROOT / "cognitive_evolve_runtime" / "nexus" / "pool_preprocessing",
 ]
 ALLOWED_ENV_FILES = {ROOT / "cognitive_evolve_runtime" / "fabric" / "config.py"}
 

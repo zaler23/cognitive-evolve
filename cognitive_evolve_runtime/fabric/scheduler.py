@@ -50,6 +50,8 @@ class TaskGraphScheduler:
         self.context = context
         self.executors = executors or default_phase1a_executors()
         self.config = config or FabricRuntimeConfig.from_runtime_context(policy=context.policy, contract=context.contract)
+        if self.context.fabric_config is None:
+            self.context.fabric_config = self.config
         self.epoch_config = epoch_config or EpochConfig(barrier=self.config.scheduler.epoch_barrier)
         self.governor = governor or llm_governor()
 

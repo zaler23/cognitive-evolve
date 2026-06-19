@@ -29,6 +29,10 @@ class PoolConfig:
 class PreprocessConfig:
     prompt_candidate_limit: int = 48
     max_report_chars: int = 12000
+    prompt_candidate_artifact_chars: int = 800
+    sparse_cell_max_count: int = 1
+    overrepresented_cell_multiplier: float = 2.0
+    run_each_epoch: bool = False
 
 
 @dataclass(frozen=True)
@@ -124,6 +128,10 @@ def _config_from_mapping(data: dict[str, Any]) -> FabricRuntimeConfig:
         preprocess=PreprocessConfig(
             prompt_candidate_limit=max(1, int(preprocess.get("prompt_candidate_limit") or 48)),
             max_report_chars=max(1, int(preprocess.get("max_report_chars") or 12000)),
+            prompt_candidate_artifact_chars=max(1, int(preprocess.get("prompt_candidate_artifact_chars") or 800)),
+            sparse_cell_max_count=max(1, int(preprocess.get("sparse_cell_max_count") or 1)),
+            overrepresented_cell_multiplier=max(1.0, float(preprocess.get("overrepresented_cell_multiplier") or 2.0)),
+            run_each_epoch=bool(preprocess.get("run_each_epoch") or False),
         ),
         expansion=ExpansionConfig(
             representative_artifact_chars=max(1, int(expansion.get("representative_artifact_chars") or 4000)),

@@ -34,6 +34,7 @@ class FabricExecutionContext:
     cancellation_callback: Callable[[], bool] | None = None
     record_evaluation: Callable[[int, RoundEvaluation, "FabricExecutionContext"], None] | None = None
     record_reproduction: Callable[[int, RoundEvaluation, str, list[Any], dict[str, Any], "FabricExecutionContext"], None] | None = None
+    fabric_config: FabricRuntimeConfig | None = None
     fabric_state: dict[str, Any] = field(default_factory=dict)
     round_pipeline: Any | None = None
     diagnosis: SearchDiagnosis = field(default_factory=SearchDiagnosis)
@@ -59,6 +60,69 @@ class FabricExecutionContext:
 
 class TaskExecutor(Protocol):
     def execute(self, task: ExplorationTask, context: FabricExecutionContext) -> TaskResult: ...
+
+
+class PreprocessExecutor:
+    """Advisory candidate-pool preprocessing before evaluation."""
+
+    def execute(self, task: ExplorationTask, context: FabricExecutionContext) -> TaskResult:
+        from cognitive_evolve_runtime.nexus.pool_preprocessing import (
+            annotate_candidate_clusters,
+            cluster_candidates,
+            pool_coverage_report,
+            preprocess_candidate_pool,
+        )
+
+        context.raise_if_cancelled()
+        cfg = context.fabric_config or FabricRuntimeConfig.from_runtime_context(policy=context.policy, contract=context.contract)
+        clusters = cluster_candidates(context.population.candidates, config=cfg.pool)
+        annotate_candidate_clusters(context.population.candidates, clusters)
+        expected_cells = _expected_descriptor_cells(context.policy, context.contract)
+        coverage = pool_coverage_report(context.population.candidates, expected_cells=expected_cells, config=cfg.preprocess)
+        model_report = preprocess_candidate_pool(
+            context.model,
+            candidates=context.population.candidates,
+            clusters=clusters,
+            coverage_report=coverage,
+            contract=context.contract,
+            policy=context.policy,
+            config=cfg.preprocess,
+        )
+        model_summary = {key: value for key, value in model_report.items() if key != "prompt_payload"}
+        report = {
+            "advisory": True,
+            "task_id": task.task_id,
+            "cluster_count": len(clusters),
+            "clusters": [cluster.to_dict() for cluster in clusters[: cfg.pool.representative_limit]],
+            "coverage": coverage,
+            "model_preprocess": model_summary,
+            "config_hash": cfg.config_hash,
+        }
+        reports = context.fabric_state.setdefault("pool_reports", [])
+        if isinstance(reports, list):
+            reports.append(report)
+        context.policy.metadata["fabric_pool_preprocess"] = {
+            "advisory": True,
+            "latest_task_id": task.task_id,
+            "cluster_count": len(clusters),
+            "coverage": {
+                "occupied_cell_count": coverage.get("occupied_cell_count"),
+                "sparse_cells": list(coverage.get("sparse_cells") or []),
+                "overrepresented_cells": list(coverage.get("overrepresented_cells") or []),
+                "missing_cells": list(coverage.get("missing_cells") or []),
+            },
+            "schedule_hints": list(model_summary.get("schedule_hints") or []),
+        }
+        return TaskResult(
+            task_id=task.task_id,
+            status=TaskStatus.DONE,
+            advisory_updates={
+                "pool_report_index": len(reports) - 1 if isinstance(reports, list) else 0,
+                "cluster_count": len(clusters),
+                "occupied_cell_count": coverage.get("occupied_cell_count"),
+            },
+            events=[{"type": "fabric_preprocess_completed", "cluster_count": len(clusters), "occupied_cell_count": coverage.get("occupied_cell_count")}],
+        )
 
 
 class EvaluateExecutor:
@@ -169,6 +233,7 @@ class SynthesizeExecutor:
 
 def default_phase1a_executors() -> dict[TaskKind, TaskExecutor]:
     return {
+        TaskKind.PREPROCESS: PreprocessExecutor(),
         TaskKind.EVALUATE: EvaluateExecutor(),
         TaskKind.ROUND_GATE: RoundGateExecutor(),
         TaskKind.REPRODUCE: ReproduceExecutor(),
@@ -190,6 +255,7 @@ def resolve_model_pool(pool: str, *, config: FabricRuntimeConfig, fabric_state: 
 __all__ = [
     "EvaluateExecutor",
     "FabricExecutionContext",
+    "PreprocessExecutor",
     "ReproduceExecutor",
     "RoundGateExecutor",
     "SynthesizeExecutor",
@@ -197,3 +263,15 @@ __all__ = [
     "default_phase1a_executors",
     "resolve_model_pool",
 ]
+
+
+def _expected_descriptor_cells(policy: EvolutionPolicy | None, contract: NexusObjectiveContract | None) -> list[str]:
+    expected: list[str] = []
+    for source in (policy, contract):
+        metadata = getattr(source, "metadata", {}) if source is not None else {}
+        if not isinstance(metadata, dict):
+            continue
+        raw = metadata.get("expected_descriptor_cells") or metadata.get("fabric_expected_descriptor_cells")
+        if isinstance(raw, list):
+            expected.extend(str(item) for item in raw if str(item or "").strip())
+    return list(dict.fromkeys(expected))
