@@ -1,0 +1,185 @@
+"""Coarse-grained Phase 1A executors for the Exploration Fabric scheduler."""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Any, Callable, Protocol
+
+from cognitive_evolve_runtime.archives.manager import ArchiveManager
+from cognitive_evolve_runtime.candidates.genome import CandidateGenome, CandidatePopulation
+from cognitive_evolve_runtime.contracts.objective_contract import NexusObjectiveContract
+from cognitive_evolve_runtime.nexus.adaptive.controller import AdaptiveRuntimeController
+from cognitive_evolve_runtime.nexus.diagnosis import SearchDiagnosis
+from cognitive_evolve_runtime.nexus.loop.budget import EvolutionBudget
+from cognitive_evolve_runtime.nexus.loop.round import EvolutionRound, RoundEvaluation
+from cognitive_evolve_runtime.nexus.model_routes import NexusModelRoutes
+from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy
+from cognitive_evolve_runtime.nexus.protocols import NexusModelLike
+from .config import FabricRuntimeConfig
+from .task import ExplorationTask, TaskKind, TaskResult, TaskStatus
+
+
+@dataclass
+class FabricExecutionContext:
+    population: CandidatePopulation
+    archives: ArchiveManager
+    policy: EvolutionPolicy
+    contract: NexusObjectiveContract
+    world: Any
+    budget: EvolutionBudget
+    model: NexusModelLike | None = None
+    model_routes: NexusModelRoutes | None = None
+    observer: Callable[[dict[str, Any]], None] | None = None
+    adaptive: AdaptiveRuntimeController | None = None
+    offspring_verifier: Callable[[list[CandidateGenome]], list[Any]] | None = None
+    fabric_state: dict[str, Any] = field(default_factory=dict)
+    round_pipeline: Any | None = None
+    diagnosis: SearchDiagnosis = field(default_factory=SearchDiagnosis)
+    last_evaluation: RoundEvaluation | None = None
+    should_reproduce: bool = True
+
+    def pipeline(self) -> Any:
+        if self.round_pipeline is None:
+            self.round_pipeline = EvolutionRound(model=self.model, budget=self.budget, adaptive=self.adaptive)
+        return self.round_pipeline
+
+    def diagnostics(self) -> list[Any]:
+        diagnostics = self.fabric_state.setdefault("diagnostics", [])
+        if not isinstance(diagnostics, list):
+            diagnostics = []
+            self.fabric_state["diagnostics"] = diagnostics
+        return diagnostics
+
+
+class TaskExecutor(Protocol):
+    def execute(self, task: ExplorationTask, context: FabricExecutionContext) -> TaskResult: ...
+
+
+class EvaluateExecutor:
+    """Direct wrapper around ``EvolutionRound.evaluate``; no internal splitting."""
+
+    def execute(self, task: ExplorationTask, context: FabricExecutionContext) -> TaskResult:
+        current_round = int(task.payload.get("current_round") or task.payload.get("planned_round") or 0)
+        if current_round <= 0:
+            current_round = context.budget.step()
+        elif context.budget.current_round < current_round:
+            context.budget.current_round = current_round
+        evaluation = context.pipeline().evaluate(
+            current_round=current_round,
+            population=context.population,
+            archives=context.archives,
+            policy=context.policy,
+            contract=context.contract,
+        )
+        context.policy = evaluation.policy
+        context.diagnosis = evaluation.diagnosis
+        context.last_evaluation = evaluation
+        return TaskResult(
+            task_id=task.task_id,
+            status=TaskStatus.DONE,
+            advisory_updates={"round": current_round, "stop_reason": evaluation.stop_reason, "evaluation_task": task.task_id},
+            events=[{"type": "fabric_evaluate_completed", "round": current_round}],
+        )
+
+
+class RoundGateExecutor:
+    """Apply the same post-evaluate gate used by the legacy controller."""
+
+    def execute(self, task: ExplorationTask, context: FabricExecutionContext) -> TaskResult:
+        evaluation = context.last_evaluation
+        current_round = int(context.budget.current_round or task.payload.get("current_round") or 0)
+        stop_reason = ""
+        should_reproduce = True
+        if evaluation is not None and evaluation.stop_reason:
+            stop_reason = evaluation.stop_reason
+            context.budget.stop_reason = stop_reason
+            should_reproduce = False
+        elif current_round >= context.budget.round_limit:
+            stop_reason = "adaptive_safety_checkpoint" if context.budget.adaptive else "max_rounds"
+            context.budget.stop_reason = stop_reason
+            should_reproduce = False
+        context.should_reproduce = should_reproduce
+        return TaskResult(
+            task_id=task.task_id,
+            status=TaskStatus.DONE,
+            advisory_updates={"round": current_round, "stop_reason": stop_reason, "should_reproduce": should_reproduce},
+            events=[{"type": "fabric_round_gate", "round": current_round, "stop_reason": stop_reason, "should_reproduce": should_reproduce}],
+        )
+
+
+class ReproduceExecutor:
+    """Direct wrapper around ``EvolutionRound.reproduce`` using the bound verifier closure."""
+
+    def execute(self, task: ExplorationTask, context: FabricExecutionContext) -> TaskResult:
+        evaluation = context.last_evaluation
+        current_round = int(context.budget.current_round or task.payload.get("current_round") or 0)
+        if not context.should_reproduce or evaluation is None:
+            return TaskResult(
+                task_id=task.task_id,
+                status=TaskStatus.SKIPPED,
+                advisory_updates={"round": current_round, "skipped": True, "reason": "round_gate_stopped" if not context.should_reproduce else "missing_evaluation"},
+            )
+        reproduction_stop, offspring_verification, reproduction_compaction = context.pipeline().reproduce(
+            current_round=current_round,
+            population=context.population,
+            archives=context.archives,
+            policy=context.policy,
+            contract=context.contract,
+            world=context.world,
+            rankings=evaluation.rankings,
+            diagnosis=context.diagnosis,
+            critiques=evaluation.critiques,
+            offspring_verifier=context.offspring_verifier,
+            repair_parent_candidates=evaluation.repair_parent_candidates,
+        )
+        if reproduction_stop:
+            context.budget.stop_reason = reproduction_stop
+        return TaskResult(
+            task_id=task.task_id,
+            status=TaskStatus.DONE,
+            produced_candidate_ids=[candidate.id for candidate in context.population.candidates],
+            advisory_updates={"round": current_round, "reproduction_stop": reproduction_stop, "offspring_verification_count": len(offspring_verification), "reproduction_compaction": reproduction_compaction},
+            events=[{"type": "fabric_reproduce_completed", "round": current_round, "stop_reason": reproduction_stop}],
+        )
+
+
+class SynthesizeExecutor:
+    """Placeholder executor for Phase 1A graph completeness.
+
+    Production finalization remains owned by the existing controller until Phase
+    1B.  This executor only records that a synthesis boundary was reached.
+    """
+
+    def execute(self, task: ExplorationTask, context: FabricExecutionContext) -> TaskResult:
+        return TaskResult(task_id=task.task_id, status=TaskStatus.DONE, advisory_updates={"synthesis_boundary": True})
+
+
+def default_phase1a_executors() -> dict[TaskKind, TaskExecutor]:
+    return {
+        TaskKind.EVALUATE: EvaluateExecutor(),
+        TaskKind.ROUND_GATE: RoundGateExecutor(),
+        TaskKind.REPRODUCE: ReproduceExecutor(),
+        TaskKind.SYNTHESIZE: SynthesizeExecutor(),
+    }
+
+
+def resolve_model_pool(pool: str, *, config: FabricRuntimeConfig, fabric_state: dict[str, Any]) -> str:
+    known = {"seed", "default", "verify", "local", *config.pool_concurrency.keys()}
+    normalized = str(pool or "default")
+    if normalized in known:
+        return normalized
+    diagnostics = fabric_state.setdefault("diagnostics", [])
+    if isinstance(diagnostics, list):
+        diagnostics.append({"type": "unknown_model_pool_fallback", "requested_pool": normalized, "fallback_pool": "default"})
+    return "default"
+
+
+__all__ = [
+    "EvaluateExecutor",
+    "FabricExecutionContext",
+    "ReproduceExecutor",
+    "RoundGateExecutor",
+    "SynthesizeExecutor",
+    "TaskExecutor",
+    "default_phase1a_executors",
+    "resolve_model_pool",
+]
