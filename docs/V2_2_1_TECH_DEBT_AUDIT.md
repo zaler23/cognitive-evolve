@@ -400,3 +400,13 @@ Debt status:
 - TD-V23-XHIGH-REVIEW-P1 is closed locally: all P1 review findings are fixed or cleaned in the source tree.
 - TD-V23-XHIGH-REVIEW-P2 is closed locally: resumed route metadata is restored and covered by test.
 - TD-V23-HIGH-CEILING-SMOKE remains closed only as a smoke/mechanism check, not as proof of high-quality theory discovery. The next real-provider run should be launched only after PR hygiene/CI and should use stronger seed-field pressure for edge theorem/cross-domain/performance content.
+
+## v3 Exploration Fabric Phase 0 ledger — 2026-06-19
+
+Status: closed in this phase branch.
+
+- `TD-V3-P0-FABRIC-STATE` — Closed. Added domain-neutral `cognitive_evolve_runtime.fabric` primitives for advisory dossiers, tasks, task graphs, typed fabric config, and checkpoint fabric state without wiring behavior into the runtime loop.
+- `TD-V3-P0-CHECKPOINT-COMPAT` — Closed. Added optional `NexusCheckpoint.fabric` field and default `{}` restore behavior so legacy checkpoints continue to load.
+- `TD-V3-P0-ADVISORY-GUARD` — Closed. Added advisory authority-key guards and regression tests to ensure new fabric advisory payloads cannot carry verification-authority fields.
+
+Validation requirements for the phase remain: compileall, full pytest, doctor, package clean, and public hygiene before PR.
