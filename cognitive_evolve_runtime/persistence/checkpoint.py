@@ -38,6 +38,7 @@ class NexusCheckpoint:
     search_kernel: dict[str, Any] = field(default_factory=dict)
     checkpoint_profile: dict[str, Any] = field(default_factory=dict)
     call_ledger_summary: dict[str, Any] = field(default_factory=dict)
+    fabric: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=utc_now)
 
     def to_dict(self) -> dict[str, Any]:
@@ -68,6 +69,7 @@ class NexusCheckpoint:
             search_kernel=coerce_dict(data.get("search_kernel")),
             checkpoint_profile=coerce_dict(data.get("checkpoint_profile")) or {"name": "full", "legacy_checkpoint": True},
             call_ledger_summary=coerce_dict(data.get("call_ledger_summary")),
+            fabric=coerce_dict(data.get("fabric")),
             created_at=str(data.get("created_at") or utc_now()),
         )
 
@@ -126,6 +128,7 @@ class CheckpointStore:
             "search_kernel": dict(checkpoint.search_kernel),
             "checkpoint_profile": dict(checkpoint.checkpoint_profile),
             "call_ledger_summary": dict(checkpoint.call_ledger_summary),
+            "fabric": dict(checkpoint.fabric),
             "contract": checkpoint.contract,
             "world": checkpoint.world,
             "mode": checkpoint.mode,
@@ -154,6 +157,7 @@ class CheckpointStore:
         verification_plan: dict[str, Any] | None = None,
         graded_output: dict[str, Any] | None = None,
         search_kernel: dict[str, Any] | None = None,
+        fabric: dict[str, Any] | None = None,
         allow_progress_round_repair: bool = False,
     ) -> NexusCheckpoint:
         checkpoint = build_checkpoint_state(
@@ -177,6 +181,7 @@ class CheckpointStore:
             verification_plan=verification_plan,
             graded_output=graded_output,
             search_kernel=search_kernel,
+            fabric=fabric,
             allow_progress_round_repair=allow_progress_round_repair,
         )
         self.save(checkpoint, allow_progress_round_repair=allow_progress_round_repair)
@@ -205,6 +210,7 @@ def build_checkpoint_state(
     verification_plan: dict[str, Any] | None = None,
     graded_output: dict[str, Any] | None = None,
     search_kernel: dict[str, Any] | None = None,
+    fabric: dict[str, Any] | None = None,
     allow_progress_round_repair: bool = False,
 ) -> NexusCheckpoint:
     profile = checkpoint_profile_from_env()
@@ -231,6 +237,7 @@ def build_checkpoint_state(
         verification_plan=coerce_dict(verification_plan),
         graded_output=coerce_dict(graded_output),
         search_kernel=coerce_dict(search_kernel),
+        fabric=coerce_dict(fabric),
         checkpoint_profile=profile.to_dict(),
         call_ledger_summary=ledger_summary(),
     )
