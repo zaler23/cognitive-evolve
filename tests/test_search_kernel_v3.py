@@ -84,7 +84,7 @@ def test_quality_diversity_archive_tracks_descriptor_cells_and_directive_boost()
 from cognitive_evolve_runtime.candidates.mutation import MutationEngine, MutationPlan, MutationOperator
 from cognitive_evolve_runtime.llm.env import LLMResponseError
 from cognitive_evolve_runtime.nexus.loop.offspring import _generate_offspring, _mutation_plan_batch_limit, _offspring_batch_limit
-from cognitive_evolve_runtime.nexus.loop.seeding import _seed_batch_limit
+from cognitive_evolve_runtime.nexus.loop.seeding import _seed_safety_batch_limit
 
 
 class _PartialOffspringModel:
@@ -142,6 +142,6 @@ def test_batch_limit_environment_values_are_bounded(monkeypatch) -> None:
     monkeypatch.setenv("COGEV_NEXUS_SEED_BATCH_LIMIT", "999")
     monkeypatch.setenv("COGEV_NEXUS_MUTATION_PLAN_BATCH_LIMIT", "999")
     monkeypatch.setenv("COGEV_NEXUS_OFFSPRING_BATCH_LIMIT", "999")
-    assert _seed_batch_limit(3) == 16
+    assert _seed_safety_batch_limit(policy=EvolutionPolicy()) == 16
     assert _mutation_plan_batch_limit(3) == 16
     assert _offspring_batch_limit(3) == 16

@@ -17,10 +17,13 @@ from cognitive_evolve_runtime.durable.idempotency import stable_hash as durable_
 from cognitive_evolve_runtime.nexus.project_verification import ProjectCandidateVerifier
 from cognitive_evolve_runtime.nexus._serde import stable_hash as nexus_stable_hash
 from cognitive_evolve_runtime.nexus.runtime import _world_from_checkpoint
+from cognitive_evolve_runtime.nexus.state import nexus_verification_results
 from cognitive_evolve_runtime.nexus.synthesis import synthesize_result
 from cognitive_evolve_runtime.persistence.event_store import EventStore
 from cognitive_evolve_runtime.tools.patch_sandbox import PatchSandbox
 from cognitive_evolve_runtime.tools.runner import ToolRunner
+from cognitive_evolve_runtime.verification.ladder import VerificationStrength
+from cognitive_evolve_runtime.verification.types import GradedOutput, VerifiedResult
 
 
 def test_failed_candidate_is_removed_from_answer_archive_and_never_synthesized() -> None:
@@ -70,6 +73,40 @@ def test_candidate_scores_reject_non_finite_values_and_json_is_strict() -> None:
     encoded = candidate.to_json()
     assert "NaN" not in encoded
     assert json.loads(encoded)["multihead_scores"] == {"high": 1.0, "ok": 0.4}
+
+
+def test_nexus_verification_results_does_not_treat_completion_status_as_solved_authority() -> None:
+    run_data = {
+        "evolution": {
+            "completion_status": "solved",
+            "synthesis": {
+                "completion_status": "solved",
+                "objective_solved": False,
+                "graded_output": {"mode": "graded_portfolio", "verification_strength": "NONE", "verification_strength_value": 0},
+            },
+        },
+        "verification_summaries": [{"passed": True}],
+    }
+
+    assert nexus_verification_results(run_data)["objective_solved"] is False
+
+
+def test_nexus_verification_results_requires_verified_graded_output_for_objective_solved() -> None:
+    graded = GradedOutput(
+        mode="verified_result",
+        verification_strength=VerificationStrength.FORMAL,
+        result=VerifiedResult(answer="verified", replayable=True, evidence_ref="e1", verifier_fingerprint="vf"),
+        replay_certificate={"scope": "verifier_on_frozen_artifact_only", "measured_strength_value": 4},
+    ).to_dict()
+    run_data = {
+        "evolution": {
+            "completion_status": "solved",
+            "synthesis": {"objective_solved": True, "graded_output": graded},
+        },
+        "verification_summaries": [{"passed": True}],
+    }
+
+    assert nexus_verification_results(run_data)["objective_solved"] is True
 
 
 def test_model_synthesis_rejects_invalid_best_candidate_id() -> None:

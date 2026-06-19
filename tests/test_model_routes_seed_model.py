@@ -175,6 +175,26 @@ def test_seed_route_failure_does_not_fallback_to_default_seed(tmp_path) -> None:
     assert "seed_population" not in default.calls
 
 
+def test_resume_preserves_sanitized_model_routes_metadata(tmp_path) -> None:
+    default = _DefaultModel()
+    seed = _SeedModel()
+    routes = NexusModelRoutes(default_model=default, seed_model=seed)
+    initial = NexusRuntime(model_routes=routes, output_dir=tmp_path).run_text(
+        "route resume test",
+        max_rounds=1,
+        min_population_size=2,
+        branch_factor=2,
+    )
+    assert initial.evolution["runtime_metadata"]["model_routes"]["seed_uses_default"] is False
+
+    resumed = NexusRuntime(model_routes=routes, output_dir=tmp_path).resume_from_checkpoint(max_rounds=2)
+
+    summary = resumed.evolution["runtime_metadata"]["model_routes"]
+    assert summary["seed_uses_default"] is False
+    assert summary["seed"]["configured"] is True
+    assert "api_key" not in str(summary).lower()
+
+
 def test_model_and_routes_conflict_is_rejected() -> None:
     default = _DefaultModel()
     other = _DefaultModel()

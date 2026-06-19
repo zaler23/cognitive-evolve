@@ -144,11 +144,14 @@ def _generate_model_seed_batches(
         deduper=deduper,
         policy=HarvestPolicy(
             target_size=target_size,
-            max_batches=_seed_batch_limit(target_size),
-            min_batches=_seed_min_batches(target_size),
-            low_gain_patience=_seed_low_novelty_patience(target_size),
+            max_batches=_seed_safety_batch_limit(policy=policy),
+            min_batches=_seed_min_batches(policy=policy),
+            low_gain_patience=_seed_low_novelty_patience(policy=policy),
             relevance_floor=0.20,
             stage="seed",
+            fanout_workers=_seed_fanout_workers(policy=policy, target_size=target_size),
+            stop_at_target=False,
+            exhaust_on_no_new=True,
         ),
     )
 
@@ -195,25 +198,57 @@ def _policy_for_seed_batch(policy: EvolutionPolicy, *, batch_index: int, accepte
     return EvolutionPolicy.from_dict(data)
 
 
-def _seed_batch_limit(target_size: int) -> int:
+def _seed_safety_batch_limit(*, policy: EvolutionPolicy) -> int:
+    metadata = policy.metadata if isinstance(policy.metadata, dict) else {}
+    configured = _positive_int(
+        metadata.get("seed_safety_max_batches")
+        or metadata.get("seed_harvest_safety_max_batches")
+        or metadata.get("seed_max_batches")
+    )
+    if configured:
+        return min(16, configured)
     configured = _bounded_env_int("COGEV_NEXUS_SEED_BATCH_LIMIT", maximum=16)
     if configured:
         return configured
-    return max(2, min(8, int(target_size or 1)))
+    return 8
 
 
 
-def _seed_min_batches(target_size: int) -> int:
+def _seed_min_batches(*, policy: EvolutionPolicy) -> int:
+    metadata = policy.metadata if isinstance(policy.metadata, dict) else {}
+    configured = _positive_int(metadata.get("seed_min_batches") or metadata.get("seed_min_batches_before_exhaustion"))
+    if configured:
+        return max(1, min(_seed_safety_batch_limit(policy=policy), configured))
     configured = _positive_int(os.environ.get("COGEV_NEXUS_SEED_MIN_BATCHES"))
     if configured:
-        return max(1, min(_seed_batch_limit(target_size), configured))
-    return 2 if _seed_batch_limit(target_size) >= 2 else 1
+        return max(1, min(_seed_safety_batch_limit(policy=policy), configured))
+    return 1
 
-def _seed_low_novelty_patience(target_size: int) -> int:
+def _seed_low_novelty_patience(*, policy: EvolutionPolicy) -> int:
+    metadata = policy.metadata if isinstance(policy.metadata, dict) else {}
+    configured = _positive_int(
+        metadata.get("seed_no_new_patience")
+        or metadata.get("seed_low_novelty_patience")
+        or metadata.get("seed_exhaustion_patience")
+    )
+    if configured:
+        return min(8, configured)
     configured = _bounded_env_int("COGEV_NEXUS_SEED_LOW_NOVELTY_PATIENCE", maximum=8)
     if configured:
         return configured
-    return 2 if target_size <= 4 else 3
+    return 1
+
+
+def _seed_fanout_workers(*, policy: EvolutionPolicy, target_size: int) -> int:
+    metadata = policy.metadata if isinstance(policy.metadata, dict) else {}
+    configured = _positive_int(
+        metadata.get("seed_fanout_concurrency")
+        or metadata.get("seed_batch_concurrency")
+        or metadata.get("seed_harvest_fanout_workers")
+    )
+    if configured:
+        return min(_seed_safety_batch_limit(policy=policy), configured)
+    return 1
 
 
 def _bounded_env_int(name: str, *, maximum: int) -> int | None:

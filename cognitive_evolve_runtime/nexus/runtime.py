@@ -360,6 +360,7 @@ class NexusRuntime:
         prompt_metadata = _model_prompt_metadata(self.model)
         if prompt_metadata:
             run.evolution["prompt_view_metadata"] = prompt_metadata
+        run.evolution.setdefault("runtime_metadata", {})["model_routes"] = self.model_routes.public_summary()
         _sync_runtime_round_metadata(run.evolution, result)
         run.artifacts = self._persist(run, result, contract=contract, world=world_payload, budget_history=budget.history, budget=budget)
         return run

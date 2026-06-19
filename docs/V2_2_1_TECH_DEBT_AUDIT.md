@@ -344,3 +344,59 @@ Remaining before PR publication:
 
 - Re-run final hygiene immediately before staging/commit if additional files change.
 - Open draft PR from `mzz/v2.3-theory-runtime-model-routes` after successful local validation.
+
+## v2.3 gpt-5.5 xhigh full-review closure — 2026-06-19
+
+Scope: close the actionable findings from the read-only `gpt-5.5 xhigh` full code/test flow review of the v2.3 theory-runtime/model-route branch and the subsequent 3-round routed smoke artifact audit.
+
+Review artifacts:
+
+- Review report: `${LOCAL_TEST_RUNS}/full-review-gpt55-xhigh-20260618-232911/gpt55-xhigh-full-review.md`
+- Post-review seed/flow check: `${LOCAL_TEST_RUNS}/full-review-gpt55-xhigh-20260618-232911/post-review-seed-flow-check.md`
+- Fix acceptance log: `${LOCAL_TEST_RUNS}/full-review-gpt55-xhigh-20260618-232911/fix-acceptance-20260619.log`
+- Public hygiene log: `${LOCAL_TEST_RUNS}/full-review-gpt55-xhigh-20260618-232911/fix-public-hygiene-20260619.log`
+
+Findings closed in this section:
+
+- P1-1 stale seed-harvest test import:
+  - `tests/test_search_kernel_v3.py` now imports the policy-based `_seed_safety_batch_limit` helper and verifies the bounded safety cap under the current seed-harvest semantics.
+  - Full pytest collection is restored.
+- P1-2 review-generated public hygiene pollution:
+  - Removed untracked `.codemap/handoff.delta.json`, `.codemap/handoff.latest.json`, and `.codemap/handoff.prefix.json` generated during review.
+  - `tests/test_public_tree_hygiene.py` passed after cleanup.
+- P1-3 completion-status/solved-authority projection:
+  - `nexus_verification_results(...)` no longer treats `completion_status == "solved"` as objective-solved authority.
+  - Public `objective_solved` projection now requires closure/synthesis solved evidence plus `graded_output.mode == "verified_result"`.
+  - Regression tests cover both a false-positive `completion_status="solved"`/`graded_portfolio` case and a positive `verified_result` case.
+- P1-4 API verification-strength parsing:
+  - `_nexus_verification_passed(...)` now reads `verification_strength_value` first and falls back through `VerificationStrength.from_value(...)`, so actual `GradedOutput.to_dict()` payloads with `"verification_strength": "FORMAL"` are accepted when replay evidence is valid.
+  - Regression tests now build `GradedOutput(...).to_dict()` instead of relying only on a numeric legacy fixture, while keeping numeric migration compatibility.
+- P2-1 resumed model-route metadata:
+  - `resume_from_checkpoint(...)` now mirrors fresh `run_text`/`run_project` behavior by attaching sanitized `runtime_metadata.model_routes` before persistence.
+  - Regression test confirms resumed runs preserve redacted route metadata.
+
+3-round routed smoke audit outcome:
+
+- The audited local smoke run completed exactly 3/3 rounds and kept `GradedOutput` at `graded_portfolio` with `VerificationStrength.NONE`; no solved/verified claim was made.
+- The model-route split was evidenced by the call ledger: Gemini route for `nexus_seed_population`; GPT-5.5 route for non-seed Nexus stages.
+- Seed harvest produced 37 unique seed candidates from 12 Gemini seed batches and stopped by the configured batch safety limit, not natural no-new exhaustion.
+- Seed quality was acceptable as a mechanism smoke but not sufficient as a high-ceiling theory search: too much output focused on route/round/state contracts, `edge_knowledge_seeds` were empty, and formal/proof artifacts were sparse.
+- Future real-provider high-ceiling runs should strengthen seed prompt/schema pressure toward mathematical models, exploitable theorems, cross-domain mechanisms, and performance algorithms rather than runtime-contract restatement.
+
+Validation after fixes:
+
+- Targeted affected tests: `47 passed`.
+- Full local acceptance:
+  - compileall: passed.
+  - pytest: `703 passed, 1 skipped`.
+  - doctor: `50/50 checks passed`.
+  - package clean: completed; generated `dist/` removed.
+  - pycache cleanup: completed.
+  - public hygiene scan: no `.venv`, `test-runs`, logs/cache/pycache, egg-info, `dist`, bridge, tracked local absolute paths, or secret-shaped material found.
+- `source-current` mirror synced from the public source checkout to the local runtime mirror after validation; stale `source-current` pycache was removed.
+
+Debt status:
+
+- TD-V23-XHIGH-REVIEW-P1 is closed locally: all P1 review findings are fixed or cleaned in the source tree.
+- TD-V23-XHIGH-REVIEW-P2 is closed locally: resumed route metadata is restored and covered by test.
+- TD-V23-HIGH-CEILING-SMOKE remains closed only as a smoke/mechanism check, not as proof of high-quality theory discovery. The next real-provider run should be launched only after PR hygiene/CI and should use stronger seed-field pressure for edge theorem/cross-domain/performance content.

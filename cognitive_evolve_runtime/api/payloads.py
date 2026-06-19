@@ -5,6 +5,7 @@ from typing import Any
 
 from cognitive_evolve_runtime.validation.result import aggregate_verification_results, verification_result_from_mapping
 from cognitive_evolve_runtime.verification.grading import certificate_allows_verified_result
+from cognitive_evolve_runtime.verification.ladder import VerificationStrength
 
 from .usage import _usage
 
@@ -39,10 +40,7 @@ def _nexus_verification_passed(nexus_data: dict[str, Any]) -> bool:
     graded = _nexus_graded_output(nexus_data)
     if graded.get("mode") != "verified_result":
         return False
-    try:
-        if int(graded.get("verification_strength") or 0) < 4:
-            return False
-    except (TypeError, ValueError):
+    if _graded_verification_strength_value(graded) < int(VerificationStrength.FORMAL):
         return False
     result = graded.get("result") if isinstance(graded.get("result"), dict) else {}
     replay = graded.get("replay_certificate") if isinstance(graded.get("replay_certificate"), dict) else {}
@@ -57,6 +55,17 @@ def _nexus_verification_passed(nexus_data: dict[str, Any]) -> bool:
     if isinstance(verification, dict) and "passed" in verification:
         return bool(verification.get("passed"))
     return True
+
+
+def _graded_verification_strength_value(graded: dict[str, Any]) -> int:
+    if not isinstance(graded, dict):
+        return 0
+    if "verification_strength_value" in graded:
+        try:
+            return int(graded.get("verification_strength_value") or 0)
+        except (TypeError, ValueError):
+            return 0
+    return int(VerificationStrength.from_value(graded.get("verification_strength")))
 
 
 def _nexus_closure_certificate(nexus_data: dict[str, Any]) -> dict[str, Any]:

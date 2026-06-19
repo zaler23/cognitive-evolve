@@ -105,6 +105,11 @@ def nexus_verification_results(run_data: dict[str, Any]) -> dict[str, Any]:
     synthesis_status = str(synthesis.get("status") or "")
     completion_status = str(evolution.get("completion_status") or synthesis.get("completion_status") or "").lower()
     incomplete = completion_status in {"needs_continuation", "interrupted_checkpointed", "paused_quota", "route_incomplete"}
+    closure = synthesis.get("closure_certificate") if isinstance(synthesis.get("closure_certificate"), dict) else {}
+    graded = synthesis.get("graded_output") if isinstance(synthesis.get("graded_output"), dict) else {}
+    if not graded and isinstance(closure.get("graded_output"), dict):
+        graded = closure.get("graded_output") or {}
+    objective_solved = bool(synthesis.get("objective_solved") or closure.get("objective_solved")) and dict(graded or {}).get("mode") == "verified_result"
     # ``passed`` is the artifact/runtime integrity gate used by the local
     # validation suite. Objective closure is reported separately as
     # ``objective_solved`` and by API payloads so a valid checkpoint/failure
@@ -119,7 +124,7 @@ def nexus_verification_results(run_data: dict[str, Any]) -> dict[str, Any]:
     ).to_dict()
     return {
         "passed": passed,
-        "objective_solved": completion_status == "solved" or bool(synthesis.get("objective_solved")),
+        "objective_solved": objective_solved,
         "completion_status": completion_status or synthesis_status,
         "runtime_architecture": "nexus",
         "source": "nexus_verification_results",
