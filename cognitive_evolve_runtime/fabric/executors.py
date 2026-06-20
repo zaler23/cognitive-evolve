@@ -231,7 +231,7 @@ class SynthesizeExecutor:
         return TaskResult(task_id=task.task_id, status=TaskStatus.DONE, advisory_updates={"synthesis_boundary": True})
 
 
-def default_phase1a_executors() -> dict[TaskKind, TaskExecutor]:
+def default_fabric_executors() -> dict[TaskKind, TaskExecutor]:
     return {
         TaskKind.PREPROCESS: PreprocessExecutor(),
         TaskKind.EVALUATE: EvaluateExecutor(),
@@ -260,7 +260,7 @@ __all__ = [
     "RoundGateExecutor",
     "SynthesizeExecutor",
     "TaskExecutor",
-    "default_phase1a_executors",
+    "default_fabric_executors",
     "resolve_model_pool",
 ]
 
