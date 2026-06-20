@@ -115,6 +115,24 @@ def _task_classification_schema() -> dict[str, Any]:
         "additionalProperties": True,
     }
 
+
+def _pool_preprocess_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "schedule_hints": {
+                "type": "array",
+                "items": {"type": "object", "additionalProperties": True},
+            },
+            "source_gap_requests": {
+                "type": "array",
+                "items": {"type": "object", "additionalProperties": True},
+            },
+            "diagnostics": _string_array(),
+        },
+        "additionalProperties": True,
+    }
+
 def _evolution_policy_schema() -> dict[str, Any]:
     return {
         "type": "object",
@@ -379,7 +397,7 @@ def _to_dict(value: Any) -> dict[str, Any]:
 
 __all__ = [
     "_candidate_critiques_schema", "_candidate_population_schema", "_context_request_schema",
-    "_evolution_policy_schema", "_mutation_plan_schema", "_objective_contract_schema",
+    "_evolution_policy_schema", "_mutation_plan_schema", "_pool_preprocess_schema", "_objective_contract_schema",
     "_offspring_population_schema", "_search_diagnosis_schema", "_stop_decision_schema",
     "_synthesis_schema", "_task_classification_schema", "_text_world_model_schema",
 ]

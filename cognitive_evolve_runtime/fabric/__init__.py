@@ -4,7 +4,7 @@ from .config import BootstrapConfig, ExpansionConfig, FabricRuntimeConfig, PoolC
 from .dossier import CandidateDossier, DossierIndexEntry
 from .state import FabricCheckpointState
 from .epoch_builder import build_round_parity_epoch_graph
-from .executors import FabricExecutionContext, default_phase1a_executors, resolve_model_pool
+from .executors import FabricExecutionContext, default_fabric_executors, resolve_model_pool
 from .scheduler import EpochConfig, FabricSchedulerResult, TaskGraphScheduler
 from .task import ExplorationTask, TaskKind, TaskResult, TaskStatus
 from .task_graph import TaskGraph
@@ -33,7 +33,7 @@ __all__ = [
     "advisory_dict",
     "assert_advisory_payload",
     "build_round_parity_epoch_graph",
-    "default_phase1a_executors",
+    "default_fabric_executors",
     "authority_key_violations",
     "resolve_model_pool",
 ]

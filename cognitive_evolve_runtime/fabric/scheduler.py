@@ -7,7 +7,7 @@ from typing import Any
 
 from cognitive_evolve_runtime.llm.governor import llm_governor
 from .config import FabricRuntimeConfig
-from .executors import FabricExecutionContext, TaskExecutor, default_phase1a_executors, resolve_model_pool
+from .executors import FabricExecutionContext, TaskExecutor, default_fabric_executors, resolve_model_pool
 from .task import TaskKind, TaskResult, TaskStatus
 from .task_graph import TaskGraph
 
@@ -32,8 +32,9 @@ class FabricSchedulerResult:
 class TaskGraphScheduler:
     """Run a task graph with bounded built-in concurrency.
 
-    Phase 1A uses coarse EVALUATE/ROUND_GATE/REPRODUCE tasks and full barriers
-    so it can shadow the existing round loop without splitting method bodies.
+    The production scheduler starts with coarse EVALUATE/ROUND_GATE/REPRODUCE
+    boundaries so it can preserve existing round method semantics. Later phases
+    may replace these with parity-tested finer-grained executors.
     """
 
     def __init__(
@@ -48,8 +49,10 @@ class TaskGraphScheduler:
     ) -> None:
         self.graph = graph
         self.context = context
-        self.executors = executors or default_phase1a_executors()
+        self.executors = executors or default_fabric_executors()
         self.config = config or FabricRuntimeConfig.from_runtime_context(policy=context.policy, contract=context.contract)
+        if self.context.fabric_config is None:
+            self.context.fabric_config = self.config
         self.epoch_config = epoch_config or EpochConfig(barrier=self.config.scheduler.epoch_barrier)
         self.governor = governor or llm_governor()
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 from .classification import ClassificationFacet
 from .contracts import ContractsFacet
 from .policy import PolicyFacet
+from .preprocess import PreprocessFacet
 from .population import PopulationFacet
 from .ranking import RankingFacet
 from .critique import CritiqueFacet
@@ -13,4 +14,4 @@ from .mutation import MutationFacet
 from .synthesis import SynthesisFacet
 from .stop import StopFacet
 
-__all__ = ['ClassificationFacet', 'ContractsFacet', 'PolicyFacet', 'PopulationFacet', 'RankingFacet', 'CritiqueFacet', 'DiagnosisFacet', 'ContextFacet', 'MutationFacet', 'SynthesisFacet', 'StopFacet']
+__all__ = ['ClassificationFacet', 'ContractsFacet', 'PolicyFacet', 'PreprocessFacet', 'PopulationFacet', 'RankingFacet', 'CritiqueFacet', 'DiagnosisFacet', 'ContextFacet', 'MutationFacet', 'SynthesisFacet', 'StopFacet']

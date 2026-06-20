@@ -152,10 +152,12 @@ class EvolutionLoopController:
 
     def _run_scheduler_epoch(self, planned_round: int) -> bool:
         from cognitive_evolve_runtime.fabric.executors import FabricExecutionContext
+        from cognitive_evolve_runtime.fabric.config import FabricRuntimeConfig
         from cognitive_evolve_runtime.fabric.scheduler import EpochConfig, TaskGraphScheduler
 
         _raise_if_cancelled(self.cancellation_callback)
-        graph = self._graph_for_scheduler_epoch(planned_round)
+        fabric_config = FabricRuntimeConfig.from_runtime_context(policy=self.policy, contract=self.contract)
+        graph = self._graph_for_scheduler_epoch(planned_round, fabric_config=fabric_config)
         context = FabricExecutionContext(
             population=self.population,
             archives=self.archives,
@@ -170,6 +172,7 @@ class EvolutionLoopController:
             cancellation_callback=self.cancellation_callback,
             record_evaluation=self._record_scheduler_evaluation,
             record_reproduction=self._record_reproduction_result,
+            fabric_config=fabric_config,
             fabric_state=self.fabric_state,
             round_pipeline=self.round_pipeline,
             diagnosis=self.diagnosis,
@@ -177,6 +180,7 @@ class EvolutionLoopController:
         result = TaskGraphScheduler(
             graph=graph,
             context=context,
+            config=fabric_config,
             epoch_config=EpochConfig(barrier="full", raise_task_exceptions=True),
         ).run()
         self.fabric_state = context.fabric_state
@@ -186,7 +190,7 @@ class EvolutionLoopController:
         self.round_pipeline = context.pipeline()
         return bool(self.budget.stop_reason)
 
-    def _graph_for_scheduler_epoch(self, planned_round: int) -> Any:
+    def _graph_for_scheduler_epoch(self, planned_round: int, *, fabric_config: Any | None = None) -> Any:
         from cognitive_evolve_runtime.fabric.epoch_builder import build_round_parity_epoch_graph
         from cognitive_evolve_runtime.fabric.task_graph import TaskGraph
 
@@ -200,7 +204,11 @@ class EvolutionLoopController:
                 diagnostics = self.fabric_state.setdefault("diagnostics", [])
                 if isinstance(diagnostics, list):
                     diagnostics.append({"type": "fabric_graph_restore_failed", "message": f"{exc.__class__.__name__}: {exc}"})
-        return build_round_parity_epoch_graph(round_index=planned_round)
+        include_preprocess = bool(
+            fabric_config is not None
+            and (fabric_config.preprocess.run_each_epoch or int(planned_round or 0) <= 1)
+        )
+        return build_round_parity_epoch_graph(round_index=planned_round, include_preprocess=include_preprocess)
 
     def _record_scheduler_evaluation(self, current_round: int, evaluation: RoundEvaluation, context: Any) -> None:
         self.policy = evaluation.policy
