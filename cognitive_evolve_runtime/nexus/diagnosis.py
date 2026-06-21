@@ -78,16 +78,26 @@ class SearchDiagnosis:
     created_at: str = field(default_factory=utc_now)
 
     def __post_init__(self) -> None:
+        self.metadata = coerce_dict(self.metadata)
+        raw_type = str(self.stagnation_type or "None")
+        retired_engineering_types = {"ProofObjectAbsence", "ObligationBottleneck", "VerificationBottleneck"}
+        if raw_type in retired_engineering_types:
+            self.metadata.setdefault("raw_retired_stagnation_type", raw_type)
+            self.metadata.setdefault("answer_first_repair", "proof/source/verification bottlenecks are advisory only")
+            self.stagnation_type = "DiversityCollapse" if self.stagnation_detected else "None"
         if self.stagnation_type not in STAGNATION_TYPES:
             self.stagnation_type = "None" if not self.stagnation_detected else self.stagnation_type
         self.over_explored_families = coerce_str_list(self.over_explored_families)
         self.under_explored_families = coerce_str_list(self.under_explored_families)
         self.prematurely_culled_genes = coerce_str_list(self.prematurely_culled_genes)
-        self.recommended_actions = coerce_str_list(self.recommended_actions) or ["continue"]
+        self.recommended_actions = [
+            action
+            for action in (coerce_str_list(self.recommended_actions) or ["continue"])
+            if action not in {"instantiate_formal_artifact", "discharge_obligation", "tool_ground", "return_failure_report"}
+        ] or ["continue"]
         self.auxiliary_collapse_risk = float(self.auxiliary_collapse_risk or 0.0)
         self.semantic_drift_risk = float(self.semantic_drift_risk or 0.0)
         self.grounded_information_gain = dict(self.grounded_information_gain) if isinstance(self.grounded_information_gain, dict) else {}
-        self.metadata = coerce_dict(self.metadata)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -160,42 +170,6 @@ class SearchStateDiagnoser:
         auxiliary = [c for c in population if c.current_fate == CandidateFate.AUXILIARY or c.multihead_scores.get("auxiliary_value", 0.0) > max(c.multihead_scores.get("answer_likelihood", 0.0), c.multihead_scores.get("objective_alignment", 0.0))]
         rare_count = len(archives.rarity_archive.candidates)
         lineage_report = detect_lineage_saturation(diagnosis_context)
-        proof_like = requires_proof_progress(contract)
-        if proof_like:
-            proof_failure_counts = repeated_proof_failure_counts(diagnosis_context)
-            if proof_failure_counts:
-                total_hard = sum(proof_failure_counts.values())
-                absent = proof_failure_counts.get("proof_object_absent", 0)
-                ledger = proof_failure_counts.get("ledger_non_progressing", 0)
-                duplicate = proof_failure_counts.get("duplicate_formal_signature", 0)
-                blocking = blocking_obligations_from_history(history, threshold=3)
-                if absent >= max(2, len(diagnosis_context) // 2):
-                    return SearchDiagnosis(
-                        stagnation_detected=True,
-                        stagnation_type="ProofObjectAbsence",
-                        over_explored_families=lineage_report.saturated_families,
-                        under_explored_families=["equation_set", "construction", "witness", "case_analysis"],
-                        recommended_actions=["instantiate_formal_artifact", "discharge_obligation", "case_split", "construct_witness"],
-                        notes=f"proof-like objective has many candidates without concrete formal artifacts; active_count={active_count}; incubating_count={len(incubating)}; dormant_count={dormant_count}",
-                    )
-                if ledger >= max(2, len(diagnosis_context) // 2) or blocking:
-                    return SearchDiagnosis(
-                        stagnation_detected=True,
-                        stagnation_type="ObligationBottleneck",
-                        over_explored_families=[item["id"] for item in blocking] or lineage_report.saturated_families,
-                        under_explored_families=["obligation_delta", "blocking_gap_discharge"],
-                        recommended_actions=["discharge_obligation", "instantiate_formal_artifact", "route_kill", "return_failure_report"],
-                        notes=f"proof obligations repeat without verified discharge; active_count={active_count}; incubating_count={len(incubating)}; dormant_count={dormant_count}",
-                    )
-                if duplicate >= 2 or total_hard >= max(3, len(diagnosis_context)):
-                    return SearchDiagnosis(
-                        stagnation_detected=True,
-                        stagnation_type="SemanticLooping",
-                        over_explored_families=lineage_report.saturated_families,
-                        under_explored_families=["new_formal_signature", "counterexample", "case_split"],
-                        recommended_actions=["case_split", "construct_witness", "route_kill", "increase_rarity_budget"],
-                        notes=f"formal/proof progress is looping over duplicate or hard-failed candidates; active_count={active_count}; incubating_count={len(incubating)}; dormant_count={dormant_count}",
-                    )
         if active_count == 0 and incubating:
             reasons: dict[str, int] = {}
             for candidate in incubating:
@@ -206,9 +180,9 @@ class SearchStateDiagnoser:
             top_reasons = ", ".join(f"{key}:{value}" for key, value in sorted(reasons.items(), key=lambda item: item[1], reverse=True)[:5])
             return SearchDiagnosis(
                 stagnation_detected=True,
-                stagnation_type="VerificationBottleneck",
-                recommended_actions=["repair", "instantiate_formal_artifact", "discharge_obligation", "tool_ground"],
-                notes=f"no Active candidates, but {len(incubating)} Incubating repair candidates remain; repair_reasons={top_reasons or 'unknown'}; dormant_count={dormant_count}",
+                stagnation_type="DiversityCollapse",
+                recommended_actions=["reactivate_dormant", "rare_inject", "increase_rarity_budget"],
+                notes=f"no Active candidates, but {len(incubating)} Incubating answer candidates remain; advisory_reasons={top_reasons or 'unknown'}; dormant_count={dormant_count}",
             )
         if auxiliary and len(auxiliary) >= max(2, len(population) // 2) and not archives.answer_archive:
             return SearchDiagnosis(
@@ -230,9 +204,9 @@ class SearchStateDiagnoser:
                     stagnation_detected=True,
                     stagnation_type="SemanticLooping",
                     over_explored_families=proposal_only_families,
-                    under_explored_families=["evidence_delta", "verified_evidence_ref", "source_grounding"],
+                    under_explored_families=["new_mechanism", "edge_theory", "cross_domain_variant"],
                     recommended_actions=["quarantine_lineage", "route_kill", "increase_rarity_budget", "rare_inject"],
-                    notes="lineage saturation without new evidence_delta detected; freeze proposal-only family and spend residual budget on rare/source-grounded candidates",
+                    notes="lineage saturation detected; spend residual budget on rare mechanisms, edge theories, and cross-domain variants",
                 )
             return SearchDiagnosis(
                 stagnation_detected=True,
@@ -259,9 +233,9 @@ class SearchStateDiagnoser:
         ):
             return SearchDiagnosis(
                 stagnation_detected=True,
-                stagnation_type="VerificationBottleneck",
-                recommended_actions=["repair", "tool_ground", "compress_lessons"],
-                notes="frontier candidates are blocked by verification failures",
+                stagnation_type="DiversityCollapse",
+                recommended_actions=["increase_rarity_budget", "rare_inject", "continue"],
+                notes="verification failures are advisory; continue with broader answer exploration",
             )
         return SearchDiagnosis(stagnation_detected=False, recommended_actions=["continue"], notes="no generic stagnation detected")
 
@@ -273,8 +247,6 @@ def _frontier_candidates(population: list[CandidateGenome]) -> list[CandidateGen
     out: list[CandidateGenome] = []
     for candidate in population:
         if CandidateFate.normalize(candidate.current_fate) not in allowed:
-            continue
-        if candidate.metadata.get("search_seed_not_final") and int(candidate.generation or 0) == 0:
             continue
         out.append(candidate)
     return out
@@ -440,10 +412,13 @@ class PolicyUpdater:
             metadata = dict(updated.metadata)
             previous = coerce_str_list(metadata.get("mandatory_actions"))
             metadata["mandatory_actions"] = list(dict.fromkeys(previous + mandatory_actions))
-            metadata["required_evidence_kinds"] = list(
-                dict.fromkeys(coerce_str_list(metadata.get("required_evidence_kinds")) + ["formal_artifact", "obligation_delta"])
-            )
-            metadata["proof_progress_gate"] = "candidate_must_change_named_obligations_with_concrete_formal_objects"
+            metadata["answer_first_actions"] = {
+                "source": "search_diagnosis",
+                "actions": list(dict.fromkeys(mandatory_actions)),
+                "effect": "exploration_prompt_pressure_only",
+            }
+            metadata.pop("required_evidence_kinds", None)
+            metadata.pop("proof_progress_gate", None)
             if diagnosis.over_explored_families:
                 metadata["blocked_or_overexplored_obligations"] = list(dict.fromkeys(diagnosis.over_explored_families))
             updated.metadata = metadata

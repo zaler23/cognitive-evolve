@@ -8,6 +8,7 @@ provider governor.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from contextvars import copy_context
 from typing import Any, Callable, Iterable, TypeVar
 
 from .env import env_int
@@ -56,7 +57,7 @@ def run_ordered_fanout(
         return [fn(item) for item in values]
     results: list[Any] = [None] * len(values)
     with ThreadPoolExecutor(max_workers=workers, thread_name_prefix=thread_name_prefix) as pool:
-        future_to_idx = {pool.submit(fn, item): idx for idx, item in enumerate(values)}
+        future_to_idx = {pool.submit(copy_context().run, fn, item): idx for idx, item in enumerate(values)}
         for fut in as_completed(future_to_idx):
             results[future_to_idx[fut]] = fut.result()
     return results

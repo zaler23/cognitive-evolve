@@ -107,12 +107,14 @@ def test_graph_checkpoint_resume() -> None:
     assert second_result.current_round >= 1
 
 
-def test_scheduler_stop_does_not_claim_solved_without_verified_graded_output() -> None:
+def test_scheduler_stop_produces_answer_without_verified_solved_claim() -> None:
     controller, _ = _controller(stop_reason="objective_solved", budget=EvolutionBudget(max_rounds=2, branch_factor=1))
     result = controller.run()
     assert result.stop_reason == "objective_solved"
     assert result.graded_output["mode"] != "verified_result"
+    assert result.synthesis.closure_certificate["answer_produced"] is True
     assert result.synthesis.closure_certificate["objective_solved"] is False
+    assert result.synthesis.closure_certificate["graded_output_advisory"] == "verification_result_not_required_for_answer_first_completion"
 
 
 def test_evolve_once_accepts_restored_fabric_state() -> None:

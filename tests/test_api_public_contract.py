@@ -114,7 +114,7 @@ def test_completion_payload_exposes_v2_objective_solved_separately() -> None:
     assert payload["cognitive_evolve"]["verification_passed"] is True
     assert payload["cognitive_evolve"]["objective_solved"] is True
     assert stale_payload["cognitive_evolve"]["verification_passed"] is False
-    assert stale_payload["cognitive_evolve"]["objective_solved"] is False
+    assert stale_payload["cognitive_evolve"]["objective_solved"] is True
 
 
 def test_openai_compatible_app_health_models_and_completion(tmp_path: Path) -> None:

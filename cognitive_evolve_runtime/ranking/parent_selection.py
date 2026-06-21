@@ -96,14 +96,6 @@ def _source_binding_selection_adjustment(candidate: CandidateGenome) -> float:
             return -0.05
     binding_class = candidate_source_binding_class(candidate)
     route = candidate_admission_route(candidate)
-    if binding_class == "resolved" and route == "normal":
-        return 0.08
-    if binding_class == "negative_fixture_only":
-        return 0.02
-    if binding_class in {"invented", "unresolved"}:
-        return -0.25
-    if binding_class == "no_binding":
-        return -0.08
     return 0.0
 
 def _archive_directive_adjustment(candidate: CandidateGenome, archives: object | None) -> float:
@@ -272,8 +264,6 @@ def _incubating_parent_allowed(candidate: CandidateGenome) -> bool:
     if isinstance(decision_payload, dict):
         if decision_payload.get("parent_eligible") is False:
             return False
-        if decision_payload.get("repair_required") is False:
-            return False
         if decision_payload.get("repair_exhausted") is True:
             return False
     elif not stage_eligibility(candidate).parent_eligible:
@@ -282,12 +272,7 @@ def _incubating_parent_allowed(candidate: CandidateGenome) -> bool:
         decision = stage_eligibility(candidate)
         if decision.repair_exhausted:
             return False
-    if isinstance(repair, dict) and repair.get("blockers"):
-        return True
-    if isinstance(repair, list) and repair:
-        return True
-    guidance = metadata.get("failure_micro_guidance")
-    return bool(guidance)
+    return bool(str(candidate.artifact or candidate.concise_claim or candidate.core_mechanism).strip())
 
 
 def _repair_target_candidate(candidate: CandidateGenome) -> bool:
@@ -312,7 +297,7 @@ def _stage_parent_eligible(candidate: CandidateGenome) -> bool:
             return False
         if str(decision_payload.get("hard_reject_reason") or "").strip():
             return False
-    hard_reject = metadata.get("hard_reject_reason") or metadata.get("terminal_reject_reason") or metadata.get("hard_reject_class")
+    hard_reject = metadata.get("terminal_reject_reason") or metadata.get("terminal_failure") or metadata.get("terminal_reject")
     return not bool(str(hard_reject or "").strip())
 
 

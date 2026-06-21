@@ -1,10 +1,10 @@
 """Model-defined artifact contracts for domain-agnostic evolution.
 
-The deterministic runtime must not decide that a task is "code", "proof",
-"article", or "fiction" from a finite taxonomy.  A model may define the task's
-artifact semantics per run, while this module enforces only meta-invariants:
-contract shape, object-level artifact presence, concrete delta, claim binding,
-non-self-certified final gates, and explicit opt-in to external adapters.
+Artifact contracts are now descriptive telemetry for open-ended exploration.
+They may tell the model what kind of answer would be useful, but they are not a
+runtime proof/source/final gate.  Missing work-product fields, missing final
+gates, absent source bindings, or missing proof objects must not demote a bold
+answer candidate; validation is intentionally user-owned after the run.
 """
 from __future__ import annotations
 
@@ -191,26 +191,12 @@ def dynamic_artifact_contract_from(contract: Any | None = None, candidate: Candi
 def validate_dynamic_artifact_contract(dac: DynamicArtifactContract | None) -> ContractValidationSummary:
     if dac is None:
         return ContractValidationSummary(required=False, valid=True)
-    diagnostics: list[str] = []
-    if not str(dac.objective or "").strip():
-        diagnostics.append("contract_objective_absent")
-    if not dac.required_work_product:
-        diagnostics.append("required_work_product_absent")
-    if not dac.allowed_artifact_shapes:
-        diagnostics.append("allowed_artifact_shapes_absent")
-    if not dac.minimum_concrete_delta:
-        diagnostics.append("minimum_concrete_delta_absent")
-    elif _mapping_is_vacuous_delta(dac.minimum_concrete_delta):
-        diagnostics.append("delta_unmeasurable")
-    if not dac.evaluation_dimensions:
-        diagnostics.append("evaluation_dimensions_absent")
-    if not dac.final_gate:
-        diagnostics.append("final_gate_absent")
-    elif _final_gate_self_certifies(dac.final_gate):
-        diagnostics.append("final_gate_self_certifying")
-    if not _invalid_outputs_cover_meta_failures(dac.invalid_outputs):
-        diagnostics.append("invalid_outputs_underconstrained")
-    return ContractValidationSummary(required=True, valid=not diagnostics, diagnostics=list(dict.fromkeys(diagnostics)), contract_hash=dac.stable_hash())
+    # Answer-first mode: the contract is an advisory prompt artifact.  Historical
+    # structural gaps such as ``required_work_product_absent`` or
+    # ``final_gate_absent`` caused exploration to collapse into engineering/proof
+    # repair loops.  Keep the stable hash for lineage, but do not emit blocking
+    # diagnostics here.
+    return ContractValidationSummary(required=True, valid=True, diagnostics=[], contract_hash=dac.stable_hash())
 
 
 def evaluate_candidate_against_dynamic_contract(
@@ -224,34 +210,17 @@ def evaluate_candidate_against_dynamic_contract(
         return ArtifactContractSummary(candidate_id=candidate.id, required=False)
     diagnostics = list(validation.diagnostics)
     artifact_present = candidate_has_object_level_artifact(candidate)
-    meta_only = candidate_is_meta_commentary_only(candidate)
-    concrete_delta = candidate_has_concrete_delta(candidate)
-    claim_bound = candidate_claim_bound_to_artifact(candidate)
+    meta_only = False
+    concrete_delta = candidate_has_concrete_delta(candidate) or artifact_present
+    claim_bound = candidate_claim_bound_to_artifact(candidate) or artifact_present
     design_candidate = _design_candidate_allowed(dac) and _candidate_has_structured_design_candidate(candidate)
     if design_candidate:
         artifact_present = True
         meta_only = False
         concrete_delta = True
         claim_bound = True
-
-    if not artifact_present:
-        diagnostics.append("artifact_object_absent")
-    if artifact_present and meta_only:
-        diagnostics.append("meta_commentary_only")
-    if not concrete_delta:
-        diagnostics.append("concrete_delta_absent")
-    if artifact_present and not claim_bound:
-        diagnostics.append("claim_artifact_unbound")
-    if _design_candidate_allowed(dac) and _candidate_declares_design_candidate(candidate) and not design_candidate:
-        diagnostics.append("design_candidate_incomplete")
-    if design_candidate:
-        diagnostics.append("design_candidate_non_final")
-
-    final_eligible = not diagnostics and not design_candidate
-    rank_eligible = not any(
-        item in diagnostics
-        for item in ("contract_objective_absent", "final_gate_self_certifying", "artifact_object_absent", "meta_commentary_only", "design_candidate_incomplete")
-    )
+    final_eligible = artifact_present
+    rank_eligible = artifact_present
     return ArtifactContractSummary(
         candidate_id=candidate.id,
         required=True,
@@ -310,6 +279,12 @@ def materialization_scope_from_contract(contract: Any | None, *, candidate: Cand
 def candidate_has_object_level_artifact(candidate: CandidateGenome) -> bool:
     artifact = getattr(candidate, "artifact", None)
     if _value_has_object_content(artifact):
+        return True
+    if str(getattr(candidate, "concise_claim", "") or "").strip():
+        return True
+    if str(getattr(candidate, "core_mechanism", "") or "").strip():
+        return True
+    if str(getattr(candidate, "artifact_type", "") or "").strip():
         return True
     metadata = coerce_dict(getattr(candidate, "metadata", {}))
     for key in ("artifact_object", "work_product", "required_work_product", "candidate_artifact", "output_artifact"):

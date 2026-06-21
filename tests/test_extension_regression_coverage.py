@@ -80,7 +80,7 @@ def test_archive_evolution_and_verification_stack_paths() -> None:
     )
     seed.metadata["search_seed_not_final"] = True
     result = NexusVerifierStack().verify(seed)
-    assert result.status == "needs_evolution"
+    assert result.status == "warning"
     assert "seed_not_final" in result.diagnostics
 
 

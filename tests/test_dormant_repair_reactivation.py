@@ -89,7 +89,7 @@ def test_recoverable_dormant_archive_seed_prevents_no_parents_available() -> Non
     child = population.candidates[0]
     assert child.parent_ids == ["archive-repair"]
     assert child.metadata["repair_seed"]["target_files"] == ["cognitive_evolve_runtime/nexus/loop.py"]
-    assert child.metadata["targeted_repair_lane"] is True
+    assert child.metadata["targeted_repair_lane"] is False
     assert archives.dormant_archive.candidates["archive-repair"]["metadata"]["repair_attempts"] == 1
 
 
@@ -173,4 +173,4 @@ def test_repair_seed_prompt_view_exposes_concise_contract() -> None:
     view = candidate_prompt_view(recovered[0])
 
     assert view["repair_seed_contract"]["target_files"] == ["cognitive_evolve_runtime/nexus/loop.py"]
-    assert "narrative-only" in view["repair_seed_contract"]["contract"]
+    assert "answer-first exploration" in view["repair_seed_contract"]["contract"]

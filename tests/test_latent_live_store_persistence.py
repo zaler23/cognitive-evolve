@@ -7,6 +7,7 @@ from cognitive_evolve_runtime.archives.manager import ArchiveManager
 from cognitive_evolve_runtime.candidates.genome import CandidateGenome, CandidatePopulation
 from cognitive_evolve_runtime.contracts.objective_contract import NexusObjectiveContract
 from cognitive_evolve_runtime.nexus.live_store import LiveNexusStore
+from cognitive_evolve_runtime.persistence.checkpoint import CheckpointStore
 from cognitive_evolve_runtime.outcomes import (
     IntentHypothesis,
     LatentLedger,
@@ -73,5 +74,13 @@ def test_live_store_persists_latent_ledger_once_and_keeps_checkpoint_metadata(tm
 
     checkpoint = json.loads((tmp_path / "checkpoint.json").read_text(encoding="utf-8"))
     metadata = checkpoint["contract"]["metadata"]
-    assert metadata["latent_ledger"]["events"][0]["event_id"] == event.event_id
+    assert "latent_ledger" not in metadata
+    assert metadata["latent_ledger_ref"]["path"] == str(tmp_path / "latent-ledger.json")
+    assert metadata["latent_ledger_ref"]["sha256"]
+    assert metadata["latent_ledger_ref"]["cursor"] == 1
     assert metadata["latent_posterior_snapshot"]["ledger_cursor"] == 1
+
+    restored = CheckpointStore(tmp_path / "checkpoint.json").restore_state()
+    restored_metadata = restored["contract"]["metadata"]
+    assert restored_metadata["latent_ledger"]["events"][0]["event_id"] == event.event_id
+    assert restored_metadata["latent_ledger_ref"]["cursor"] == 1

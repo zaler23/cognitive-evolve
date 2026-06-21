@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 
@@ -33,8 +34,8 @@ FORBIDDEN_LOCAL_BRIDGE_NAME_TOKENS = (
     "anti" + "gravity",
     "gemi" + "ni_bridge",
     "gemi" + "ni-bridge",
-    "local_bridge",
-    "local-bridge",
+    "local" + "_bridge",
+    "local" + "-bridge",
     "openai" + "_proxy",
     "openai" + "-proxy",
     "codex" + "_openai",
@@ -102,7 +103,13 @@ def test_public_tree_has_no_absolute_local_developer_paths_or_secret_files() -> 
             text = path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
             continue
-        if ("/" + "Users/" + "zzz/") in text or ("file://" + "/" + "Users/") in text:
+        local_path_patterns = (
+            r"/(?:Users|home)/[A-Za-z0-9._-]+/",
+            r"/root/",
+            r"/" + "tmp/" + "cogev" + r"[A-Za-z0-9._/-]*",
+            "file://" + "/" + "Users/",
+        )
+        if any(re.search(pattern, text) for pattern in local_path_patterns):
             offenders.append(rel)
         lower = text.lower()
         forbidden_text = (

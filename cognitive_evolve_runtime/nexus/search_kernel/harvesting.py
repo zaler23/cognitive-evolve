@@ -34,15 +34,30 @@ class HarvestResult:
     rejected: list[dict[str, Any]] = field(default_factory=list)
     batches: int = 0
     stopped_reason: str = ""
-    model_error: Exception | None = None
+    fatal_model_error: Exception | None = None
+    recoverable_batch_errors: list[dict[str, Any]] = field(default_factory=list)
+    failed_batch_ids: list[int] = field(default_factory=list)
+    stage: str = ""
+
+    @property
+    def model_error(self) -> Exception | None:
+        """Backward-compatible fatal-error alias."""
+
+        return self.fatal_model_error
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "accepted_ids": [candidate.id for candidate in self.accepted],
+            "accepted_count": len(self.accepted),
             "rejected": list(self.rejected[-50:]),
+            "rejected_count": len(self.rejected),
             "batches": self.batches,
             "stopped_reason": self.stopped_reason,
-            "model_error": f"{self.model_error.__class__.__name__}: {self.model_error}" if self.model_error else "",
+            "stage": self.stage,
+            "model_error": f"{self.fatal_model_error.__class__.__name__}: {self.fatal_model_error}" if self.fatal_model_error else "",
+            "fatal_model_error": f"{self.fatal_model_error.__class__.__name__}: {self.fatal_model_error}" if self.fatal_model_error else "",
+            "recoverable_batch_errors": list(self.recoverable_batch_errors[-50:]),
+            "failed_batch_ids": list(self.failed_batch_ids),
         }
 
 
@@ -59,7 +74,7 @@ class CandidateHarvester:
         context: dict[str, Any] | None = None,
         recoverable_errors: tuple[type[Exception], ...] = (),
     ) -> HarvestResult:
-        result = HarvestResult()
+        result = HarvestResult(stage=self.policy.stage)
         low_gain_streak = 0
         context = dict(context or {})
         max_batches = max(1, self.policy.max_batches)
@@ -78,14 +93,26 @@ class CandidateHarvester:
                         raise
                     return index, [], exc
 
+            successful_batches_in_window = 0
+            first_recoverable_error: Exception | None = None
             for current_index, batch, error in run_ordered_fanout(window, _request, max_workers=workers):
-                if error is not None:
-                    result.model_error = error
-                    if on_error is not None and on_error(error):
-                        raise error
-                    result.stopped_reason = "model_error"
-                    break
                 result.batches += 1
+                if error is not None:
+                    if on_error is not None and on_error(error):
+                        result.fatal_model_error = error
+                        raise error
+                    first_recoverable_error = first_recoverable_error or error
+                    result.failed_batch_ids.append(int(current_index))
+                    error_record = {
+                        "batch": int(current_index),
+                        "reason": "recoverable_model_error",
+                        "error_type": error.__class__.__name__,
+                        "error": str(error),
+                    }
+                    result.recoverable_batch_errors.append(error_record)
+                    result.rejected.append(error_record)
+                    continue
+                successful_batches_in_window += 1
                 accepted_before = len(result.accepted)
                 gain = self._apply_batch(result, batch_index=current_index, batch=batch, context=context)
                 accepted_delta = len(result.accepted) - accepted_before
@@ -100,6 +127,9 @@ class CandidateHarvester:
                 if low_gain_streak >= max(1, self.policy.low_gain_patience):
                     result.stopped_reason = "low_gain_patience"
                     break
+            if successful_batches_in_window <= 0 and first_recoverable_error is not None and not result.stopped_reason:
+                result.fatal_model_error = first_recoverable_error
+                result.stopped_reason = "model_error"
             batch_index = window[-1] + 1
         if not result.stopped_reason:
             result.stopped_reason = "batch_limit"

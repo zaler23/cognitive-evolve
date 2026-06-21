@@ -198,8 +198,9 @@ def llm_json(request_type: str, payload: dict[str, Any], *, system: str, schema_
             "started_at": started,
             "ended_at": time.time(),
             "usage": {},
+            "estimated_cost_usd": 0.0,
         }, parsed_response=response)
-        record_call_state("completed", call_id=call_id, request_type=request_type, request_hash=request_hash, round_id=os.environ.get("COGEV_ROUND_ID", "runtime"), step_id=os.environ.get("COGEV_STEP_ID", request_type), extra={"attempt": 1})
+        record_call_state("completed", call_id=call_id, request_type=request_type, request_hash=request_hash, round_id=os.environ.get("COGEV_ROUND_ID", "runtime"), step_id=os.environ.get("COGEV_STEP_ID", request_type), extra={"attempt": 1, "usage": {}, "estimated_cost_usd": 0.0})
         return response
     provider = provider or _default_provider_for_status(status)
     breaker = default_provider_circuit_breaker()
@@ -353,7 +354,8 @@ def llm_json(request_type: str, payload: dict[str, Any], *, system: str, schema_
         "started_at": started,
         "ended_at": time.time(),
         "usage": usage,
+        "estimated_cost_usd": estimated_cost,
     }, raw_response=safe_json(result), parsed_response=response)
-    record_call_state("completed", call_id=call_id, request_type=request_type, request_hash=request_hash, round_id=os.environ.get("COGEV_ROUND_ID", "runtime"), step_id=os.environ.get("COGEV_STEP_ID", request_type), extra={"attempt": attempts, "usage": usage})
+    record_call_state("completed", call_id=call_id, request_type=request_type, request_hash=request_hash, round_id=os.environ.get("COGEV_ROUND_ID", "runtime"), step_id=os.environ.get("COGEV_STEP_ID", request_type), extra={"attempt": attempts, "usage": usage, "estimated_cost_usd": estimated_cost})
     enforce_budget(preflight=False)
     return response

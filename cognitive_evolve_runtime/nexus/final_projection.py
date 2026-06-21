@@ -8,6 +8,7 @@ from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateG
 from cognitive_evolve_runtime.evaluators.evidence import evidence_state, latest_evidence_record
 from cognitive_evolve_runtime.evaluators.registry import get_adapter
 from cognitive_evolve_runtime.core.scalars import bounded_score
+from cognitive_evolve_runtime.nexus.display_selection import select_displayed_candidate
 from cognitive_evolve_runtime.verification.types import GradedOutput
 
 
@@ -21,6 +22,7 @@ class FinalProjection:
     evidence_summary: dict[str, Any] = field(default_factory=dict)
     blocking_issues: list[str] = field(default_factory=list)
     continuation_plan: list[str] = field(default_factory=list)
+    advisory_issues: list[str] = field(default_factory=list)
     objective_solved: bool = False
 
     def to_dict(self) -> dict[str, Any]:
@@ -51,23 +53,39 @@ class FinalProjection:
             lines.extend(["## Continuation plan", ""])
             lines.extend(f"- {item}" for item in self.continuation_plan[:8])
             lines.append("")
+        if self.advisory_issues:
+            lines.extend(["## Advisory issues", ""])
+            lines.extend(f"- {item}" for item in self.advisory_issues[:12])
+            lines.append("")
         return "\n".join(lines).rstrip() + "\n"
 
 
-def build_final_projection(*, population: CandidatePopulation, synthesis: Any, graded_output: GradedOutput, final_certificate: dict[str, Any] | None = None) -> FinalProjection:
+def build_final_projection(*, population: CandidatePopulation, synthesis: Any, graded_output: GradedOutput, final_certificate: dict[str, Any] | None = None, display_context: dict[str, Any] | None = None) -> FinalProjection:
     certificate = dict(final_certificate or getattr(synthesis, "closure_certificate", {}) or {})
-    solved = graded_output.mode == "verified_result"
-    if solved:
-        candidate = _candidate_by_id(population.candidates, str(certificate.get("candidate_id") or getattr(synthesis, "best_candidate_id", "")))
-        if _projection_candidate_final_eligible(candidate):
-            return _projection_for_candidate(candidate, status="solved", objective_solved=True, certificate=certificate)
+    closure_certificate = getattr(synthesis, "closure_certificate", {}) if isinstance(getattr(synthesis, "closure_certificate", {}), dict) else {}
+    if display_context is None and isinstance(certificate.get("display_context"), dict):
+        display_context = certificate.get("display_context")
+    if display_context is None and isinstance(closure_certificate.get("display_context"), dict):
+        display_context = closure_certificate.get("display_context")
+    answer_text = str(getattr(synthesis, "final_answer", "") or "").strip()
+    candidate = _candidate_by_id(population.candidates, str(certificate.get("candidate_id") or getattr(synthesis, "best_candidate_id", "") or ""))
+    if _projection_candidate_answer_eligible(candidate) or answer_text:
+        return _projection_for_candidate(candidate, status="completed", objective_solved=False, certificate=certificate, answer_text=answer_text)
+    if display_context:
+        selection = select_displayed_candidate(
+            display_context,
+            candidates=population.candidates,
+            final_eligible=_projection_candidate_answer_eligible,
+        )
+        if selection.candidate_id:
+            candidate = _candidate_by_id(population.candidates, selection.candidate_id)
+            return _projection_for_candidate(candidate, status="completed", objective_solved=False, certificate=certificate, answer_text="")
         certificate.setdefault("blocking_reasons", [])
-        if isinstance(certificate["blocking_reasons"], list):
-            certificate["blocking_reasons"].append("candidate_not_clean_final_eligible")
-    best = _best_current_candidate(population.candidates)
+        if isinstance(certificate["blocking_reasons"], list) and selection.blocked_reason:
+            certificate["blocking_reasons"].append(selection.blocked_reason)
+    best = _best_answer_candidate(population.candidates)
     if best is not None:
-        status = "needs_user_decision" if str(certificate.get("final_projection_status") or "") == "needs_user_decision" else "best_current"
-        return _projection_for_candidate(best, status=status, objective_solved=False, certificate=certificate)
+        return _projection_for_candidate(best, status="completed", objective_solved=False, certificate=certificate, answer_text="")
     return FinalProjection(
         status="no_candidate",
         title="No displayable candidate was available.",
@@ -77,8 +95,26 @@ def build_final_projection(*, population: CandidatePopulation, synthesis: Any, g
     )
 
 
-def _projection_for_candidate(candidate: CandidateGenome | None, *, status: str, objective_solved: bool, certificate: dict[str, Any]) -> FinalProjection:
+def _projection_for_candidate(candidate: CandidateGenome | None, *, status: str, objective_solved: bool, certificate: dict[str, Any], answer_text: str = "") -> FinalProjection:
     if candidate is None:
+        if str(answer_text or "").strip():
+            return FinalProjection(
+                status=status,
+                title="Final answer",
+                artifact_type=str(certificate.get("artifact_type") or "answer"),
+                artifact=str(answer_text),
+                evidence_summary={
+                    "stage": "none",
+                    "source": "synthesis",
+                    "score": 0.0,
+                    "advisory_final_blocked": "unknown",
+                    "advisory_artifact_final_eligible": "unknown",
+                    "projection_status": "answer",
+                    "validation_semantics": "user_owned_after_run",
+                },
+                advisory_issues=["answer_unbound_to_candidate_artifact"],
+                objective_solved=objective_solved,
+            )
         return FinalProjection(status="no_candidate", objective_solved=False, blocking_issues=["candidate_not_found"])
     evidence = latest_evidence_record(candidate)
     state = evidence_state(candidate)
@@ -86,45 +122,47 @@ def _projection_for_candidate(candidate: CandidateGenome | None, *, status: str,
     artifact_state = evidence.metadata.get("artifact_state", {}) if evidence is not None and isinstance(evidence.metadata, dict) else {}
     artifact = artifact_state.get("normalized_artifact") if isinstance(artifact_state, dict) and artifact_state.get("normalized_artifact") is not None else candidate.artifact
     artifact_type = _projection_artifact_type(candidate, evidence=evidence, artifact_state=artifact_state, certificate=certificate)
-    projected_artifact = _project_artifact_for_projection(artifact, evidence=evidence, evidence_summary=evidence_summary)
-    blocking = [str(item) for item in certificate.get("blocking_reasons", []) if item]
-    if evidence is not None:
-        for challenge in (evidence.metadata.get("challenge_items", []) if isinstance(evidence.metadata, dict) else [])[:8]:
-            if isinstance(challenge, dict) and challenge.get("summary"):
-                blocking.append(str(challenge.get("summary")))
-        continuation = list(evidence.hints[:6]) or ["continue challenge-guided repair"]
-    else:
-        continuation = ["collect evidence for this candidate"]
+    projected_artifact = str(answer_text) if str(answer_text or "").strip() else _project_artifact_for_projection(artifact, evidence=evidence, evidence_summary=evidence_summary)
+    candidate_text = str(candidate.artifact or candidate.concise_claim or candidate.core_mechanism or "").strip()
+    answer_candidate_mismatch = bool(str(answer_text or "").strip() and candidate_text and _normalize_projection_text(answer_text) != _normalize_projection_text(candidate_text))
+    blocking: list[str] = []
+    continuation: list[str] = []
+    advisory = _candidate_advisory_issues(candidate)
+    if answer_candidate_mismatch:
+        advisory.insert(0, "projection_answer_candidate_mismatch")
     return FinalProjection(
         status=status,
         candidate_id=candidate.id,
-        title="Final artifact is certified." if objective_solved else "Best current artifact; not certified as solved.",
+        title="Final answer",
         artifact_type=artifact_type,
         artifact=projected_artifact,
         evidence_summary={
             "stage": evidence.stage if evidence is not None else "none",
             "source": evidence.source if evidence is not None else "none",
             "score": round(float(evidence.score), 4) if evidence is not None else 0.0,
-            "final_blocked": bool(state.get("final_blocked", True)),
+            "advisory_final_blocked": bool(state.get("final_blocked", False)),
             "artifact_type": artifact_type,
             "artifact_cleanliness": artifact_state.get("status") if isinstance(artifact_state, dict) else "",
-            "artifact_final_eligible": bool(artifact_state.get("final_eligible", False)) if isinstance(artifact_state, dict) and artifact_state else None,
-            "projection_status": "final" if objective_solved else "best_current",
+            "advisory_artifact_final_eligible": artifact_state.get("final_eligible") if isinstance(artifact_state, dict) and "final_eligible" in artifact_state else "unknown",
+            "answer_candidate_mismatch": answer_candidate_mismatch,
+            "projection_status": "answer",
+            "validation_semantics": "user_owned_after_run",
         },
-        blocking_issues=blocking or (["not_final_certified"] if not objective_solved else []),
+        blocking_issues=blocking,
         continuation_plan=continuation,
+        advisory_issues=list(dict.fromkeys(advisory))[:12],
         objective_solved=objective_solved,
     )
 
 
-def _best_current_candidate(candidates: list[CandidateGenome]) -> CandidateGenome | None:
-    eligible = [candidate for candidate in candidates if not _hard_rejected(candidate) and not _fate_excluded_from_best_current(candidate)]
+def _best_answer_candidate(candidates: list[CandidateGenome]) -> CandidateGenome | None:
+    eligible = [candidate for candidate in candidates if not _hard_rejected(candidate) and not _fate_excluded_from_answer(candidate)]
     if not eligible:
         return None
-    return max(eligible, key=_best_current_score)
+    return max(eligible, key=_answer_candidate_score)
 
 
-def _best_current_score(candidate: CandidateGenome) -> float:
+def _answer_candidate_score(candidate: CandidateGenome) -> float:
     scores = candidate.multihead_scores or {}
     metadata = candidate.metadata if isinstance(candidate.metadata, dict) else {}
     hard_penalty = 1.0 if bool(metadata.get("terminal_failure")) else 0.0
@@ -155,24 +193,19 @@ def _hard_rejected(candidate: CandidateGenome) -> bool:
     return bool(metadata.get("terminal_failure") or state.get("terminal_reject"))
 
 
-def _fate_excluded_from_best_current(candidate: CandidateGenome) -> bool:
+def _fate_excluded_from_answer(candidate: CandidateGenome) -> bool:
     fate = CandidateFate.normalize(getattr(candidate, "current_fate", ""), default="")
     if not fate and isinstance(getattr(candidate, "metadata", None), dict):
         fate = CandidateFate.normalize(candidate.metadata.get("fate"), default="")
     return fate in {CandidateFate.FAILED.value, CandidateFate.CULLED.value}
 
 
-def _projection_candidate_final_eligible(candidate: CandidateGenome | None) -> bool:
+def _projection_candidate_answer_eligible(candidate: CandidateGenome | None) -> bool:
     if candidate is None:
         return False
-    state = evidence_state(candidate)
-    if state.get("final_blocked", True):
+    if _hard_rejected(candidate) or _fate_excluded_from_answer(candidate):
         return False
-    evidence = latest_evidence_record(candidate)
-    artifact_state = evidence.metadata.get("artifact_state", {}) if evidence is not None and isinstance(evidence.metadata, dict) else {}
-    if isinstance(artifact_state, dict) and artifact_state:
-        return artifact_state.get("status") == "clean" and bool(artifact_state.get("final_eligible", False))
-    return True
+    return bool(str(candidate.artifact or candidate.concise_claim or candidate.core_mechanism).strip())
 
 
 def _projection_artifact_type(candidate: CandidateGenome, *, evidence: Any, artifact_state: dict[str, Any], certificate: dict[str, Any]) -> str:
@@ -206,3 +239,30 @@ def _render_artifact(artifact: Any) -> str:
 
 
 __all__ = ["FinalProjection", "build_final_projection"]
+
+
+def _normalize_projection_text(value: Any) -> str:
+    return " ".join(str(value or "").split()).strip().lower()
+
+
+def _candidate_advisory_issues(candidate: CandidateGenome) -> list[str]:
+    issues: list[str] = []
+    result = getattr(candidate, "verification_result", {}) or {}
+    if isinstance(result, dict):
+        issues.extend(str(item) for item in result.get("diagnostics", []) or [] if item)
+        for section in ("final_gate", "proof_progress", "evidence_obligation"):
+            payload = result.get(section)
+            if isinstance(payload, dict):
+                issues.extend(str(item) for item in payload.get("diagnostics", []) or [] if item)
+    metadata = candidate.metadata if isinstance(candidate.metadata, dict) else {}
+    for key in ("source_lineage_advisory", "source_binding_manifest", "display_source_binding_advisory"):
+        payload = metadata.get(key)
+        if isinstance(payload, dict):
+            issues.extend(str(item) for item in payload.get("diagnostics", []) or [] if item)
+            binding = payload.get("binding_class")
+            if binding in {"invented", "unresolved", "no_binding"}:
+                issues.append(f"source_binding_{binding}_advisory")
+    state = evidence_state(candidate)
+    if state.get("final_blocked"):
+        issues.append("evidence_final_blocked_advisory")
+    return [item for item in dict.fromkeys(issues) if item]

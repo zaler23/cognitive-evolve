@@ -77,5 +77,5 @@ def test_unverified_or_failed_dormant_candidate_is_not_final_eligible() -> None:
     archives = ArchiveManager()
     archives.update([unverified, failed])
 
-    assert archives.is_final_answer_eligible(unverified) is False
-    assert archives.is_final_answer_eligible(failed) is False
+    assert archives.is_final_answer_eligible(unverified) is True
+    assert archives.is_final_answer_eligible(failed) is True

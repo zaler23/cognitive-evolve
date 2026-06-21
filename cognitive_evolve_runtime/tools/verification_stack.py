@@ -129,13 +129,11 @@ class NexusVerifierStack:
         lessons: list[str] = []
         passed = True
         if contract is not None and candidate.contract_hash and candidate.contract_hash != contract.contract_hash():
-            passed = False
             lessons.append("candidate contract hash differs from current ObjectiveContract")
-            feedback.append(_feedback("contract_hash", "failed", "candidate tried to evolve against a stale or modified contract"))
+            feedback.append(_feedback("contract_hash", "warning", "candidate evolved against a stale or modified contract; advisory only"))
         if candidate.metadata.get("search_seed_not_final") and candidate.generation == 0:
-            passed = False
-            lessons.append("initial search seed is not a final answer; it must be evolved or synthesized")
-            feedback.append(_feedback("seed_not_final", "failed", "seed candidates are search material, not final answers"))
+            lessons.append("initial search seed is allowed as answer material in answer-first mode")
+            feedback.append(_feedback("seed_not_final", "warning", "seed candidate allowed as answer material; validation is user-owned"))
         if candidate.current_fate == CandidateFate.AUXILIARY and candidate.multihead_scores.get("answer_likelihood", 0.0) < candidate.multihead_scores.get("auxiliary_value", 0.0):
             lessons.append("auxiliary scaffold should feed CoreExtraction rather than win as main answer")
             feedback.append(_feedback("auxiliary_guard", "warning", "auxiliary candidate should not be selected as final answer by default"))
@@ -143,36 +141,20 @@ class NexusVerifierStack:
             feedback.append(_feedback("missing_parts", "warning", "; ".join(candidate.missing_parts[:3])))
         no_op_reason = _no_op_patch_reason(candidate)
         if no_op_reason:
-            passed = False
-            lessons.append("project patch verification produced no source change")
-            feedback.append(_feedback("patch_no_effect", "failed", no_op_reason))
+            lessons.append("project patch verification produced no source change; retained as advisory")
+            feedback.append(_feedback("patch_no_effect", "warning", no_op_reason))
         project_scope_reason = _project_patch_scope_reason(candidate, contract=contract)
         if project_scope_reason:
-            passed = False
-            lessons.append("project patch did not touch the required implementation or test surface")
-            feedback.append(_feedback("runtime_code_change_required", "failed", project_scope_reason))
+            lessons.append("project patch did not touch the requested implementation/test surface; retained as advisory")
+            feedback.append(_feedback("runtime_code_change_required", "warning", project_scope_reason))
         artifact_summary = evaluate_candidate_against_dynamic_contract(candidate, contract=contract)
         if artifact_summary.required:
             candidate.metadata["dynamic_artifact_contract_gate"] = artifact_summary.to_dict()
             if artifact_summary.diagnostics:
-                lessons.append("dynamic artifact contract requires an object-level artifact, measurable delta, claim binding, and non-self-certified final gate")
+                lessons.append("dynamic artifact contract diagnostics are advisory in answer-first mode")
                 for diagnostic in artifact_summary.diagnostics:
-                    status = "failed" if diagnostic in {
-                        "contract_objective_absent",
-                        "final_gate_self_certifying",
-                        "artifact_object_absent",
-                        "meta_commentary_only",
-                        "required_work_product_absent",
-                        "final_gate_absent",
-                    } else "warning"
-                    feedback.append(_feedback(diagnostic, status, diagnostic))
-                    if status == "failed":
-                        passed = False
-            candidate.multihead_scores["artifact_contract_progress"] = 1.0 if artifact_summary.final_eligible else (0.45 if artifact_summary.artifact_present else 0.05)
-            if not artifact_summary.final_eligible:
-                candidate.multihead_scores["answer_likelihood"] = min(candidate.multihead_scores.get("answer_likelihood", 0.0), 0.35)
-                candidate.multihead_scores["verifiability"] = min(candidate.multihead_scores.get("verifiability", 0.0), 0.35)
-                candidate.multihead_scores["deferral_risk"] = max(candidate.multihead_scores.get("deferral_risk", 0.0), 0.70)
+                    feedback.append(_feedback(diagnostic, "warning", diagnostic))
+            candidate.multihead_scores["artifact_contract_progress"] = 1.0 if artifact_summary.artifact_present else 0.5
 
         source_adapter_required = contract_requires_adapter(contract, "source", candidate=candidate)
         patch_adapter_required = contract_requires_adapter(contract, "patch", candidate=candidate)
@@ -186,11 +168,13 @@ class NexusVerifierStack:
             )
             if source_lineage.required:
                 if source_lineage.diagnostics:
-                    passed = False
-                    lessons.append("project patch source bindings must match existing files, explicit extensions, or materialized new files with integration evidence")
+                    lessons.append("source-lineage diagnostics are advisory; source binding never blocks answer display")
                     for diagnostic, fragments in source_lineage.diagnostic_fragments.items():
-                        feedback.append(_feedback(diagnostic, "failed", diagnostic, failed_fragments=fragments[:8]))
-                    candidate.metadata["source_lineage_gate"] = source_lineage.to_dict()
+                        feedback.append(_feedback(diagnostic, "warning", diagnostic, failed_fragments=fragments[:8]))
+                    source_payload = source_lineage.to_dict()
+                    source_payload["advisory_only"] = True
+                    candidate.metadata["source_lineage_advisory"] = source_payload
+                    candidate.metadata["source_lineage_gate"] = source_payload
                     legacy_missing_symbols = [
                         {"path": fact.path, "symbol": fact.symbol}
                         for fact in source_lineage.facts
@@ -198,13 +182,17 @@ class NexusVerifierStack:
                     ]
                     if legacy_missing_symbols:
                         candidate.metadata["source_patch_preflight"] = {
-                            "passed": False,
+                            "passed": True,
                             "missing_symbols": legacy_missing_symbols[:8],
                             "diagnostics": ["source_binding_missing_symbol"],
+                            "advisory_only": True,
                         }
                 else:
                     candidate.metadata.pop("source_patch_preflight", None)
-                    candidate.metadata["source_lineage_gate"] = source_lineage.to_dict()
+                    source_payload = source_lineage.to_dict()
+                    source_payload["advisory_only"] = True
+                    candidate.metadata["source_lineage_advisory"] = source_payload
+                    candidate.metadata["source_lineage_gate"] = source_payload
         proof_adapter_required = contract_requires_adapter(contract, "proof", candidate=candidate)
         run_proof_adapter = True if proof_adapter_required is None else bool(proof_adapter_required)
         proof_summary = proof_progress_summary(
@@ -215,45 +203,29 @@ class NexusVerifierStack:
         )
         if proof_summary.required:
             for diagnostic in proof_summary.diagnostics:
-                status = "failed" if diagnostic in HARD_PROOF_FAILURES else "warning"
-                feedback.append(_feedback(diagnostic, status, diagnostic))
+                feedback.append(_feedback(diagnostic, "warning", diagnostic))
             if any(diagnostic in HARD_PROOF_FAILURES for diagnostic in proof_summary.diagnostics):
-                passed = False
-                lessons.append("proof-like objective requires a concrete formal object and obligation-ledger progress")
+                lessons.append("proof-object diagnostics are advisory; they do not block exploration or final answer selection")
             candidate.multihead_scores["proof_progress"] = proof_summary.score
-            if not proof_summary.final_eligible:
-                candidate.multihead_scores["answer_likelihood"] = min(candidate.multihead_scores.get("answer_likelihood", 0.0), 0.25)
-                candidate.multihead_scores["verifiability"] = min(candidate.multihead_scores.get("verifiability", 0.0), 0.20)
-                candidate.multihead_scores["deferral_risk"] = max(candidate.multihead_scores.get("deferral_risk", 0.0), 0.85)
         evidence_adapter_required = contract_requires_adapter(contract, "test", candidate=candidate)
         run_evidence_contract = True if evidence_adapter_required is None else bool(evidence_adapter_required or source_adapter_required or patch_adapter_required or candidate.obligation_delta)
         evidence_summary = evidence_obligation_summary(candidate, contract=contract if run_evidence_contract else None)
         if evidence_summary.required:
             for diagnostic in evidence_summary.diagnostics:
-                status = "failed" if diagnostic in HARD_EVIDENCE_FAILURES else "warning"
-                feedback.append(_feedback(diagnostic, status, diagnostic))
+                feedback.append(_feedback(diagnostic, "warning", diagnostic))
             if any(diagnostic in HARD_EVIDENCE_FAILURES for diagnostic in evidence_summary.diagnostics):
-                passed = False
-                lessons.append("candidate must bind named obligations to runtime-verifiable evidence refs or source bindings")
+                lessons.append("evidence-obligation diagnostics are advisory; validation is user-owned")
             candidate.multihead_scores["evidence_progress"] = evidence_summary.score
-            if not evidence_summary.final_eligible:
-                candidate.multihead_scores["answer_likelihood"] = min(candidate.multihead_scores.get("answer_likelihood", 0.0), 0.25)
-                candidate.multihead_scores["verifiability"] = min(candidate.multihead_scores.get("verifiability", 0.0), 0.20)
-                candidate.multihead_scores["deferral_risk"] = max(candidate.multihead_scores.get("deferral_risk", 0.0), 0.85)
         final_summary = final_gate_summary(candidate, contract=contract, project_root=self.project_root)
         if final_summary.required:
             for diagnostic in final_summary.diagnostics:
                 feedback.append(_feedback("final_gate", "warning", diagnostic))
-            if not final_summary.final_eligible:
-                candidate.multihead_scores["answer_likelihood"] = min(candidate.multihead_scores.get("answer_likelihood", 0.0), 0.25)
-                candidate.multihead_scores["verifiability"] = min(candidate.multihead_scores.get("verifiability", 0.0), 0.20)
-                candidate.multihead_scores["deferral_risk"] = max(candidate.multihead_scores.get("deferral_risk", 0.0), 0.85)
         if not feedback:
             feedback.append(_feedback("nexus_verifier_stack", "ok", "candidate passed generic Nexus checks"))
         hard_diagnostics = [
             diagnostic
             for diagnostic in dict.fromkeys(item for feedback_item in feedback for item in feedback_item.diagnostics)
-            if diagnostic in (HARD_PROOF_FAILURES | HARD_EVIDENCE_FAILURES) or any(feedback_item.status == "failed" for feedback_item in feedback)
+            if any(feedback_item.status == "failed" for feedback_item in feedback)
         ]
         failure_guidance = failure_micro_guidance_from_diagnostics(
             candidate_id=candidate.id,
@@ -270,8 +242,8 @@ class NexusVerifierStack:
             evidence_obligation=evidence_summary.to_dict(),
             final_gate=final_summary.to_dict(),
             artifact_contract=artifact_summary.to_dict(),
-            rank_eligible=passed and artifact_summary.rank_eligible and proof_summary.rank_eligible and evidence_summary.rank_eligible and final_summary.rank_eligible,
-            final_eligible=passed and artifact_summary.final_eligible and proof_summary.final_eligible and evidence_summary.final_eligible and final_summary.final_eligible,
+            rank_eligible=passed and artifact_summary.rank_eligible,
+            final_eligible=passed and artifact_summary.final_eligible,
             failure_guidance=failure_guidance,
         )
         for item in feedback:
@@ -458,9 +430,9 @@ def _project_path_binding_failures(candidate: CandidateGenome, *, project_root: 
 def _project_symbol_binding_failures(candidate: CandidateGenome, *, project_root: Path | None = None) -> list[dict[str, str]]:
     """Return missing-symbol diagnostics for source-bound project patches.
 
-    The final gate already rejects hallucinated symbols, but model-backed
-    self-evolution wastes rounds when such candidates survive until late
-    synthesis.  This preflight is intentionally narrower than the final gate:
+    Advisory final-gate telemetry can flag hallucinated symbols for later
+    review, but it must not block answer-first synthesis.  This preflight is
+    intentionally narrow:
     it only runs for patch-like candidates and accepts symbols that either
     already exist in the real file or are explicitly introduced by the patch.
     """

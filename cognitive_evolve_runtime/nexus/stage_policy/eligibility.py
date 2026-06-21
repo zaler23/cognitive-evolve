@@ -21,31 +21,22 @@ from .stages import _has_evidence_progress, candidate_diagnostics, stage_for_can
 from .types import EligibilityDecision
 
 def strict_rank_eligible(candidate: CandidateGenome) -> bool:
-    result = getattr(candidate, "verification_result", {}) or {}
-    if not isinstance(result, dict) or not result:
-        return True
-    if result.get("passed") is False:
+    fate = CandidateFate.normalize(getattr(candidate, "current_fate", ""))
+    if fate in TERMINAL_FATES:
         return False
-    if result.get("rank_eligible") is False:
+    metadata = coerce_dict(getattr(candidate, "metadata", {}))
+    if metadata.get("terminal_failure") or metadata.get("terminal_reject"):
         return False
-    return not bool(candidate_diagnostics(candidate).intersection(HARD_PROOF_FAILURES | HARD_EVIDENCE_FAILURES))
+    return _candidate_nonempty(candidate)
 
 def strict_final_eligible(candidate: CandidateGenome) -> bool:
     fate = CandidateFate.normalize(getattr(candidate, "current_fate", ""))
-    if fate in TERMINAL_FATES or fate == CandidateFate.INCUBATING.value:
+    if fate in TERMINAL_FATES:
         return False
     metadata = coerce_dict(getattr(candidate, "metadata", {}))
-    if any(bool(metadata.get(key)) for key in ("final_answer_blocked_until_repaired", "final_answer_blocked_until_reverified", "final_answer_blocked_until_verified")):
+    if metadata.get("terminal_failure") or metadata.get("terminal_reject"):
         return False
-    result = getattr(candidate, "verification_result", {}) or {}
-    if isinstance(result, dict) and result:
-        if result.get("passed") is False:
-            return False
-        if result.get("final_eligible") is False or result.get("rank_eligible") is False:
-            return False
-    if candidate.metadata.get("search_seed_not_final"):
-        return False
-    return not bool(candidate_diagnostics(candidate).intersection(HARD_PROOF_FAILURES | HARD_EVIDENCE_FAILURES))
+    return _candidate_nonempty(candidate)
 
 def stage_eligibility(
     candidate: CandidateGenome,
@@ -115,25 +106,10 @@ def stage_eligibility(
 
     exploration_eligible = False
     parent_eligible = False
-    repair_required = bool(has_repair_target and not strict_final)
+    repair_required = False
 
-    if stage == EARLY_STAGE:
-        exploration_eligible = nonempty
-        parent_eligible = nonempty and (strict_rank or has_repair_target or bool(candidate.core_mechanism or candidate.niche_memberships))
-    elif stage == MIDDLE_STAGE:
-        exploration_eligible = nonempty and (strict_rank or has_repair_target or has_evidence_progress)
-        parent_eligible = nonempty and (strict_rank or has_repair_target or has_evidence_progress)
-    elif stage == LATE_STAGE:
-        exploration_eligible = nonempty and (strict_rank or has_formal_or_source_progress)
-        parent_eligible = nonempty and (strict_rank or (has_repair_target and has_formal_or_source_progress))
-    else:
-        # The strict final gate belongs to final-answer synthesis, not to the
-        # last search rounds.  Even under final pressure, a non-empty route with
-        # an explicit repair target or concrete source/evidence/formal progress
-        # remains useful parent material; it is still blocked from final answer
-        # by ``strict_final_eligible`` and archive final-answer checks.
-        exploration_eligible = nonempty and (strict_rank or has_repair_target or has_formal_or_source_progress)
-        parent_eligible = nonempty and (strict_rank or has_repair_target or has_formal_or_source_progress)
+    exploration_eligible = nonempty and strict_rank
+    parent_eligible = nonempty and strict_rank
 
     if repair_exhausted:
         notes.append("incubation_repair_budget_exhausted")
@@ -141,10 +117,8 @@ def stage_eligibility(
         notes.append("repair_candidate_deprioritized_until_new_delta")
     elif has_any_progress_signal and (repair_attempts >= max_attempts or repeated_blockers >= max_repeated_blockers):
         notes.append("incubation_extended_by_observed_progress_signal")
-    if not has_repair_target and not strict_rank and stage in {MIDDLE_STAGE, LATE_STAGE, FINAL_STAGE}:
-        notes.append("no_repair_target_after_early_stage")
-    if repair_required and not has_formal_or_source_progress and stage == LATE_STAGE:
-        notes.append("late_repair_requires_formal_or_source_progress")
+    if has_repair_target:
+        notes.append("verification_diagnostics_advisory_only")
 
     incubating = bool(repair_required and exploration_eligible and parent_eligible and not strict_final and not repair_exhausted)
     transition_reason = ""

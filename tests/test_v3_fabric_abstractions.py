@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import json
 
 import pytest
@@ -96,9 +97,33 @@ def test_task_graph_cycle_detection() -> None:
 
 def test_task_graph_recover_inflight() -> None:
     graph = TaskGraph({"A": ExplorationTask(task_id="A", kind=TaskKind.EVALUATE, status=TaskStatus.RUNNING)})
+    before = graph.tasks["A"].updated_at
     graph.recover_inflight()
     assert graph.tasks["A"].status == TaskStatus.READY
     assert graph.tasks["A"].error["recovered_from_inflight"] is True
+    assert graph.tasks["A"].updated_at != before
+
+
+def test_task_graph_mark_attempts_updated_at_and_concurrent_mark() -> None:
+    graph = TaskGraph()
+    for index in range(12):
+        graph.add(ExplorationTask(task_id=f"T{index}", kind=TaskKind.EVALUATE))
+    before = graph.tasks["T0"].updated_at
+
+    graph.mark("T0", TaskStatus.RUNNING)
+    assert graph.tasks["T0"].attempts == 1
+    assert graph.tasks["T0"].updated_at != before
+
+    def _complete(task_id: str) -> None:
+        graph.mark(task_id, TaskStatus.RUNNING)
+        graph.mark(task_id, TaskStatus.DONE)
+
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        list(pool.map(_complete, [f"T{index}" for index in range(12)]))
+
+    assert all(task.status == TaskStatus.DONE for task in graph.tasks.values())
+    assert all(task.attempts >= 1 for task in graph.tasks.values())
+    assert graph.is_drained() is True
 
 
 def test_old_checkpoint_resumes_without_fabric_fields() -> None:

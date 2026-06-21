@@ -138,8 +138,6 @@ def candidate_diagnostics(candidate: CandidateGenome) -> set[str]:
                 diagnostics.update(str(item) for item in payload.get("diagnostics", []) if item)
     if candidate.missing_parts:
         diagnostics.add("missing_parts")
-    if candidate.metadata.get("search_seed_not_final"):
-        diagnostics.add("seed_not_final")
     return diagnostics
 
 def _has_evidence_progress(candidate: CandidateGenome) -> bool:

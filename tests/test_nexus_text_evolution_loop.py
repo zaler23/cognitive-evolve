@@ -56,7 +56,7 @@ def test_model_defined_search_planes_drive_project_seed_breadth_without_low_leve
                 "candidate_families": [
                     {"id": "candidate_lifecycle", "description": "candidate survival, repair, and parenthood"},
                     {"id": "search_distribution", "description": "how exploration breadth is allocated"},
-                    {"id": "final_answer_boundary", "description": "when final gate should apply"},
+                    {"id": "final_answer_boundary", "description": "when advisory final telemetry should be recorded"},
                 ]
             }
         },

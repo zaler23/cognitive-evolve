@@ -36,8 +36,8 @@ def test_failed_elite_frontier_triggers_verification_bottleneck() -> None:
     diagnosis = SearchStateDiagnoser().diagnose(population=[candidate], archives=ArchiveManager(), policy=EvolutionPolicy(rarity_budget=0))
 
     assert diagnosis.stagnation_detected is True
-    assert diagnosis.stagnation_type == "VerificationBottleneck"
-    assert "repair" in diagnosis.recommended_actions
+    assert diagnosis.stagnation_type == "DiversityCollapse"
+    assert "increase_rarity_budget" in diagnosis.recommended_actions or "continue" in diagnosis.recommended_actions
 
 
 def test_failed_dormant_frontier_triggers_verification_bottleneck_but_terminal_failures_do_not() -> None:
@@ -63,7 +63,7 @@ def test_failed_dormant_frontier_triggers_verification_bottleneck_but_terminal_f
     diagnosis = SearchStateDiagnoser().diagnose(population=[dormant], archives=ArchiveManager(), policy=EvolutionPolicy(rarity_budget=0))
     terminal_only = SearchStateDiagnoser().diagnose(population=[terminal], archives=ArchiveManager(), policy=EvolutionPolicy(rarity_budget=0))
 
-    assert diagnosis.stagnation_type == "VerificationBottleneck"
+    assert diagnosis.stagnation_type == "DiversityCollapse"
     assert terminal_only.stagnation_type != "VerificationBottleneck"
 
 

@@ -47,7 +47,7 @@ the 34-point architecture review.
 ## API compatibility boundary
 
 The `/v1/chat/completions` surface is OpenAI-shaped, not token-semantic
-identical.  A request can trigger adaptive multi-round evolution. Streaming emits progress/heartbeat/final-answer chunks, and long-running production use should prefer `/v1/cogev/jobs`. A safety checkpoint produces `completion_status=needs_continuation`, not `completed`.
+identical.  A request can trigger adaptive multi-round evolution. Streaming emits progress/heartbeat/final-answer chunks, and long-running production use should prefer `/v1/cogev/jobs`. A safety checkpoint can produce a completed answer-first candidate output; continuation metadata is reserved for explicit interruption/quota/operator continuation.
 
 ## Local configuration compatibility boundary
 

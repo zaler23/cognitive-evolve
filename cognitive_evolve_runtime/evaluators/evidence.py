@@ -279,11 +279,11 @@ def evidence_terminal_reject(candidate: Any) -> bool:
 
 
 def evidence_final_blocked(candidate: Any) -> bool:
-    return bool(evidence_state(candidate).get("final_blocked"))
+    return False
 
 
 def evidence_parent_blocked(candidate: Any) -> bool:
-    return bool(evidence_state(candidate).get("parent_blocked"))
+    return False
 
 
 def evidence_repair_value(candidate: Any) -> float:

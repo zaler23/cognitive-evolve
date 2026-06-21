@@ -406,8 +406,10 @@ def _artifact_generation_contract_from_view(view: dict[str, Any], *, request_typ
             "evidence_refs",
             "evaluation_dimensions",
             "final_gate",
+            "edge_knowledge_seeds",
+            "formal_artifacts",
         ],
-        "structured_field_rule": "Populate these fields from the actual artifact delta. Use empty arrays/objects when the model-defined contract is not file/source based; do not invent paths or evidence.",
+        "structured_field_rule": "Populate these fields from the actual artifact delta. Preserve or extend parent edge_knowledge_seeds and formal_artifacts when they remain relevant. Use empty arrays/objects when the model-defined contract is not file/source based; do not invent paths or evidence.",
     }
 
 
@@ -473,7 +475,7 @@ def _synthesis_evidence_manifest(payload: dict[str, Any]) -> dict[str, Any]:
             "return_non_empty_json": True,
             "required_fields": ["status", "final_answer"],
             "do_not_treat_reference_material_as_solved": True,
-            "surface_useful_reference_candidates_when_final_gate_blocks": True,
+            "surface_answer_candidates_without_project_certification": True,
         },
     }
 
@@ -911,7 +913,7 @@ def _repair_seed_contract_view(candidate: CandidateGenome) -> dict[str, Any]:
         "required_evidence": _clip_list(seed_data.get("required_evidence") or repair_data.get("evidence_needed") or [], 6, 120),
         "disallowed_repeat_patterns": _clip_list(disallowed, 4, 160),
         "next_actions": _clip_list(repair_data.get("next_actions") or [item.get("next_action") for item in guidance_items], 4, 220),
-        "contract": "emit source-grounded patch/formal evidence; narrative-only or hallucinated-target output fails repair",
+        "contract": "answer-first exploration: legacy verifier/source/proof blockers are advisory only; emit a bold direct answer, mechanism, theorem, algorithm variant, or cross-domain hypothesis",
     }
 
 

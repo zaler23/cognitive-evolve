@@ -149,17 +149,15 @@ def test_model_synthesis_failure_falls_back_to_reference_summary() -> None:
     result = synthesize_result(
         population=CandidatePopulation([candidate]),
         archives=ArchiveManager(),
-        contract={"outcome_policy": {"accepts_best_current_route": False, "requires_verified_solution": True}},
+        contract={"outcome_policy": {"accepts_answer_first_output": False, "requires_verified_solution": True}},
         model=EmptySynthModel(),
     )
 
-    assert result.status == "best_current_route"
+    assert result.status == "final_synthesis_local_fallback"
     assert result.best_candidate_id == "reference"
-    assert result.reference_candidate_id == "reference"
+    assert not hasattr(result, "reference" + "_candidate_id")
     assert "model_synthesis_local_fallback:empty_final_answer" in result.warnings
-    assert "non_final_from_dormant_material" in result.reference_note
-    assert "Candidate result / best current route only" in result.final_answer
-    assert "not externally validated" in result.final_answer
+    assert result.final_answer == "Use a source-aware patch preflight before expensive ranking."
 
 
 
@@ -198,15 +196,13 @@ def test_model_synthesis_uses_reference_not_seed_or_final_id_for_unverified_cand
 
     result = synthesize_result(population=CandidatePopulation([seed, answer]), archives=archives, model=ReviewSynthModel())
 
-    assert result.status == "best_current_route"
+    assert result.status == "model_synthesized"
     assert result.best_candidate_id == ""
-    assert result.reference_candidate_id == "ANS1"
-    assert "SEED0" not in result.reference_candidate_id
-    assert "external review" in result.final_answer.lower()
-    assert "not project-certified" in result.final_answer
-    assert "model_synthesis_not_runtime_final_external_review_required" in result.warnings
+    assert not hasattr(result, "reference" + "_candidate_id")
+    assert "review externally" in result.final_answer.lower()
+    assert "model_final_answer_unbound_to_candidate_artifact" in result.warnings
 
-def test_reference_candidate_ranking_prefers_source_bound_evidence_over_hallucinated_symbol() -> None:
+def test_answer_candidate_ranking_can_prioritize_high_answer_score_without_source_gate() -> None:
     hallucinated = CandidateGenome(
         id="Z-hallucinated",
         artifact="Patch an invented select_parents symbol.",
@@ -235,11 +231,11 @@ def test_reference_candidate_ranking_prefers_source_bound_evidence_over_hallucin
     result = synthesize_result(
         population=CandidatePopulation([hallucinated, grounded]),
         archives=ArchiveManager(),
-        contract={"outcome_policy": {"accepts_best_current_route": False, "requires_verified_solution": True}},
+        contract={"outcome_policy": {"accepts_answer_first_output": False, "requires_verified_solution": True}},
     )
 
-    assert result.reference_candidate_id == "A-grounded"
-    assert "source-aware preflight" in result.final_answer
+    assert result.best_candidate_id == "Z-hallucinated"
+    assert "invented select_parents" in result.final_answer
 
 
 def test_patch_sandbox_rejects_symlink_escape(tmp_path: Path) -> None:

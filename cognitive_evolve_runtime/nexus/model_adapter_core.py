@@ -8,6 +8,7 @@ from jsonschema import Draft202012Validator
 
 from cognitive_evolve_runtime.llm.env import LLMConfigurationError, LLMResponseError
 from cognitive_evolve_runtime.llm.model_spec import LLMModelSpec
+from cognitive_evolve_runtime.nexus.diagnosis import STAGNATION_TYPES
 from cognitive_evolve_runtime.nexus.prompt_audit import maybe_record_prompt_audit
 from cognitive_evolve_runtime.nexus.prompt_view import build_prompt_view
 
@@ -29,6 +30,49 @@ def _validate_schema(data: dict[str, Any], schema: dict[str, Any], *, request_ty
     if errors:
         detail = "; ".join(f"/{'/'.join(map(str, err.path))}: {err.message}" for err in errors[:5])
         raise ModelResponseSchemaError(f"{request_type} model response failed schema validation: {detail}")
+
+
+def _json_key(value: Any) -> str:
+    import json
+
+    try:
+        return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    except Exception:
+        return repr(value)
+
+
+def _record_schema_repair(metadata: dict[str, Any], event: dict[str, Any]) -> None:
+    events = metadata.setdefault("schema_repair_events", [])
+    if isinstance(events, list):
+        events.append(dict(event))
+        del events[:-50]
+
+
+def _repair_search_diagnosis_response(data: dict[str, Any]) -> dict[str, Any]:
+    raw_type = str(data.get("stagnation_type") or "None")
+    if raw_type in STAGNATION_TYPES:
+        return data
+    repaired = dict(data)
+    metadata = dict(repaired.get("metadata") or {}) if isinstance(repaired.get("metadata"), dict) else {}
+    metadata["raw_stagnation_type"] = raw_type
+    notes = str(repaired.get("notes") or "")
+    if raw_type and raw_type not in notes:
+        notes = (notes + "; " if notes else "") + f"raw_stagnation_type={raw_type}"
+    lowered = raw_type.lower()
+    if any(token in lowered for token in ("route", "no_parent", "repair", "patch", "source_binding", "docs_only")):
+        canonical = "RouteIncomplete"
+    elif any(token in lowered for token in ("semantic", "loop", "convergence")):
+        canonical = "SemanticLooping"
+    elif any(token in lowered for token in ("quota", "schema", "transport", "model")):
+        canonical = "ModelSchemaQuotaOrTransport"
+    elif bool(repaired.get("stagnation_detected", False)):
+        canonical = "RouteIncomplete"
+    else:
+        canonical = "None"
+    repaired["metadata"] = metadata
+    repaired["notes"] = notes
+    repaired["stagnation_type"] = canonical
+    return repaired
 
 @dataclass
 class StructuredModelAdapterCore:
@@ -77,6 +121,7 @@ class StructuredModelAdapterCore:
         result = self.caller(request_type, prompt_view.payload, schema)
         if not isinstance(result, dict):
             raise ModelResponseSchemaError(f"{request_type} model response must be a JSON object")
+        original_result_key = _json_key(result)
         if request_type in {"nexus_build_objective_contract", "nexus_build_project_objective_contract"}:
             result = _repair_objective_contract_response(result, payload, project=request_type == "nexus_build_project_objective_contract")
         elif request_type == "nexus_seed_population":
@@ -85,7 +130,29 @@ class StructuredModelAdapterCore:
         elif request_type == "nexus_generate_offspring":
             result = _repair_array_response(result, target_key="offspring", aliases=("offspring", "candidates", "children", "genomes", "mutations", "results"))
             result = _repair_candidate_items(result, key="offspring")
-        _validate_schema(result, schema, request_type=request_type)
+        elif request_type in {"nexus_search_diagnosis", "nexus_diagnose_search_state"}:
+            result = _repair_search_diagnosis_response(result)
+        if _json_key(result) != original_result_key:
+            _record_schema_repair(self.metadata, {"request_type": request_type, "repair": "schema_repair_applied"})
+        try:
+            _validate_schema(result, schema, request_type=request_type)
+        except ModelResponseSchemaError as exc:
+            if request_type != "nexus_seed_population":
+                raise
+            retry_payload = dict(prompt_view.payload)
+            retry_payload["_schema_repair_retry"] = {
+                "reason": str(exc),
+                "target": "Return a JSON object with a candidates array matching the supplied schema.",
+                "max_retries": 1,
+            }
+            _record_schema_repair(self.metadata, {"request_type": request_type, "repair": "schema_repair_retry", "reason": str(exc)})
+            retry_result = self.caller(request_type, retry_payload, schema)
+            if not isinstance(retry_result, dict):
+                raise ModelResponseSchemaError(f"{request_type} schema repair retry response must be a JSON object") from exc
+            retry_result = _repair_array_response(retry_result, target_key="candidates", aliases=("candidates", "seeds", "genomes", "population", "results"))
+            retry_result = _repair_candidate_items(retry_result, key="candidates")
+            _validate_schema(retry_result, schema, request_type=request_type)
+            result = retry_result
         return result
 
 __all__ = ["JsonCaller", "ModelResponseSchemaError", "StructuredModelAdapterCore", "_validate_schema"]

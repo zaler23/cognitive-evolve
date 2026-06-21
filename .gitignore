@@ -38,6 +38,9 @@ htmlcov/
 /archives.json
 /events.jsonl
 /candidate-journal.jsonl
+/llm-calls*/
+/llm-call-ledger*.jsonl
+/call-ledger*.jsonl
 /challenge-memory.json
 /challenge-events.jsonl
 /snapshot-transaction.json

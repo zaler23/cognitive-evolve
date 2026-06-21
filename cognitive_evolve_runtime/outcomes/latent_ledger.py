@@ -401,10 +401,25 @@ class LatentLedgerStore:
             for event in sorted(ledger.events, key=lambda item: item.sequence)
         ]
         appended = self.event_store.append_many_once(events, identity_keys=("type", "event_id"))
-        atomic_write_json(self.ledger_cache_path, ledger.to_dict(), sort_keys=True)
+        ledger_payload = ledger.to_dict()
+        atomic_write_json(self.ledger_cache_path, ledger_payload, sort_keys=True)
+        try:
+            read_back = json.loads(self.ledger_cache_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"latent ledger sidecar is not readable JSON: {self.ledger_cache_path}") from exc
+        if not isinstance(read_back, dict):
+            raise ValueError(f"latent ledger sidecar must be a JSON object: {self.ledger_cache_path}")
+        ledger_hash = stable_hash(read_back)
+        cursor = max((int(event.sequence or 0) for event in ledger.events), default=0)
         return {
+            "sidecar_schema": "latent-ledger-sidecar/v1",
+            "path": str(self.ledger_cache_path),
             "latent_events_path": str(self.event_store.path),
             "latent_ledger_cache_path": str(self.ledger_cache_path),
+            "sha256": ledger_hash,
+            "ledger_hash": ledger_hash,
+            "cursor": cursor,
+            "ledger_cursor": cursor,
             "events_total": len(ledger.events),
             "events_appended": len(appended),
         }

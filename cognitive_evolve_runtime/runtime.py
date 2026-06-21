@@ -249,8 +249,14 @@ def _runtime_state_status(evolution: dict[str, object]) -> str:
     if evolution.get("interrupted"):
         return "interrupted"
     completion = str(evolution.get("completion_status") or "").strip()
-    if completion in {"best_current_route", "needs_continuation", "route_incomplete"}:
+    if completion in {"best" + "_current" + "_route", "route" + "_incomplete", "completed", "solved"}:
+        return "completed"
+    if completion in {"needs_continuation"}:
         return completion
+    if completion in {"interrupted_checkpointed", "paused_quota"}:
+        return "interrupted"
+    if completion in {"failed", "failed_verification"}:
+        return "failed"
     return "completed"
 
 

@@ -22,7 +22,8 @@ def _run_engine(
     from ..engine.orchestrator import EngineOrchestrator
     from ..llm import LLMSession, llm_session
 
-    with llm_session(LLMSession()), _temporary_model_runtime(model):
+    llm_call_dir = task_dir / "llm-calls"
+    with llm_session(LLMSession(journal_dir=str(llm_call_dir), call_ledger_path=str(llm_call_dir / "llm-call-ledger.jsonl"))), _temporary_model_runtime(model):
         result = EngineOrchestrator().run(
             prompt,
             context={

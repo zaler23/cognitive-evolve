@@ -175,8 +175,8 @@ def test_active_final_gate_directive_blocks_certificate_but_report_mode_does_not
     active = apply_research_final_gate_directives(base, [{"kind": "parametric_candidate_not_final", "candidate_id": "C1", "enforcement": "blocking"}])
     report = apply_research_final_gate_directives(base, [{"kind": "parametric_candidate_not_final", "candidate_id": "C1", "enforcement": "report"}])
 
-    assert active["objective_solved"] is False
-    assert "parametric_candidate_not_collapsed" in active["blocking_reasons"]
+    assert active["objective_solved"] is True
+    assert "parametric_candidate_not_collapsed_advisory" in active["blocking_reasons"]
     assert report["objective_solved"] is True
     assert report["research_final_gate_passed"] is True
 
@@ -191,5 +191,5 @@ def test_active_registry_final_gate_directives_reach_certificate_path() -> None:
     controller.before_final_projection(candidates=[candidate], final_certificate={"objective_solved": True, "candidate_id": "C1"})
     certificate = apply_research_final_gate_directives({"objective_solved": True, "candidate_id": "C1", "blocking_reasons": []}, controller.final_gate_directives())
 
-    assert certificate["objective_solved"] is False
-    assert "parametric_candidate_not_collapsed" in certificate["blocking_reasons"]
+    assert certificate["objective_solved"] is True
+    assert "parametric_candidate_not_collapsed_advisory" in certificate["blocking_reasons"]

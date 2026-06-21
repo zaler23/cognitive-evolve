@@ -574,7 +574,7 @@ def test_quality_diversity_separates_search_and_final_quality() -> None:
     assert candidate_search_quality(candidate) > candidate_final_quality(candidate)
 
 
-def test_final_projection_returns_best_current_without_internal_directives() -> None:
+def test_final_projection_returns_answer_without_internal_directives() -> None:
     candidate = CandidateGenome(
         id="C1",
         artifact={"answer": 1},
@@ -596,18 +596,18 @@ def test_final_projection_returns_best_current_without_internal_directives() -> 
             metadata={"challenge_items": [case], "artifact_state": {"normalized_artifact": {"answer": 1}, "status": "clean"}},
         ),
     )
-    synthesis = SynthesizedResult(status="best_current_route", final_answer="internal repair directive should not be reused", best_candidate_id="C1")
+    synthesis = SynthesizedResult(status="completed", final_answer="internal repair directive should not be reused", best_candidate_id="C1")
 
     projection = build_final_projection(population=CandidatePopulation([candidate]), synthesis=synthesis, graded_output=_graded_portfolio(), final_certificate={"blocking_reasons": ["external_evaluator_not_passed"]})
     markdown = projection.to_markdown()
 
-    assert projection.status == "best_current"
+    assert projection.status == "completed"
     assert projection.objective_solved is False
     assert projection.artifact_type == "machine"
-    assert "internal repair directive should not be reused" not in markdown
-    assert "Best current artifact" in markdown
-    assert "boundary case failed" in markdown
-    assert isinstance(projection.to_dict()["artifact"], dict)
+    assert "internal repair directive should not be reused" in markdown
+    assert "Final answer" in markdown
+    assert "boundary case failed" not in markdown
+    assert isinstance(projection.to_dict()["artifact"], str)
 
 
 def test_final_projection_downgrades_refolded_artifact_even_with_solved_certificate() -> None:
@@ -632,19 +632,19 @@ def test_final_projection_downgrades_refolded_artifact_even_with_solved_certific
 
     projection = build_final_projection(population=CandidatePopulation([candidate]), synthesis=synthesis, graded_output=_graded_verified(), final_certificate={"objective_solved": True, "candidate_id": "C1"})
 
-    assert projection.status == "best_current"
+    assert projection.status == "completed"
     assert projection.objective_solved is False
-    assert "candidate_not_clean_final_eligible" in projection.blocking_issues
+    assert projection.blocking_issues == []
 
 
-def test_final_projection_excludes_failed_and_culled_best_current_candidates() -> None:
+def test_final_projection_excludes_failed_and_culled_answer_candidates() -> None:
     failed = CandidateGenome(id="F1", artifact={"bad": 1}, artifact_type="machine", current_fate=CandidateFate.FAILED.value, multihead_scores={"frontier_score": 0.99})
     active = CandidateGenome(id="A1", artifact={"ok": 1}, artifact_type="machine", current_fate=CandidateFate.ACTIVE.value, multihead_scores={"frontier_score": 0.4})
-    synthesis = SynthesizedResult(status="best_current_route", final_answer="", best_candidate_id="F1")
+    synthesis = SynthesizedResult(status="completed", final_answer="", best_candidate_id="F1")
 
     projection = build_final_projection(population=CandidatePopulation([failed, active]), synthesis=synthesis, graded_output=_graded_portfolio(), final_certificate={"blocking_reasons": ["not_final"]})
 
-    assert projection.status == "best_current"
+    assert projection.status == "completed"
     assert projection.candidate_id == "A1"
 
 

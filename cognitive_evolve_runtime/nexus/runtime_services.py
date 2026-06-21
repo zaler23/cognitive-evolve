@@ -200,7 +200,6 @@ def checkpoint_progress_event_for_interruption(progress_event: dict[str, Any], c
 
 def final_answer_artifact_text(result: EvolutionLoopResult) -> str:
     status = str(result.completion_status or result.stop_reason or "completed")
-    reference_candidate_id = str(getattr(result.synthesis, "reference_candidate_id", "") or "")
     header = [
         f"# CognitiveEvolve result: {status}",
         "",
@@ -209,7 +208,6 @@ def final_answer_artifact_text(result: EvolutionLoopResult) -> str:
         "- correctness_verdict: external_validation_required",
         f"- continuation_available: {str(result.completion_status in {'needs_continuation', 'interrupted_checkpointed', 'paused_quota'}).lower()}",
         "- project_correctness_claim: not_claimed",
-        f"- reference_candidate_id: {reference_candidate_id or 'none'}",
         "",
     ]
     final_certificate = dict((getattr(result.synthesis, "closure_certificate", {}) or {}).get("final_certificate") or {})
@@ -220,13 +218,12 @@ def final_answer_artifact_text(result: EvolutionLoopResult) -> str:
     if population is not None and (final_certificate or has_evidence or graded_output.mode == "verified_result"):
         projection = build_final_projection(population=population, synthesis=result.synthesis, graded_output=graded_output, final_certificate=final_certificate)
         return "\n".join(header) + projection.to_markdown()
-    if reference_candidate_id and result.completion_status != "solved":
-        header.extend(
-            [
-                "> The displayed candidate is the runtime's final candidate output. Correctness must be judged by a human reviewer or an external verifier; the project does not self-certify it as correct.",
-                "",
-            ]
-        )
+    header.extend(
+        [
+            "> The displayed answer is candidate material. Correctness must be judged by a human reviewer or an external verifier; the project does not self-certify it as correct.",
+            "",
+        ]
+    )
     return "\n".join(header) + str(result.synthesis.final_answer or "")
 
 

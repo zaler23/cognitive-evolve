@@ -62,8 +62,9 @@ class LiveNexusStore:
         if progress_event.get("max_rounds"):
             budget_payload["round_limit"] = int(progress_event.get("max_rounds") or self.max_rounds)
         allow_round_repair = phase == "error_checkpoint"
-        checkpoint_written = False
         try:
+            self._persist_latent_metadata()
+            checkpoint_contract = _contract_payload_for_checkpoint(self.contract)
             self.checkpoint_store.save_state(
                 round=round_index,
                 max_rounds=self.max_rounds,
@@ -72,7 +73,7 @@ class LiveNexusStore:
                 policy=policy,
                 diagnosis=diagnosis,
                 progress_event=progress_event,
-                contract=self.contract,
+                contract=checkpoint_contract,
                 world=self.world,
                 mode=self.mode,
                 budget_history=budget_history,
@@ -81,7 +82,6 @@ class LiveNexusStore:
                 fabric=fabric_state,
                 allow_progress_round_repair=allow_round_repair,
             )
-            checkpoint_written = True
         except Exception as exc:
             if not allow_round_repair:
                 raise
@@ -98,8 +98,6 @@ class LiveNexusStore:
                 },
                 sort_keys=True,
             )
-        if checkpoint_written:
-            self._persist_latent_metadata()
         snapshot = {
             "phase": phase,
             "round": round_index,
@@ -132,7 +130,15 @@ class LiveNexusStore:
         metadata = _contract_metadata(self.contract)
         ledger_raw = metadata.get(LATENT_LEDGER_METADATA_KEY)
         if ledger_raw:
-            self.latent_ledger_store.persist_ledger(LatentLedger.from_dict(ledger_raw))
+            ref = self.latent_ledger_store.persist_ledger(LatentLedger.from_dict(ledger_raw))
+            metadata["latent_ledger_ref"] = {
+                "sidecar_schema": ref.get("sidecar_schema"),
+                "path": ref.get("path") or ref.get("latent_ledger_cache_path"),
+                "events_path": ref.get("latent_events_path"),
+                "sha256": ref.get("sha256") or ref.get("ledger_hash"),
+                "cursor": ref.get("cursor") or ref.get("ledger_cursor"),
+                "events_total": ref.get("events_total"),
+            }
         snapshot_raw = metadata.get(LATENT_POSTERIOR_SNAPSHOT_METADATA_KEY)
         if snapshot_raw:
             self.latent_ledger_store.persist_snapshot(snapshot_raw)
@@ -168,13 +174,26 @@ def _contract_metadata(contract: Any | None) -> dict[str, Any]:
     if contract is None:
         return {}
     if isinstance(contract, dict):
-        return coerce_dict(contract.get("metadata"))
+        metadata = contract.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+            contract["metadata"] = metadata
+        return metadata
     metadata = getattr(contract, "metadata", None)
     if isinstance(metadata, dict):
         return metadata
     if hasattr(contract, "to_dict"):
         return coerce_dict(contract.to_dict().get("metadata"))
     return {}
+
+
+def _contract_payload_for_checkpoint(contract: Any | None) -> dict[str, Any]:
+    payload = contract.to_dict() if hasattr(contract, "to_dict") else coerce_dict(contract)
+    metadata = coerce_dict(payload.get("metadata"))
+    if metadata.get("latent_ledger_ref"):
+        metadata.pop(LATENT_LEDGER_METADATA_KEY, None)
+        payload["metadata"] = metadata
+    return payload
 
 
 __all__ = ["LiveNexusStore"]

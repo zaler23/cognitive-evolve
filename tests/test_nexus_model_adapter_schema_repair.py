@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from cognitive_evolve_runtime.inputs.project_snapshot import ProjectSnapshot
+from cognitive_evolve_runtime.nexus.diagnosis import SearchDiagnosis
 from cognitive_evolve_runtime.nexus.model_adapter import StructuredModelAdapter
 
 
@@ -146,6 +147,61 @@ def test_offspring_response_accepts_candidate_alias() -> None:
         "evaluation_dimensions",
         "final_gate",
     }
+
+
+def test_seed_population_missing_candidates_triggers_exactly_one_schema_repair_retry() -> None:
+    calls: list[dict[str, Any]] = []
+
+    def caller(request_type: str, payload: dict[str, Any], schema: dict[str, Any]) -> dict[str, Any]:
+        calls.append(dict(payload))
+        if len(calls) == 1:
+            return {"diagnostic": "missing candidates"}
+        assert payload["_schema_repair_retry"]["max_retries"] == 1
+        return {
+            "candidates": [
+                {
+                    "id": "S1",
+                    "artifact": "seed",
+                    "artifact_type": "answer",
+                    "concise_claim": "seed claim",
+                    "core_mechanism": "seed mechanism",
+                    "assumptions": [],
+                    "missing_parts": [],
+                    "uncertainty_notes": [],
+                }
+            ]
+        }
+
+    adapter = StructuredModelAdapter(caller=caller)
+
+    seeds = adapter.seed_population(contract={}, world={}, policy={})
+
+    assert [seed["id"] for seed in seeds] == ["S1"]
+    assert len(calls) == 2
+    repairs = adapter.metadata["schema_repair_events"]
+    assert [event["repair"] for event in repairs].count("schema_repair_retry") == 1
+
+
+def test_diagnosis_adapter_repairs_enum_without_cutting_internal_custom_signals() -> None:
+    def caller(request_type: str, payload: dict[str, Any], schema: dict[str, Any]) -> dict[str, Any]:
+        assert request_type == "nexus_diagnose_search_state"
+        assert "enum" in schema["properties"]["stagnation_type"]
+        return {
+            "stagnation_detected": True,
+            "stagnation_type": "docs_only_patch_loop",
+            "recommended_actions": ["repair"],
+            "notes": "docs_only_patch_loop should remain visible in notes",
+        }
+
+    adapter = StructuredModelAdapter(caller=caller)
+
+    repaired = adapter.diagnose_search_state(population=[], archives={}, history=[], contract={}, policy={})
+    internal = SearchDiagnosis(stagnation_detected=True, stagnation_type="docs_only_patch_loop")
+
+    assert repaired["stagnation_type"] == "RouteIncomplete"
+    assert repaired["metadata"]["raw_stagnation_type"] == "docs_only_patch_loop"
+    assert "docs_only_patch_loop" in repaired["notes"]
+    assert internal.stagnation_type == "docs_only_patch_loop"
 
 
 def test_offspring_schema_repairs_structured_fields_from_patch_headers() -> None:

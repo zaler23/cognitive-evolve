@@ -150,7 +150,7 @@ class ArchiveManager:
                     fate = CandidateFate.INCUBATING.value if decision is None or decision.incubating else CandidateFate.DORMANT.value
                 else:
                     fate = CandidateFate.INCUBATING.value if decision is not None and decision.incubating else CandidateFate.DORMANT.value
-            elif candidate.id == best_answer or (score(candidate, "answer_likelihood") > 0 and in_top_band(candidate, candidates, "answer_likelihood") and not candidate.metadata.get("search_seed_not_final")):
+            elif candidate.id == best_answer or (score(candidate, "answer_likelihood") > 0 and in_top_band(candidate, candidates, "answer_likelihood")):
                 fate = CandidateFate.ELITE.value
             elif candidate.id in auxiliary_ids or candidate.multihead_scores.get("auxiliary_value", 0.0) > max(candidate.multihead_scores.get("answer_likelihood", 0.0), candidate.multihead_scores.get("objective_alignment", 0.0)):
                 fate = CandidateFate.AUXILIARY.value
@@ -166,7 +166,7 @@ class ArchiveManager:
             if _candidate_verification_blocks_final(candidate) or evidence_blocks_final:
                 assignment.failure_signature = _verification_failure_signature(candidate) if _candidate_verification_blocks_final(candidate) else _evidence_failure_signature(candidate)
                 assignment.future_reactivation_condition = (
-                    (decision.reactivation_condition or "repair_lane_requires_concrete_formal_artifact_obligation_delta_or_verified_evidence")
+                    (decision.reactivation_condition or "answer_first_reactivation_uses_mechanism_value")
                     if fate == CandidateFate.INCUBATING.value and decision is not None
                     else (decision.reactivation_condition if decision is not None else "")
                     or "reactivate_only_with_concrete_formal_artifact_and_obligation_delta"

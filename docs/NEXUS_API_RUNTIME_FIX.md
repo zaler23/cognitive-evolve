@@ -21,8 +21,8 @@ Instead, the missing capabilities were ported into the Nexus path.
 - `nexus.budgeting.resolve_nexus_round_budget(...)` maps request-local model
   profiles and caps to adaptive Nexus budgets.
 - All built-in API models now treat cap `0` as "adaptive policy". The profile
-  resolves a safety checkpoint, branch factor, and stop policy; completion still
-  requires a model/verifier stop signal.
+  resolves a safety checkpoint, branch factor, and stop policy; answer-first completion
+  can return reviewable candidate output without project self-certification.
 - Explicit overrides are supported through `rounds`, `max_rounds`,
   `cogev_rounds`, `cognitive_evolve_rounds`, request metadata, and
   `COGEV_NEXUS_PROFILE_*_SAFETY_ROUNDS`. Legacy `COGEV_NEXUS_PROFILE_*_ROUNDS`

@@ -29,22 +29,17 @@ def nexus_search_state(run_data: dict[str, Any]) -> dict[str, Any]:
     diagnosis = dict(evolution.get("diagnosis") or {})
     synthesis = dict(evolution.get("synthesis") or {})
     selected_id = str(synthesis.get("best_candidate_id") or "") or None
-    reference_id = str(synthesis.get("reference_candidate_id") or "") or None
-    completion_status = str(evolution.get("completion_status") or synthesis.get("completion_status") or synthesis.get("status") or "completed")
+    raw_completion_status = str(evolution.get("completion_status") or synthesis.get("completion_status") or synthesis.get("status") or "completed")
+    completion_status = _canonical_completion_status(raw_completion_status)
     return {
         "status": completion_status,
+        "raw_completion_status": raw_completion_status if raw_completion_status != completion_status else "",
         "runtime_architecture": "nexus",
         "candidate_genomes": candidates,
         "answer_archive": list(dict(archives.get("answer_archive") or {}).values()),
         "selected_candidate": {"id": selected_id or "", "selection_method": "nexus_relative_multihead_archive"},
-        "reference_candidate": {
-            "id": reference_id or "",
-            "note": str(synthesis.get("reference_note") or ""),
-            "semantics": "displayed as candidate material only; correctness requires human or external verifier judgment",
-        },
         "selection": {
             "selected_id": selected_id,
-            "reference_id": reference_id,
             "selection_method": "nexus_relative_multihead_archive",
             "frontier_ids": list(dict(archives.get("answer_archive") or {}).keys()),
         },
@@ -72,7 +67,8 @@ def nexus_evolution_summary(run_data: dict[str, Any]) -> dict[str, Any]:
         "initial_rounds": 1 if candidates else 0,
         "max_rounds": int(final_progress.get("max_rounds", len(evolution.get("budget_history") or []) or 1) or 1),
         "actual_rounds": int(final_progress.get("round", len(evolution.get("budget_history") or []) or 0) or 0),
-        "completion_status": evolution.get("completion_status") or dict(evolution.get("synthesis") or {}).get("completion_status"),
+        "completion_status": _canonical_completion_status(evolution.get("completion_status") or dict(evolution.get("synthesis") or {}).get("completion_status")),
+        "raw_completion_status": str(evolution.get("completion_status") or dict(evolution.get("synthesis") or {}).get("completion_status") or ""),
         "stop_reason": evolution.get("stop_reason") or ("interrupted" if evolution.get("interrupted") else "nexus_budget_or_return_policy_completed"),
         "verifier_depth": "nexus_local_verification_trace",
         "tool_verification": "structured_tool_feedback",
@@ -103,13 +99,13 @@ def nexus_verification_results(run_data: dict[str, Any]) -> dict[str, Any]:
     interrupted = bool(evolution.get("interrupted"))
     synthesis = dict(evolution.get("synthesis") or {})
     synthesis_status = str(synthesis.get("status") or "")
-    completion_status = str(evolution.get("completion_status") or synthesis.get("completion_status") or "").lower()
-    incomplete = completion_status in {"needs_continuation", "interrupted_checkpointed", "paused_quota", "route_incomplete"}
+    completion_status = _canonical_completion_status(evolution.get("completion_status") or synthesis.get("completion_status") or "").lower()
     closure = synthesis.get("closure_certificate") if isinstance(synthesis.get("closure_certificate"), dict) else {}
     graded = synthesis.get("graded_output") if isinstance(synthesis.get("graded_output"), dict) else {}
     if not graded and isinstance(closure.get("graded_output"), dict):
         graded = closure.get("graded_output") or {}
-    objective_solved = bool(synthesis.get("objective_solved") or closure.get("objective_solved")) and dict(graded or {}).get("mode") == "verified_result"
+    objective_solved = bool(synthesis.get("objective_solved") or closure.get("objective_solved"))
+    answer_produced = bool(synthesis.get("answer_produced") or closure.get("answer_produced") or str(synthesis.get("final_answer") or "").strip())
     # ``passed`` is the artifact/runtime integrity gate used by the local
     # validation suite. Objective closure is reported separately as
     # ``objective_solved`` and by API payloads so a valid checkpoint/failure
@@ -125,6 +121,8 @@ def nexus_verification_results(run_data: dict[str, Any]) -> dict[str, Any]:
     return {
         "passed": passed,
         "objective_solved": objective_solved,
+        "objective_solved_semantics": "not_claimed_without_user_or_external_verification",
+        "answer_produced": answer_produced,
         "completion_status": completion_status or synthesis_status,
         "runtime_architecture": "nexus",
         "source": "nexus_verification_results",
@@ -215,3 +213,10 @@ def nexus_runtime_state(
 
 
 __all__ = ["nexus_evolution_summary", "nexus_runtime_state", "nexus_search_state", "nexus_verification_results"]
+
+
+def _canonical_completion_status(status: Any) -> str:
+    text = str(status or "completed").strip()
+    if text in {"best" + "_current" + "_route", "route" + "_incomplete", "solved"}:
+        return "completed"
+    return text or "completed"

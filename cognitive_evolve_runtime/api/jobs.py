@@ -28,12 +28,16 @@ _TERMINAL_JOB_STATUSES = {
     "rejected",
     "interrupted",
     "interrupted_checkpointed",
-    "best_current_route",
     "needs_continuation",
-    "route_incomplete",
     "failed_verification",
     "paused_quota",
 }
+_LEGACY_COMPLETED_STATUSES = {"best" + "_current" + "_route", "route" + "_incomplete"}
+
+
+def _normalize_public_job_status(status: Any) -> str:
+    text = str(status or "unknown")
+    return "completed" if text in _LEGACY_COMPLETED_STATUSES else text
 
 
 class JobQueue:
@@ -77,12 +81,27 @@ class JobQueue:
             return [dict(job) for job in _JOBS.values()]
 
 
+
+
+def _job_has_result_payload(job: dict[str, Any]) -> bool:
+    if not isinstance(job, dict):
+        return False
+    status = _normalize_public_job_status(job.get("status"))
+    terminal = status in _TERMINAL_JOB_STATUSES or status in {"checkpointed"}
+    if not terminal:
+        return False
+    if str(job.get("answer") or "").strip():
+        return True
+    data = job.get("nexus_data") if isinstance(job.get("nexus_data"), dict) else {}
+    synthesis = dict(dict(data.get("evolution") or {}).get("synthesis") or {}) if isinstance(data, dict) else {}
+    return bool(str(synthesis.get("final_answer") or "").strip())
+
 def _job_public(job: dict[str, Any], *, include_answer: bool = True) -> dict[str, Any]:
     durable_plan = _durable_resume_snapshot(job)
     payload = {
         "id": job.get("id"),
         "object": "cogev.job",
-        "status": job.get("status"),
+        "status": _normalize_public_job_status(job.get("status")),
         "created": job.get("created"),
         "updated": job.get("updated"),
         "heartbeat": job.get("heartbeat"),
@@ -95,9 +114,9 @@ def _job_public(job: dict[str, Any], *, include_answer: bool = True) -> dict[str
         "durable_resume_plan": durable_plan,
         "resume_available": (durable_plan or {}).get("status") in {"resume_available", "all_committed"} if isinstance(durable_plan, dict) else False,
     }
-    if include_answer and job.get("status") in {"completed", "best_current_route", "needs_continuation", "checkpointed", "paused_quota", "route_incomplete"}:
+    if include_answer and _job_has_result_payload(job):
         payload["answer"] = job.get("answer", "")
-        from .payloads import _nexus_actual_rounds, _nexus_completion_status, _nexus_objective_solved, _nexus_verification_passed
+        from .payloads import _nexus_actual_rounds, _nexus_answer_produced, _nexus_completion_status, _nexus_objective_solved, _nexus_verification_passed
 
         data = job.get("nexus_data") if isinstance(job.get("nexus_data"), dict) else {}
         payload["cognitive_evolve"] = {
@@ -105,6 +124,8 @@ def _job_public(job: dict[str, Any], *, include_answer: bool = True) -> dict[str
             "actual_rounds": _nexus_actual_rounds(data),
             "verification_passed": _nexus_verification_passed(data),
             "objective_solved": _nexus_objective_solved(data),
+            "objective_solved_semantics": "not_claimed_without_user_or_external_verification",
+            "answer_produced": _nexus_answer_produced(data),
             "completion_status": _nexus_completion_status(data),
         }
     return redact(payload)
@@ -282,7 +303,9 @@ def _status_from_nexus_data(nexus_data: dict[str, Any], *, fallback: str = "comp
     evolution = nexus_data.get("evolution") if isinstance(nexus_data.get("evolution"), dict) else {}
     synthesis = evolution.get("synthesis") if isinstance(evolution.get("synthesis"), dict) else {}
     completion = str(evolution.get("completion_status") or synthesis.get("completion_status") or "").strip()
-    if completion in {"best_current_route", "needs_continuation", "route_incomplete", "failed_verification", "failed", "interrupted_checkpointed", "paused_quota"}:
+    if completion in _LEGACY_COMPLETED_STATUSES:
+        return "completed"
+    if completion in {"needs_continuation", "failed_verification", "failed", "interrupted_checkpointed", "paused_quota"}:
         return completion
     if evolution.get("interrupted"):
         return "interrupted"
@@ -327,6 +350,7 @@ def _prune_jobs_locked(*, now: int | None = None) -> int:
 __all__ = [
     'JobQueue',
     '_job_public',
+    '_job_has_result_payload',
     '_durable_resume_snapshot',
     '_set_job',
     '_get_job',

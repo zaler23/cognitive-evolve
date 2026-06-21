@@ -107,7 +107,10 @@ def seed_population(
         minimum_size=target_size,
     )
     if model_error is not None:
+        accepted_model_ids = {candidate.id for candidate in model_candidates}
         for candidate in population.candidates:
+            if accepted_model_ids and candidate.id in accepted_model_ids:
+                continue
             candidate.metadata.setdefault("created_in_round", 0)
             candidate.metadata.setdefault("model_seed_error", f"{model_error.__class__.__name__}: {model_error}")
             candidate.failure_lessons.append("model seed generation failed before completion; resume from checkpoint when provider quota recovers")
@@ -171,7 +174,7 @@ def _generate_model_seed_batches(
     )
     for candidate in result.accepted:
         candidate.metadata.setdefault("seed_harvest", result.to_dict())
-    return result.accepted, result.rejected, result.model_error
+    return result.accepted, result.rejected, result.fatal_model_error
 
 
 def _coerce_seed_batch(raw: Any) -> list[CandidateGenome]:
@@ -239,7 +242,7 @@ def _seed_low_novelty_patience(*, policy: EvolutionPolicy) -> int:
     return 1
 
 
-def _seed_fanout_workers(*, policy: EvolutionPolicy, target_size: int) -> int:
+def _seed_fanout_workers(*, policy: EvolutionPolicy, target_size: int) -> int | None:
     metadata = policy.metadata if isinstance(policy.metadata, dict) else {}
     configured = _positive_int(
         metadata.get("seed_fanout_concurrency")
@@ -248,7 +251,11 @@ def _seed_fanout_workers(*, policy: EvolutionPolicy, target_size: int) -> int:
     )
     if configured:
         return min(_seed_safety_batch_limit(policy=policy), configured)
-    return 1
+    # No seed-specific override: follow the shared model fanout governor.
+    # Concurrent seed prompts intentionally share a previous-window snapshot of
+    # accepted signatures; the post-fanout harvester remains the serial
+    # dedupe/merge authority for deterministic acceptance.
+    return None
 
 
 def _bounded_env_int(name: str, *, maximum: int) -> int | None:

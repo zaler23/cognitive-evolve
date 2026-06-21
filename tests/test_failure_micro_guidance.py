@@ -17,7 +17,7 @@ def _proof_contract() -> NexusObjectiveContract:
     )
 
 
-def test_verifier_writes_failure_micro_guidance() -> None:
+def test_verifier_keeps_proof_diagnostics_advisory_without_micro_guidance() -> None:
     candidate = CandidateGenome(
         id="needs-proof",
         generation=2,
@@ -28,14 +28,12 @@ def test_verifier_writes_failure_micro_guidance() -> None:
 
     result = NexusVerifierStack().verify_candidate(candidate, contract=_proof_contract())
 
-    assert result.passed is False
-    guidance = candidate.metadata["failure_micro_guidance"]
-    blockers = {item["blocker"] for item in guidance}
-    assert "proof_object_absent" in blockers
-    assert any("formal_artifact" in item["evidence_needed"] for item in guidance)
+    assert result.passed is True
+    assert "proof_object_absent" in result.diagnostics
+    assert "failure_micro_guidance" not in candidate.metadata
 
 
-def test_failure_micro_guidance_becomes_compact_mutation_repair_directive() -> None:
+def test_legacy_repair_plan_is_not_forced_by_advisory_proof_diagnostics() -> None:
     parent = CandidateGenome(
         id="needs-proof",
         generation=2,
@@ -48,8 +46,6 @@ def test_failure_micro_guidance_becomes_compact_mutation_repair_directive() -> N
 
     [updated] = _attach_policy_directives_to_plans([plan], EvolutionPolicy(), parents=[parent])
 
-    assert "repair_directives" in updated.metadata
-    assert updated.metadata["repair_directives"][0]["blocker"] == "proof_object_absent"
-    assert "Repair directive: fix proof_object_absent" in updated.instruction
-    assert len(updated.instruction) < 600
-
+    assert "repair_directives" not in updated.metadata
+    assert updated.operator == MutationOperator.REPAIR
+    assert updated.instruction == "Repair the parent."

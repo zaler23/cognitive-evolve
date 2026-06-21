@@ -214,9 +214,9 @@ def test_final_answer_artifact_defers_correctness_to_external_review() -> None:
 
     text = final_answer_artifact_text(
         SimpleNamespace(
-            completion_status="best_current_route",
+            completion_status="completed",
             stop_reason="max_rounds",
-            synthesis=SimpleNamespace(reference_candidate_id="C1", final_answer="\nAnswer body"),
+            synthesis=SimpleNamespace(best_candidate_id="C1", final_answer="\nAnswer body"),
         )
     )
 

@@ -13,7 +13,7 @@ from ..artifacts.store import _write_json
 from ..core.redaction import redact
 from .config import get_service_config
 from .executor import QueueFullError, get_stream_executor
-from .payloads import _nexus_actual_rounds, _nexus_completion_status, _nexus_objective_solved, _nexus_verification_passed
+from .payloads import _nexus_actual_rounds, _nexus_answer_produced, _nexus_completion_status, _nexus_objective_solved, _nexus_verification_passed
 from .jobs import _now, _task_dir_for_request
 from .profiles import _temporary_model_runtime
 
@@ -137,6 +137,7 @@ def _stream_done_chunk(*, request_id: str, model: str, created: int, nexus_data:
             "actual_rounds": _nexus_actual_rounds(nexus_data),
             "verification_passed": _nexus_verification_passed(nexus_data),
             "objective_solved": _nexus_objective_solved(nexus_data),
+            "answer_produced": _nexus_answer_produced(nexus_data),
             "completion_status": _nexus_completion_status(nexus_data),
             "streaming_semantics": "progress events plus final answer chunks; not provider token streaming",
         }
@@ -182,7 +183,8 @@ def _stream_engine_chunks(prompt: str, *, request_id: str, model: str, raw_reque
             config = get_service_config()
             task_dir = _task_dir_for_request(config.api_task_root, request_id)
             _write_json(task_dir / "api-request.json", redact({"request_id": request_id, "model": model, "request": raw_request}))
-            with llm_session(LLMSession()), _temporary_model_runtime(model):
+            llm_call_dir = task_dir / "llm-calls"
+            with llm_session(LLMSession(journal_dir=str(llm_call_dir), call_ledger_path=str(llm_call_dir / "llm-call-ledger.jsonl"))), _temporary_model_runtime(model):
                 engine = engine_cls()
                 run_kwargs: dict[str, Any] = {
                     "context": {

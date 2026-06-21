@@ -63,7 +63,7 @@ def test_model_seed_generation_runs_multiple_batches_and_dedupes(monkeypatch) ->
     assert mechanisms.count("duplicate-mechanism") == 1
 
 
-def test_adaptive_safety_checkpoint_is_continuation_not_completion(monkeypatch, tmp_path) -> None:
+def test_adaptive_safety_checkpoint_is_advisory_completed_answer_first(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("COGEV_NEXUS_PROFILE_EXHAUSTIVE_SAFETY_ROUNDS", "2")
     with _temporary_model_runtime("cognitive-evolve-one-shot-exhaustive"):
         result = EngineOrchestrator(model=NoStopModel()).run(
@@ -77,10 +77,11 @@ def test_adaptive_safety_checkpoint_is_continuation_not_completion(monkeypatch, 
 
     evolution = result.evolution
     assert evolution["stop_reason"] == "adaptive_safety_checkpoint"
-    assert evolution["completion_status"] == "needs_continuation"
-    assert evolution["synthesis"]["status"] == "needs_continuation"
-    assert evolution["synthesis"]["continuation_available"] is True
-    assert evolution["synthesis"]["closure_certificate"]["terminal_status"] == "needs_continuation"
+    assert evolution["completion_status"] == "completed"
+    assert evolution["synthesis"]["status"] == "synthesized"
+    assert evolution["synthesis"]["continuation_available"] is False
+    assert evolution["synthesis"]["closure_certificate"]["terminal_status"] == "completed"
+    assert evolution["synthesis"]["closure_certificate"]["answer_produced"] is True
     assert evolution["synthesis"]["closure_certificate"]["objective_solved"] is False
     assert evolution["progress_events"][-1]["metadata"]["adaptive"] is True
     assert evolution["pipeline_events"][-1]["metadata"]["progress_semantics"] == "open_ended_no_percent_complete"
@@ -96,7 +97,7 @@ def test_job_status_reflects_continuation_axis_status(status: str) -> None:
     assert _status_from_nexus_data(data, fallback="completed") == status
 
 
-def test_best_current_route_is_contract_policy_driven_not_task_type_hardcoded() -> None:
+def test_answer_first_output_is_not_contract_blocked() -> None:
     candidate = CandidateGenome(
         id="C-route",
         generation=2,
@@ -111,26 +112,28 @@ def test_best_current_route_is_contract_policy_driven_not_task_type_hardcoded() 
     strict_contract = NexusObjectiveContract(
         original_user_goal="design task",
         normalized_goal="design task",
-        outcome_policy={"accepts_best_current_route": False, "requires_verified_solution": True},
+        outcome_policy={"accepts_answer_first_output": False, "requires_verified_solution": True},
     )
     flexible_contract = NexusObjectiveContract(
         original_user_goal="design task",
         normalized_goal="design task",
-        outcome_policy={"accepts_best_current_route": True, "requires_verified_solution": False},
+        outcome_policy={"accepts_answer_first_output": True, "requires_verified_solution": False},
     )
 
     strict = synthesize_result(population=population, archives=ArchiveManager(), contract=strict_contract)
     flexible = synthesize_result(population=population, archives=ArchiveManager(), contract=flexible_contract)
 
-    assert strict.status == "failure_report"
-    assert flexible.status == "best_current_route"
+    assert strict.status == "synthesized"
+    assert flexible.status == "synthesized"
+    assert flexible.answer_produced is True
     assert flexible.objective_solved is False
-    assert flexible.reference_candidate_id == "C-route"
-    assert "Candidate result / best current route only" in flexible.final_answer
-    assert "not externally validated" in flexible.final_answer
+    assert strict.best_candidate_id == "C-route"
+    assert flexible.best_candidate_id == "C-route"
+    assert strict.final_answer == "A useful but non-final design route."
+    assert flexible.final_answer == "A useful but non-final design route."
 
 
-def test_reference_candidate_is_displayed_when_not_final_gate_passing() -> None:
+def test_answer_candidate_is_displayed_when_not_project_certified() -> None:
     candidate = CandidateGenome(
         id="C-reference",
         generation=3,
@@ -151,19 +154,16 @@ def test_reference_candidate_is_displayed_when_not_final_gate_passing() -> None:
     strict_contract = NexusObjectiveContract(
         original_user_goal="ship verified runtime patch",
         normalized_goal="ship verified runtime patch",
-        outcome_policy={"accepts_best_current_route": False, "requires_verified_solution": True},
+        outcome_policy={"accepts_answer_first_output": False, "requires_verified_solution": True},
     )
 
     synthesis = synthesize_result(population=CandidatePopulation([candidate]), archives=ArchiveManager(), contract=strict_contract)
 
-    assert synthesis.status == "failure_report"
-    assert synthesis.best_candidate_id == ""
-    assert synthesis.reference_candidate_id == "C-reference"
+    assert synthesis.status == "synthesized"
+    assert synthesis.best_candidate_id == "C-reference"
+    assert synthesis.answer_produced is True
     assert synthesis.objective_solved is False
-    assert "Candidate retained for follow-up" in synthesis.final_answer
-    assert "correctness has not been externally validated" in synthesis.final_answer
-    assert "final_update_artifact_absent" in synthesis.final_answer
-    assert "machine-applicable project patch" in synthesis.final_answer
+    assert synthesis.final_answer == "Useful repair direction: persist incubating lane state across bootstrap."
 
 
 def test_model_semantic_assessment_overrides_conservative_fallbacks() -> None:
@@ -280,7 +280,7 @@ def test_model_defined_nexus_contract_task_type_is_preserved() -> None:
             "original_user_goal": "goal",
             "normalized_goal": "goal",
             "task_type": "model_defined_non_registry_task",
-            "outcome_policy": {"accepts_best_current_route": True},
+            "outcome_policy": {"accepts_answer_first_output": True},
         }
     )
 

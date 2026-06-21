@@ -18,6 +18,7 @@ from cognitive_evolve_runtime.nexus.activation_reseed import emergency_activatio
 from cognitive_evolve_runtime.nexus._serde import utc_now
 from cognitive_evolve_runtime.nexus.exploration import action_palette_for_round, amplify_population
 from cognitive_evolve_runtime.nexus.diagnosis import PolicyUpdater, SearchDiagnosis, SearchStateDiagnoser
+from cognitive_evolve_runtime.nexus.display_selection import build_display_context, select_displayed_candidate
 from cognitive_evolve_runtime.nexus.generation_plan import GenerationPlan, apply_generation_plan, assert_stage_ready, build_generation_plan, expected_generation_plan_id
 from cognitive_evolve_runtime.nexus.model_errors import is_quota_error
 from cognitive_evolve_runtime.nexus.obligations import candidate_obligation_delta, candidate_source_bindings
@@ -303,10 +304,7 @@ class EvolutionLoopController:
             improvement_certificate=improvement_certificate,
         )
         if latent_override.get("overridden"):
-            completion_status = str(latent_override.get("completion_status") or completion_status)
-            synthesis.status = "needs_continuation"
-            synthesis.warnings.append(str(latent_override.get("reason") or "latent_problem_space_not_converged"))
-            synthesis.failure_analysis = synthesis.failure_analysis or "Latent problem-space convergence is unresolved; continue exploration before claiming solved."
+            synthesis.warnings.append(str(latent_override.get("reason") or "latent_problem_space_not_converged") + ":advisory_only_nonblocking")
         self.budget.completion_status = completion_status
         if self.interrupted:
             if self.budget.stop_reason == "model_quota_pause_checkpointed":
@@ -330,17 +328,11 @@ class EvolutionLoopController:
             synthesis.failure_analysis = synthesis.failure_analysis or self.error.get("message", "Nexus evolution interrupted.")
         elif completion_status == "needs_continuation":
             synthesis.status = "needs_continuation"
-            synthesis.warnings.append("adaptive_safety_checkpoint_reached_without_objective_closure")
+            synthesis.warnings.append("continuation_requested_without_answer_completion")
             synthesis.failure_analysis = synthesis.failure_analysis or (
-                "The adaptive run reached its safety checkpoint before a model/verifier stop signal closed the objective. "
-                "The persisted checkpoint is intended for continuation, not as proof of completion."
+                "The run requested continuation before answer-first completion. "
+                "The persisted checkpoint is available for continuation; no project correctness claim is made."
             )
-        elif completion_status == "route_incomplete":
-            synthesis.status = "route_incomplete"
-            synthesis.warnings.append("route_incomplete_single_diagnostic_not_objective_solution")
-        elif completion_status == "best_current_route":
-            synthesis.status = "best_current_route"
-            synthesis.warnings.append("best_current_route_not_objective_solution")
         synthesis.continuation_available = completion_status in {"needs_continuation", "interrupted_checkpointed", "paused_quota"}
         synthesis.completion_status = completion_status
         synthesis.closure_certificate = _closure_certificate(
@@ -372,15 +364,19 @@ class EvolutionLoopController:
             archives=self.archives,
         )
         _attach_latent_replay_audit_to_closure(synthesis, latent_replay_audit)
+        latest_ranking = self.budget.history[-1].get("ranking") if self.budget.history and isinstance(self.budget.history[-1], dict) else {}
+        synthesis.closure_certificate["display_context"] = build_display_context(
+            candidates=self.population.candidates,
+            ranking=latest_ranking,
+            contract=self.contract,
+            fallback_inputs={"best_candidate_id": synthesis.best_candidate_id},
+        ).to_dict()
         graded_output = _graded_output_for_final_state(population=self.population, synthesis=synthesis, final_certificate=final_certificate, latent_replay_audit=latent_replay_audit, contract=self.contract)
         synthesis.closure_certificate["graded_output"] = graded_output.to_dict()
         if graded_output.mode != "verified_result":
-            synthesis.closure_certificate["objective_solved"] = False
-            critical = list(synthesis.closure_certificate.get("critical_failures") or [])
-            if completion_status == "solved":
-                critical.append("graded_output_not_formal_verified_result")
-            synthesis.closure_certificate["critical_failures"] = list(dict.fromkeys(str(item) for item in critical if item))
+            synthesis.closure_certificate["graded_output_advisory"] = "verification_result_not_required_for_answer_first_completion"
         synthesis.objective_solved = bool(synthesis.closure_certificate.get("objective_solved"))
+        synthesis.answer_produced = bool(synthesis.closure_certificate.get("answer_produced"))
         final_progress_event = self.progress_events[-1] if self.progress_events else {}
         if self.interrupted:
             final_progress_event = _error_progress_event(final_progress_event, self.budget.current_round)
@@ -451,17 +447,22 @@ def _graded_output_for_final_state(*, population: CandidatePopulation, synthesis
         core_insight=str(synthesis.final_answer or synthesis.failure_analysis or "continue search"),
         key_assumptions=[str(item) for item in synthesis.warnings[:5]] + (["closure gate passed but no FORMAL replayable verifier result was earned"] if closure_solved else []),
         falsification_test="Freeze the referenced candidate artifact and rerun the strongest available verifier; any counterexample rules out this direction.",
-        lineage=[str(getattr(selected, "id", "") or synthesis.reference_candidate_id or synthesis.best_candidate_id or "")],
+        lineage=[str(getattr(selected, "id", "") or synthesis.best_candidate_id or "")],
         why_non_obvious="Returned as a protected portfolio direction because the run did not reach FORMAL replayable verification.",
     )
     return GradedOutput(mode="graded_portfolio", verification_strength=strength, portfolio=[direction], ruled_out_map=[], replay_certificate=replay_certificate)
 
 
 def _selected_final_candidate(population: CandidatePopulation, *, synthesis: SynthesizedResult, final_certificate: dict[str, Any]) -> CandidateGenome | None:
-    candidate_id = str(final_certificate.get("candidate_id") or synthesis.best_candidate_id or synthesis.reference_candidate_id or "")
+    candidate_id = str(final_certificate.get("candidate_id") or synthesis.best_candidate_id or "")
     by_id = {candidate.id: candidate for candidate in population.candidates}
     if candidate_id and candidate_id in by_id:
         return by_id[candidate_id]
+    display_context = synthesis.closure_certificate.get("display_context") if isinstance(synthesis.closure_certificate, dict) else {}
+    if isinstance(display_context, dict) and display_context:
+        selection = select_displayed_candidate(display_context, candidates=population.candidates)
+        if selection.candidate_id in by_id:
+            return by_id[selection.candidate_id]
     return None
 
 
@@ -469,7 +470,7 @@ def _replay_certificate_for_final_state(*, synthesis: SynthesizedResult, final_c
     from cognitive_evolve_runtime.nexus._serde import stable_hash
     from cognitive_evolve_runtime.verification.cache import candidate_artifact_hash
 
-    frozen_hash = candidate_artifact_hash(candidate) if candidate is not None else "artifact-" + stable_hash({"answer": synthesis.final_answer, "candidate_id": synthesis.best_candidate_id or synthesis.reference_candidate_id})[:16]
+    frozen_hash = candidate_artifact_hash(candidate) if candidate is not None else "artifact-" + stable_hash({"answer": synthesis.final_answer, "candidate_id": synthesis.best_candidate_id})[:16]
     result_payload = verification_result.to_dict() if hasattr(verification_result, "to_dict") else {}
     metadata = dict(getattr(verification_result, "metadata", {}) or {}) if verification_result is not None else {}
     measured_strength = measured_strength_from_result(verification_result)

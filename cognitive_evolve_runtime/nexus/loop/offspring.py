@@ -7,7 +7,6 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Callable
 
 from cognitive_evolve_runtime.archives.manager import ArchiveManager
-from cognitive_evolve_runtime.candidates.crossover import crossover
 from cognitive_evolve_runtime.candidates.crossover import crossover, neighborhood_crossover_partner
 from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome, CandidatePopulation, candidate_from_dict
 from cognitive_evolve_runtime.candidates.mutation import MutationEngine, MutationOperator, MutationPlan, MutationPlanner
@@ -15,7 +14,7 @@ from cognitive_evolve_runtime.contracts.objective_contract import NexusObjective
 from cognitive_evolve_runtime.events.progress import EvolutionProgressEvent, PipelineProgressEvent
 from cognitive_evolve_runtime.nexus.critique import CandidateCritique, CritiqueEngine
 from cognitive_evolve_runtime.nexus.activation_reseed import emergency_activation_reseed
-from cognitive_evolve_runtime.nexus._serde import utc_now
+from cognitive_evolve_runtime.nexus._serde import coerce_str_list, utc_now
 from cognitive_evolve_runtime.nexus.exploration import action_palette_for_round, amplify_population
 from cognitive_evolve_runtime.nexus.diagnosis import PolicyUpdater, SearchDiagnosis, SearchStateDiagnoser
 from cognitive_evolve_runtime.nexus.generation_plan import GenerationPlan, apply_generation_plan, assert_stage_ready, build_generation_plan, expected_generation_plan_id
@@ -179,7 +178,7 @@ def _generate_offspring(
             )
             model_offspring = [item if isinstance(item, CandidateGenome) else candidate_from_dict(item) for item in raw if isinstance(item, (CandidateGenome, dict))]
             if model_offspring:
-                _merge_plan_metadata_into_model_offspring(model_offspring, plans)
+                _merge_plan_metadata_into_model_offspring(model_offspring, plans, parents)
             return model_offspring
 
         result = harvester.harvest(
@@ -187,19 +186,19 @@ def _generate_offspring(
             context={"contract": contract, "policy": policy, "world": world},
             recoverable_errors=MODEL_BOUNDARY_ERRORS,
         )
-        if result.model_error is not None:
-            if isinstance(result.model_error, MODEL_BOUNDARY_ERRORS) and is_quota_error(result.model_error):
-                raise result.model_error
+        if result.fatal_model_error is not None:
+            if isinstance(result.fatal_model_error, MODEL_BOUNDARY_ERRORS) and is_quota_error(result.fatal_model_error):
+                raise result.fatal_model_error
             if result.accepted:
                 known = {candidate.id for candidate in result.accepted}
                 offspring = list(result.accepted)
                 offspring.extend(candidate for candidate in fallback if candidate.id not in known)
                 for candidate in offspring:
                     candidate.metadata.setdefault("offspring_harvest", result.to_dict())
-                    candidate.metadata.setdefault("partial_model_offspring_error", f"{result.model_error.__class__.__name__}: {result.model_error}")
+                    candidate.metadata.setdefault("partial_model_offspring_error", f"{result.fatal_model_error.__class__.__name__}: {result.fatal_model_error}")
                 return offspring
             for candidate in fallback:
-                candidate.failure_lessons.append(f"model offspring generation failed; deterministic mutation fallback used: {result.model_error}")
+                candidate.failure_lessons.append(f"model offspring generation failed; deterministic mutation fallback used: {result.fatal_model_error}")
                 candidate.metadata["model_offspring_degraded"] = True
             return fallback
         if result.accepted:
@@ -208,6 +207,11 @@ def _generate_offspring(
             offspring.extend(candidate for candidate in fallback if candidate.id not in known)
             for candidate in offspring:
                 candidate.metadata.setdefault("offspring_harvest", result.to_dict())
+                if result.recoverable_batch_errors:
+                    candidate.metadata.setdefault(
+                        "partial_model_offspring_error",
+                        "; ".join(f"{item.get('error_type')}: {item.get('error')}" for item in result.recoverable_batch_errors[:3]),
+                    )
             return offspring
     return fallback
 
@@ -330,15 +334,69 @@ def _bounded_env_int(name: str, *, maximum: int) -> int | None:
         return min(maximum, configured)
     return None
 
-def _merge_plan_metadata_into_model_offspring(offspring: list[CandidateGenome], plans: list[MutationPlan]) -> None:
+def _merge_plan_metadata_into_model_offspring(offspring: list[CandidateGenome], plans: list[MutationPlan], parents: list[CandidateGenome] | None = None) -> None:
     if not plans:
         return
-    for index, candidate in enumerate(offspring):
-        plan = plans[index % len(plans)]
+    parents = parents or []
+    parent_by_id = {parent.id: parent for parent in parents}
+    plan_by_id = {str((plan.metadata or {}).get("plan_id") or (plan.metadata or {}).get("id") or ""): plan for plan in plans if isinstance(plan.metadata, dict)}
+    for candidate in offspring:
+        plan = _plan_for_model_offspring(candidate, plans=plans, plan_by_id=plan_by_id)
         if not isinstance(candidate.metadata, dict):
             candidate.metadata = {}
+        if plan is None:
+            candidate.metadata.setdefault("plan_lineage_unresolved", True)
+            continue
         for key, value in (plan.metadata or {}).items():
             candidate.metadata.setdefault(key, value)
+        _merge_edge_lineage_fields(candidate, plan.metadata or {})
+        lineage_parent_ids = _offspring_parent_ids(candidate, plan)
+        if not candidate.parent_ids and lineage_parent_ids:
+            candidate.parent_ids = list(lineage_parent_ids)
+        _merge_parent_edge_lineage(candidate, [parent_by_id[item] for item in lineage_parent_ids if item in parent_by_id])
+
+
+def _plan_for_model_offspring(candidate: CandidateGenome, *, plans: list[MutationPlan], plan_by_id: dict[str, MutationPlan]) -> MutationPlan | None:
+    metadata = candidate.metadata if isinstance(candidate.metadata, dict) else {}
+    for parent_ids in (
+        set(coerce_str_list(getattr(candidate, "parent_ids", []))),
+        set(coerce_str_list(metadata.get("parent_ids")) + coerce_str_list(metadata.get("parent_id"))),
+    ):
+        if not parent_ids:
+            continue
+        matches = [plan for plan in plans if parent_ids.intersection(set(str(item) for item in plan.parent_ids))]
+        if len(matches) == 1:
+            return matches[0]
+    plan_id = str(metadata.get("plan_id") or metadata.get("mutation_plan_id") or "").strip()
+    if plan_id and plan_id in plan_by_id:
+        return plan_by_id[plan_id]
+    if len(plans) == 1:
+        return plans[0]
+    return None
+
+
+def _offspring_parent_ids(candidate: CandidateGenome, plan: MutationPlan) -> list[str]:
+    metadata = candidate.metadata if isinstance(candidate.metadata, dict) else {}
+    ids = coerce_str_list(getattr(candidate, "parent_ids", [])) or coerce_str_list(metadata.get("parent_ids")) or coerce_str_list(metadata.get("parent_id")) or coerce_str_list(plan.parent_ids)
+    return list(dict.fromkeys(str(item) for item in ids if str(item).strip()))
+
+
+def _merge_parent_edge_lineage(candidate: CandidateGenome, parents: list[CandidateGenome]) -> None:
+    if not parents:
+        return
+    for parent in parents:
+        _merge_edge_lineage_fields(candidate, parent)
+
+
+def _merge_edge_lineage_fields(candidate: CandidateGenome, source: Any) -> None:
+    for attr in ("edge_knowledge_seeds", "inherited_genes", "novelty_descriptors", "niche_memberships"):
+        current = list(getattr(candidate, attr, []) or [])
+        merged = list(current)
+        values = source.get(attr) if isinstance(source, dict) else getattr(source, attr, [])
+        for item in coerce_str_list(values):
+            if item not in merged:
+                merged.append(item)
+        setattr(candidate, attr, merged)
 
 
 def _positive_int(value: Any) -> int | None:

@@ -46,7 +46,7 @@ def _hard_reject_reason(candidate: CandidateGenome, diagnostics: set[str], *, st
     if hard_diagnostics:
         return "hard_reject_diagnostic:" + ",".join(sorted(hard_diagnostics))
     metadata = coerce_dict(getattr(candidate, "metadata", {}))
-    for key in ("hard_reject_reason", "terminal_reject_reason", "hard_reject_class"):
+    for key in ("terminal_reject_reason", "terminal_failure"):
         reason = str(metadata.get(key) or "").strip()
         if reason:
             return reason
@@ -57,18 +57,6 @@ def _hard_reject_reason(candidate: CandidateGenome, diagnostics: set[str], *, st
         return "second_runtime_or_ranking_authority"
     if _forbidden_phrase_asserted(text, ("hidden fallback", "fallback router")):
         return "hidden_fallback"
-    for token, reason in (
-        ("prompt-only", "prompt_only_gate"),
-        ("prompt only", "prompt_only_gate"),
-        ("docs-only", "docs_only_essay"),
-        ("documentation-only", "docs_only_essay"),
-        ("seed-note-only", "seed_note_only_artifact"),
-    ):
-        if token in text:
-            return reason
-    if _explicit_final_claim(candidate, text) and diagnostics.intersection(HARD_PROOF_FAILURES | HARD_EVIDENCE_FAILURES):
-        if not (candidate.formal_artifacts or candidate.evidence_refs or candidate.source_bindings or _has_evidence_progress(candidate)):
-            return "source_free_final_claim"
     return ""
 
 def _repair_guidance(candidate: CandidateGenome) -> list[dict[str, Any]]:
@@ -164,7 +152,7 @@ def _acceptance_criteria_for_blockers(blockers: list[str]) -> list[str]:
         "runtime_code_change_required": "modify runtime, test, schema, or executable project files rather than only documentation",
         "runtime_code_change_absent:documentation_only_patch": "replace the docs-only patch with a concrete runtime/test/schema patch",
         "seed_note_only_patch": "stop modifying NEXUS_SEED_NOTE.md and target implementation or tests directly",
-        "seed_not_final": "evolve beyond the initial search seed before final use",
+        "seed_not_final": "optional: sharpen the initial seed into a clearer direct answer",
         "missing_parts": "resolve or narrow the candidate missing_parts",
     }
     criteria = [mapping.get(blocker, f"repair blocker {blocker}") for blocker in blockers]

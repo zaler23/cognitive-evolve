@@ -17,6 +17,7 @@ class LLMSession:
     lock: threading.Lock = field(default_factory=threading.Lock)
     run_id: str | None = None
     journal_dir: str | None = None
+    call_ledger_path: str | None = None
 
     def record(self, event: dict[str, Any]) -> None:
         with self.lock:
