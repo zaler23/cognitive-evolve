@@ -544,3 +544,19 @@ Subagent review closure validation:
 - `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider` — `691 passed, 1 skipped`.
 - `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider tests/test_public_tree_hygiene.py` — `5 passed`.
 - `git diff --check` — passed.
+
+## v3 fresh seed24 runtime cap closure — 2026-06-21
+
+Scope: close the fresh-run discovery that the user-requested seed cap of 24 was recorded in run-local overlay metadata but the source seeding helper still clamped configured seed batches to 16.
+
+Status: closed in code + tests on this branch.
+
+| Debt ID | Closure status | Code / test evidence |
+|---|---|---|
+| TD-V3-R-SEED24-HARD-CAP | Closed in code + tests | `_seed_safety_batch_limit()` now honors explicit policy/env seed batch values up to `SEED_BATCH_CONFIGURED_MAX=64`; regression tests prove an explicit 24-batch seed policy overrides a lower env value and oversized env values are still bounded. |
+
+Runtime evidence behind this closure:
+
+- Fresh retry evidence under the local test-run tree showed `seed_overlay.seed_safety_max_batches=24` but checkpoint `seed_harvest.batches=16` with `stopped_reason=batch_limit`.
+- The hard cap was source-local in `cognitive_evolve_runtime/nexus/loop/seeding.py`, not a provider or bridge behavior.
+- The source fix is required before launching the next fresh 24-seed run from `source-current`.

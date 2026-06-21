@@ -201,6 +201,9 @@ def _policy_for_seed_batch(policy: EvolutionPolicy, *, batch_index: int, accepte
     return EvolutionPolicy.from_dict(data)
 
 
+SEED_BATCH_CONFIGURED_MAX = 64
+
+
 def _seed_safety_batch_limit(*, policy: EvolutionPolicy) -> int:
     metadata = policy.metadata if isinstance(policy.metadata, dict) else {}
     configured = _positive_int(
@@ -209,8 +212,8 @@ def _seed_safety_batch_limit(*, policy: EvolutionPolicy) -> int:
         or metadata.get("seed_max_batches")
     )
     if configured:
-        return min(16, configured)
-    configured = _bounded_env_int("COGEV_NEXUS_SEED_BATCH_LIMIT", maximum=16)
+        return min(SEED_BATCH_CONFIGURED_MAX, configured)
+    configured = _bounded_env_int("COGEV_NEXUS_SEED_BATCH_LIMIT", maximum=SEED_BATCH_CONFIGURED_MAX)
     if configured:
         return configured
     return 8

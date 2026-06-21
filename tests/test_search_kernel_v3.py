@@ -142,6 +142,18 @@ def test_batch_limit_environment_values_are_bounded(monkeypatch) -> None:
     monkeypatch.setenv("COGEV_NEXUS_SEED_BATCH_LIMIT", "999")
     monkeypatch.setenv("COGEV_NEXUS_MUTATION_PLAN_BATCH_LIMIT", "999")
     monkeypatch.setenv("COGEV_NEXUS_OFFSPRING_BATCH_LIMIT", "999")
-    assert _seed_safety_batch_limit(policy=EvolutionPolicy()) == 16
+    assert _seed_safety_batch_limit(policy=EvolutionPolicy()) == 64
     assert _mutation_plan_batch_limit(3) == 16
     assert _offspring_batch_limit(3) == 16
+
+
+def test_seed_batch_limit_honors_explicit_24_batch_policy(monkeypatch) -> None:
+    monkeypatch.setenv("COGEV_NEXUS_SEED_BATCH_LIMIT", "16")
+    policy = EvolutionPolicy(
+        metadata={
+            "seed_safety_max_batches": 24,
+            "seed_harvest_safety_max_batches": 24,
+            "seed_max_batches": 24,
+        }
+    )
+    assert _seed_safety_batch_limit(policy=policy) == 24
