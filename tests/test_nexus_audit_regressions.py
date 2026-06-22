@@ -26,7 +26,7 @@ from cognitive_evolve_runtime.verification.ladder import VerificationStrength
 from cognitive_evolve_runtime.verification.types import GradedOutput, VerifiedResult
 
 
-def test_failed_candidate_is_removed_from_answer_archive_and_never_synthesized() -> None:
+def test_failed_candidate_is_removed_from_answer_archive_but_can_be_best_current() -> None:
     candidate = CandidateGenome(
         id="candidate",
         artifact="bad answer",
@@ -43,8 +43,11 @@ def test_failed_candidate_is_removed_from_answer_archive_and_never_synthesized()
     assert "candidate" not in archives.answer_archive
     assert "candidate" in archives.failure_archive.records
     result = synthesize_result(population=CandidatePopulation([candidate]), archives=archives)
-    assert result.status == "failure_report"
-    assert result.best_candidate_id == ""
+    assert result.status == "synthesized"
+    assert result.best_candidate_id == "candidate"
+    assert result.best_current_direction["route"] == "best_current"
+    assert result.best_current_direction["verification_status"] == "failed"
+    assert result.objective_solved is False
 
 
 def test_failed_candidate_does_not_pollute_general_archives() -> None:

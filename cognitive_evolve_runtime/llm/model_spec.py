@@ -14,6 +14,7 @@ from cognitive_evolve_runtime.nexus._serde import coerce_dict, stable_hash
 
 @dataclass(frozen=True)
 class LLMModelSpec:
+    profile_id: str | None = None
     provider: str | None = None
     model: str | None = None
     api_base: str | None = None
@@ -27,6 +28,7 @@ class LLMModelSpec:
         if not payload:
             return None
         return cls(
+            profile_id=_clean(payload.get("profile_id") or payload.get("model_profile_id") or payload.get("id")),
             provider=_clean(payload.get("provider")),
             model=_clean(payload.get("model")),
             api_base=_clean(payload.get("api_base") or payload.get("base_url")),
@@ -52,6 +54,8 @@ class LLMModelSpec:
         out = dict(status or {})
         if self.provider:
             out["provider"] = self.provider.strip().lower()
+        if self.profile_id:
+            out["model_profile_id"] = self.profile_id.strip()
         if self.model:
             out["model"] = self.model.strip()
             out["configured"] = True

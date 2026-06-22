@@ -19,6 +19,7 @@ from cognitive_evolve_runtime.llm.env import LLM_MAX_PROMPT_CHARS_ENV
 from cognitive_evolve_runtime.nexus.activation import ACTIVATION_REQUESTS, activation_prompt_contract
 from cognitive_evolve_runtime.nexus.search_space import build_search_space_map
 from cognitive_evolve_runtime.nexus.prompt_profiles import apply_prompt_profile
+from cognitive_evolve_runtime.nexus.nextgen import false_cull_monitor
 
 NEXUS_PROMPT_MAX_CHARS_ENV = "COGEV_NEXUS_PROMPT_MAX_CHARS"
 NEXUS_LONG_CONTEXT_MAX_CHARS_ENV = "COGEV_NEXUS_LONG_CONTEXT_MAX_CHARS"
@@ -78,6 +79,10 @@ def build_prompt_view(request_type: str, payload: dict[str, Any], *, max_chars: 
     raw_chars = _json_chars(payload)
     compressed = _apply_prompt_context_controls(_compress_payload(request_type, payload), controls)
     profiled, profile_metadata = apply_prompt_profile(request_type, compressed)
+    protected_candidate_ids = _protected_candidate_ids_from_controls(controls)
+    if protected_candidate_ids and "candidates" not in profiled and isinstance(compressed.get("candidates"), list):
+        profiled["candidates"] = _trimmed_with_protected(compressed.get("candidates"), max(1, len(protected_candidate_ids)), protected_candidate_ids)
+        profiled["_protected_candidate_ids"] = sorted(protected_candidate_ids)
     compressed_chars = _json_chars(profiled)
     bounded = _fit_payload(profiled, max_chars=limit, protected_paths=protected_paths)
     sent_chars = _json_chars(bounded)
@@ -140,6 +145,9 @@ def candidate_prompt_view(candidate: CandidateGenome | dict[str, Any], *, detail
         "artifact_sha256": _sha256_text(artifact_text) if artifact_text else "",
         "metadata": _metadata_view(genome.metadata),
     }
+    nextgen = _to_mapping(_to_mapping(genome.metadata).get("nextgen"))
+    if nextgen:
+        view["nextgen"] = _small_mapping(nextgen, max_items=8, string_chars=180)
     repair_seed_contract = _repair_seed_contract_view(genome)
     if repair_seed_contract:
         view["repair_seed_contract"] = repair_seed_contract
@@ -341,8 +349,14 @@ def _compress_payload(request_type: str, payload: dict[str, Any]) -> dict[str, A
     compressed["contract"] = contract_view
     compressed["policy"] = policy_view
     compressed["world"] = world_view
+    protected_candidate_ids = _protected_candidate_ids_from_controls(_prompt_context_controls(payload))
     if candidates:
-        compressed["candidates"] = [candidate_prompt_view(c, detail="summary") for c in _select_candidates_for_prompt(candidates, limit=48)]
+        compressed["candidates"] = [
+            candidate_prompt_view(c, detail="summary")
+            for c in _select_candidates_for_prompt(candidates, limit=48, protected_ids=protected_candidate_ids)
+        ]
+        if protected_candidate_ids:
+            compressed["_protected_candidate_ids"] = sorted(protected_candidate_ids)
         compressed["candidate_population_stats"] = _population_stats(candidates)
     if parents:
         compressed["parents"] = [candidate_prompt_view(c, detail="summary") for c in parents[:16]]
@@ -457,7 +471,7 @@ def _synthesis_evidence_manifest(payload: dict[str, Any]) -> dict[str, Any]:
     """
 
     candidates = _coerce_candidates(payload.get("population") or payload.get("candidates") or [])
-    selected = _select_candidates_for_prompt(candidates, limit=16)
+    selected = _select_candidates_for_prompt(candidates, limit=16, protected_ids=_protected_candidate_ids_from_controls(_prompt_context_controls(payload)))
     return {
         "request_type": "nexus_synthesize_result",
         "prompt_contract": {
@@ -465,6 +479,9 @@ def _synthesis_evidence_manifest(payload: dict[str, Any]) -> dict[str, Any]:
             "full_state_location": "local Nexus checkpoint/population/archive files",
             "final_synthesis_must_not_claim_unverified_completion": True,
             "if_no_contract_valid_final_exists_return_reference_or_route_incomplete": True,
+            "best_direction_must_directly_answer_frozen_user_goal": True,
+            "supporting_material_must_not_replace_the_explored_object": True,
+            "do_not_use_fixed_target_categories": True,
         },
         "contract": contract_prompt_view(payload.get("contract")),
         "world": world_prompt_view(payload.get("world"), detail="tiny"),
@@ -476,6 +493,8 @@ def _synthesis_evidence_manifest(payload: dict[str, Any]) -> dict[str, Any]:
             "required_fields": ["status", "final_answer"],
             "do_not_treat_reference_material_as_solved": True,
             "surface_answer_candidates_without_project_certification": True,
+            "best_candidate_id_rule": "Choose the candidate whose main claim directly answers the frozen goal. Put records, verification wrappers, or audit scaffolds in supporting material unless the frozen goal itself asks for them.",
+            "intent_binding_output": "If useful, include free-text intent_alignment_rationale and a continuous intent_directness score; do not emit enum target kinds.",
         },
     }
 
@@ -499,6 +518,13 @@ def _protected_paths_from_controls(controls: dict[str, Any]) -> list[str]:
     if controls.get("verification_regime"):
         out.append("verification_regime")
     return list(dict.fromkeys(out))
+
+
+def _protected_candidate_ids_from_controls(controls: dict[str, Any]) -> set[str]:
+    raw = controls.get("protect_candidate_ids") or controls.get("protected_candidate_ids") or []
+    if not isinstance(raw, list):
+        return set()
+    return {str(item) for item in raw if str(item or "").strip()}
 
 
 def _apply_prompt_context_controls(compressed: dict[str, Any], controls: dict[str, Any]) -> dict[str, Any]:
@@ -638,7 +664,7 @@ def _fit_payload(payload: dict[str, Any], *, max_chars: int, protected_paths: li
         return fitted
     # First reduce candidate and archive exemplars; these dominate most payloads.
     for limit in (32, 24, 16, 12, 8, 4):
-        _trim_sequence(fitted, "candidates", limit)
+        _trim_sequence(fitted, "candidates", limit, protected_ids=set(fitted.get("_protected_candidate_ids", []) if isinstance(fitted.get("_protected_candidate_ids"), list) else []))
         _trim_sequence(fitted, "parents", min(limit, 8))
         for key in ("answer_elites", "rarity_elites", "dormant_hints", "auxiliary_hints", "failure_lessons"):
             if isinstance(fitted.get("archives"), dict):
@@ -658,7 +684,7 @@ def _fit_payload(payload: dict[str, Any], *, max_chars: int, protected_paths: li
         "contract": fitted.get("contract"),
         "policy": fitted.get("policy"),
         "candidate_population_stats": fitted.get("candidate_population_stats"),
-        "candidates": fitted.get("candidates", [])[:3],
+        "candidates": _trimmed_with_protected(fitted.get("candidates", []), 3, set(fitted.get("_protected_candidate_ids", []) if isinstance(fitted.get("_protected_candidate_ids"), list) else [])),
         "archives": fitted.get("archives", {}).get("summary", {}) if isinstance(fitted.get("archives"), dict) else {},
         "_fit_warning": "payload was reduced to minimal Nexus prompt view",
     }
@@ -670,7 +696,8 @@ def _fit_payload(payload: dict[str, Any], *, max_chars: int, protected_paths: li
     return clipped
 
 
-def _select_candidates_for_prompt(candidates: list[CandidateGenome], *, limit: int) -> list[CandidateGenome]:
+def _select_candidates_for_prompt(candidates: list[CandidateGenome], *, limit: int, protected_ids: set[str] | None = None) -> list[CandidateGenome]:
+    protected_ids = set(protected_ids or set())
     if len(candidates) <= limit:
         return candidates
     buckets: list[CandidateGenome] = []
@@ -689,12 +716,14 @@ def _select_candidates_for_prompt(candidates: list[CandidateGenome], *, limit: i
                 return
 
     by_quality = sorted(candidates, key=_candidate_prompt_priority, reverse=True)
+    protected = [c for c in candidates if c.id in protected_ids]
     active = [c for c in by_quality if c.current_fate == "Active"]
     elite = [c for c in by_quality if c.current_fate == "Elite"]
     incubating = [c for c in by_quality if c.current_fate == "Incubating"]
     rare = [c for c in by_quality if c.edge_knowledge_seeds or c.multihead_scores.get("rarity", 0.0) > 0.3]
     dormant = [c for c in by_quality if c.current_fate == "Dormant"]
     recent = sorted(candidates, key=lambda c: (int(c.generation or 0), c.created_at), reverse=True)
+    add(protected, len(protected))
     add(elite, max(4, limit // 6))
     add(active, max(8, limit // 3))
     add(incubating, max(4, limit // 5))
@@ -735,6 +764,7 @@ def _population_stats(candidates: list[CandidateGenome]) -> dict[str, Any]:
         "top_search_planes": sorted(search_planes.items(), key=lambda item: item[1], reverse=True)[:12],
         "top_source_surfaces": sorted(source_surfaces.items(), key=lambda item: item[1], reverse=True)[:12],
         "surface_concentration_warning": _surface_concentration_warning(candidates, source_surfaces),
+        "nextgen_false_cull_monitor": false_cull_monitor(candidates),
     }
 
 
@@ -978,10 +1008,23 @@ def _recursive_clip(value: Any, *, string_limit: int, list_limit: int) -> Any:
     return value
 
 
-def _trim_sequence(mapping: dict[str, Any], key: str, limit: int) -> None:
+def _trim_sequence(mapping: dict[str, Any], key: str, limit: int, *, protected_ids: set[str] | None = None) -> None:
     value = mapping.get(key)
     if isinstance(value, list) and len(value) > limit:
-        mapping[key] = value[:limit] + [{"_omitted_items": len(value) - limit}]
+        mapping[key] = _trimmed_with_protected(value, limit, protected_ids or set()) + [{"_omitted_items": max(0, len(value) - limit)}]
+
+
+def _trimmed_with_protected(value: Any, limit: int, protected_ids: set[str]) -> list[Any]:
+    if not isinstance(value, list):
+        return []
+    if len(value) <= limit:
+        return list(value)
+    protected: list[Any] = []
+    rest: list[Any] = []
+    for item in value:
+        item_id = str(item.get("id") or "") if isinstance(item, dict) else ""
+        (protected if item_id in protected_ids else rest).append(item)
+    return [*protected, *rest][: max(0, int(limit or 0))]
 
 
 def _summarize_value(value: Any) -> dict[str, Any]:

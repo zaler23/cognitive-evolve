@@ -30,6 +30,7 @@ from .retry import retry_attempts as configured_retry_attempts
 from ..durable import llm_idempotency_key, stable_hash
 from ..durable.provider_circuit_breaker import ProviderUnavailableError, default_provider_circuit_breaker
 from .call_ledger import record_call_state
+from .call_identity import identity_from_status
 from .journal import safe_json, write_llm_journal
 from .http_provider import DirectHTTPProvider
 from .litellm_provider import LiteLLMProvider, litellm_provider_kwargs
@@ -141,12 +142,15 @@ def llm_json(request_type: str, payload: dict[str, Any], *, system: str, schema_
     status = require_llm_config()
     if model_spec is not None:
         status = model_spec.apply_to_status(status)
+    call_identity = identity_from_status(status, request_type=request_type)
+    status["model_profile_id"] = call_identity.profile_id
+    status["llm_call_identity"] = call_identity.to_dict()
     enforce_budget(preflight=True)
     call_id = f"llm-{uuid.uuid4().hex}"
     started = time.time()
     request_hash = stable_hash({"request_type": request_type, "payload": payload, "schema_hint": schema_hint, "system": system, "model_spec": model_spec.to_dict() if model_spec is not None else {}})
     idem_key = llm_idempotency_key(
-        provider=str(status.get("provider")),
+        provider=call_identity.breaker_key,
         model=str(status.get("model") or status.get("fixture") or ""),
         prompt={"system": system, "payload": payload, "request_type": request_type},
         schema=schema_hint,
@@ -161,7 +165,7 @@ def llm_json(request_type: str, payload: dict[str, Any], *, system: str, schema_
         request_hash=request_hash,
         round_id=os.environ.get("COGEV_ROUND_ID", "runtime"),
         step_id=os.environ.get("COGEV_STEP_ID", request_type),
-        extra={"idempotency_key": idem_key, "provider": status.get("provider"), "model": status.get("model") or status.get("fixture")},
+        extra={"idempotency_key": idem_key, "provider": status.get("provider"), "model": status.get("model") or status.get("fixture"), "llm_call_identity": call_identity.to_dict(), "model_profile_id": call_identity.profile_id},
     )
     write_llm_journal({
         "call_id": call_id,
@@ -171,6 +175,8 @@ def llm_json(request_type: str, payload: dict[str, Any], *, system: str, schema_
         "idempotency_key": idem_key,
         "provider": status.get("provider"),
         "model": status.get("model") or status.get("fixture"),
+        "model_profile_id": call_identity.profile_id,
+        "llm_call_identity": call_identity.to_dict(),
         "request_hash": request_hash,
         "request_type": request_type,
         "status": "inflight",
@@ -191,6 +197,8 @@ def llm_json(request_type: str, payload: dict[str, Any], *, system: str, schema_
             "idempotency_key": idem_key,
             "provider": status.get("provider"),
             "model": status.get("model") or status.get("fixture"),
+            "model_profile_id": call_identity.profile_id,
+            "llm_call_identity": call_identity.to_dict(),
             "request_hash": request_hash,
             "request_type": request_type,
             "status": "ok",
@@ -200,12 +208,12 @@ def llm_json(request_type: str, payload: dict[str, Any], *, system: str, schema_
             "usage": {},
             "estimated_cost_usd": 0.0,
         }, parsed_response=response)
-        record_call_state("completed", call_id=call_id, request_type=request_type, request_hash=request_hash, round_id=os.environ.get("COGEV_ROUND_ID", "runtime"), step_id=os.environ.get("COGEV_STEP_ID", request_type), extra={"attempt": 1, "usage": {}, "estimated_cost_usd": 0.0})
+        record_call_state("completed", call_id=call_id, request_type=request_type, request_hash=request_hash, round_id=os.environ.get("COGEV_ROUND_ID", "runtime"), step_id=os.environ.get("COGEV_STEP_ID", request_type), extra={"attempt": 1, "usage": {}, "estimated_cost_usd": 0.0, "llm_call_identity": call_identity.to_dict(), "model_profile_id": call_identity.profile_id})
         return response
     provider = provider or _default_provider_for_status(status)
     breaker = default_provider_circuit_breaker()
     try:
-        breaker.before_call(str(status["provider"]))
+        breaker.before_call(call_identity.breaker_key)
     except ProviderUnavailableError as exc:
         write_llm_journal({
             "call_id": call_id,
@@ -215,6 +223,8 @@ def llm_json(request_type: str, payload: dict[str, Any], *, system: str, schema_
             "idempotency_key": idem_key,
             "provider": status.get("provider"),
             "model": status.get("model"),
+            "model_profile_id": call_identity.profile_id,
+            "llm_call_identity": call_identity.to_dict(),
             "request_hash": request_hash,
             "request_type": request_type,
             "status": "provider_unavailable",
@@ -223,7 +233,7 @@ def llm_json(request_type: str, payload: dict[str, Any], *, system: str, schema_
             "ended_at": time.time(),
             "error": str(exc),
         })
-        record_call_state("failed", call_id=call_id, request_type=request_type, request_hash=request_hash, round_id=os.environ.get("COGEV_ROUND_ID", "runtime"), step_id=os.environ.get("COGEV_STEP_ID", request_type), extra={"error": str(exc), "status": "provider_unavailable"})
+        record_call_state("failed", call_id=call_id, request_type=request_type, request_hash=request_hash, round_id=os.environ.get("COGEV_ROUND_ID", "runtime"), step_id=os.environ.get("COGEV_STEP_ID", request_type), extra={"error": str(exc), "status": "provider_unavailable", "llm_call_identity": call_identity.to_dict(), "model_profile_id": call_identity.profile_id})
         raise LLMResponseError(str(exc)) from exc
 
     request = {"request_type": request_type, "schema_hint": schema_hint, "payload": payload}
@@ -278,7 +288,7 @@ def llm_json(request_type: str, payload: dict[str, Any], *, system: str, schema_
             retry_history = _LAST_RETRY_HISTORY.get([])
             if retry_history:
                 attempts = max(attempts, max(int(item.get("attempt") or 0) for item in retry_history if isinstance(item, dict)))
-            circuit_state = breaker.record_failure(str(status["provider"]), exc)
+            circuit_state = breaker.record_failure(call_identity.breaker_key, exc)
             write_llm_journal({
                 "call_id": call_id,
                 "run_id": os.environ.get("COGEV_RUN_ID", "run"),
@@ -287,6 +297,8 @@ def llm_json(request_type: str, payload: dict[str, Any], *, system: str, schema_
                 "idempotency_key": idem_key,
                 "provider": status.get("provider"),
                 "model": status.get("model"),
+                "model_profile_id": call_identity.profile_id,
+                "llm_call_identity": call_identity.to_dict(),
                 "request_hash": request_hash,
                 "request_type": request_type,
                 "status": "provider_unavailable" if circuit_state.state == "open" else "retryable_failed",
@@ -298,7 +310,7 @@ def llm_json(request_type: str, payload: dict[str, Any], *, system: str, schema_
                 "category": category,
                 "circuit_breaker": circuit_state.to_dict(),
             })
-            record_call_state("failed", call_id=call_id, request_type=request_type, request_hash=request_hash, round_id=os.environ.get("COGEV_ROUND_ID", "runtime"), step_id=os.environ.get("COGEV_STEP_ID", request_type), extra={"error": str(exc), "category": category})
+            record_call_state("failed", call_id=call_id, request_type=request_type, request_hash=request_hash, round_id=os.environ.get("COGEV_ROUND_ID", "runtime"), step_id=os.environ.get("COGEV_STEP_ID", request_type), extra={"error": str(exc), "category": category, "llm_call_identity": call_identity.to_dict(), "model_profile_id": call_identity.profile_id})
             raise LLMResponseError(f"LLM provider call failed after retry policy ({category}): {exc}") from exc
         try:
             content = _result_message_content(result)
@@ -327,7 +339,7 @@ def llm_json(request_type: str, payload: dict[str, Any], *, system: str, schema_
     response.setdefault("provider", status["provider"])
     response.setdefault("model", status["model"])
     usage = usage_dict(result)
-    breaker.record_success(str(status["provider"]))
+    breaker.record_success(call_identity.breaker_key)
     record_event(
         request_type,
         response,
@@ -346,6 +358,8 @@ def llm_json(request_type: str, payload: dict[str, Any], *, system: str, schema_
         "idempotency_key": idem_key,
         "provider": status.get("provider"),
         "model": status.get("model"),
+        "model_profile_id": call_identity.profile_id,
+        "llm_call_identity": call_identity.to_dict(),
         "request_hash": request_hash,
         "request_type": request_type,
         "status": "ok",
@@ -356,6 +370,6 @@ def llm_json(request_type: str, payload: dict[str, Any], *, system: str, schema_
         "usage": usage,
         "estimated_cost_usd": estimated_cost,
     }, raw_response=safe_json(result), parsed_response=response)
-    record_call_state("completed", call_id=call_id, request_type=request_type, request_hash=request_hash, round_id=os.environ.get("COGEV_ROUND_ID", "runtime"), step_id=os.environ.get("COGEV_STEP_ID", request_type), extra={"attempt": attempts, "usage": usage, "estimated_cost_usd": estimated_cost})
+    record_call_state("completed", call_id=call_id, request_type=request_type, request_hash=request_hash, round_id=os.environ.get("COGEV_ROUND_ID", "runtime"), step_id=os.environ.get("COGEV_STEP_ID", request_type), extra={"attempt": attempts, "usage": usage, "estimated_cost_usd": estimated_cost, "llm_call_identity": call_identity.to_dict(), "model_profile_id": call_identity.profile_id})
     enforce_budget(preflight=False)
     return response

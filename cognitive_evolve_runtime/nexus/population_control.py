@@ -20,6 +20,7 @@ from cognitive_evolve_runtime.archives.quality_diversity import (
 )
 from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome, CandidatePopulation
 from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy
+from cognitive_evolve_runtime.nexus.nextgen import record_candidate_budget_decision, structurally_blocked
 from cognitive_evolve_runtime.nexus.v23_theory_config import V23TheoryRuntimeConfig
 
 
@@ -67,10 +68,13 @@ def compact_live_population(
     live: list[CandidateGenome] = []
     for candidate in population.candidates:
         fate = CandidateFate.normalize(archives.fates.get(candidate.id, candidate.current_fate))
-        if fate in TERMINAL_FAILURE_FATES:
+        if fate in TERMINAL_FAILURE_FATES and structurally_blocked(candidate):
             candidate.mark_fate(fate)
             terminal.append(candidate)
         else:
+            if fate in TERMINAL_FAILURE_FATES:
+                candidate.mark_fate(CandidateFate.DORMANT.value)
+                record_candidate_budget_decision(candidate, source="live_compaction", reason="legacy_terminal_fate_reopened_as_dormant", action="soft_retain")
             live.append(candidate)
     if terminal:
         archives.update(
@@ -109,7 +113,7 @@ def compact_live_population(
     if compacted:
         assignments: list[FateAssignment] = []
         for candidate in compacted:
-            candidate.mark_fate(CandidateFate.CULLED.value)
+            candidate.mark_fate(CandidateFate.DORMANT.value)
             lesson = "compacted_from_live_population_by_quality_diversity_bin_capacity"
             if lesson not in candidate.failure_lessons:
                 candidate.failure_lessons.append(lesson)
@@ -122,11 +126,12 @@ def compact_live_population(
             assignments.append(
                 FateAssignment(
                     candidate_id=candidate.id,
-                    fate=CandidateFate.CULLED.value,
+                    fate=CandidateFate.DORMANT.value,
                     failure_signature=lesson,
-                    future_reactivation_condition="reactivate_only_if_new_evidence_delta_or_source_binding_exists",
+                    future_reactivation_condition="reactivate_via_nextgen_budget_reserve",
                 )
             )
+            record_candidate_budget_decision(candidate, source="live_compaction", reason="quality_diversity_capacity_reserve", action="soft_reserve")
         archives.update(assignments, candidates=compacted)
 
     keep_ids = {candidate.id for candidate in protected}

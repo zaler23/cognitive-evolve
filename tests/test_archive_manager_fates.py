@@ -22,7 +22,7 @@ def test_archive_manager_fates_extracts_genes_before_culling() -> None:
     assert archives.summary()["failure_records"] == 1
 
 
-def test_failed_fate_is_terminal_and_routed_to_failure_archive() -> None:
+def test_nonstructural_failed_fate_reopens_as_dormant_reserve() -> None:
     failed = CandidateGenome(id="failed", core_mechanism="bad patch", current_fate=CandidateFate.FAILED)
     active = CandidateGenome(id="active", current_fate=CandidateFate.ACTIVE, multihead_scores={"answer_likelihood": 0.9})
 
@@ -30,8 +30,8 @@ def test_failed_fate_is_terminal_and_routed_to_failure_archive() -> None:
     assignments = archives.assign_by_policy([failed, active])
     archives.update(assignments, candidates=[failed, active])
 
-    assert failed.current_fate == CandidateFate.FAILED
-    assert "failed" in archives.failure_archive.records
+    assert failed.current_fate == CandidateFate.DORMANT
+    assert "failed" in archives.dormant_archive.candidates
     assert "active" in archives.answer_archive
 
 

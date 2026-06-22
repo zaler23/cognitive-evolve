@@ -26,8 +26,8 @@ def test_enabled_theory_policy_adds_sidecar_without_changing_eligibility() -> No
 
     assert set(features) == {"dormant", "long", "short"}
     assert selected[0].id == "short"
-    assert {candidate.id for candidate in selected} == {"short", "long"}
-    assert "dormant" not in {candidate.id for candidate in selected}
+    assert {candidate.id for candidate in selected} == {"short", "dormant"}
+    assert "dormant" in {candidate.id for candidate in selected}
 
 
 def test_disabled_theory_policy_keeps_original_parent_order() -> None:

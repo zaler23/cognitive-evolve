@@ -637,7 +637,7 @@ def test_final_projection_downgrades_refolded_artifact_even_with_solved_certific
     assert projection.blocking_issues == []
 
 
-def test_final_projection_excludes_failed_and_culled_answer_candidates() -> None:
+def test_final_projection_allows_failed_best_current_direction() -> None:
     failed = CandidateGenome(id="F1", artifact={"bad": 1}, artifact_type="machine", current_fate=CandidateFate.FAILED.value, multihead_scores={"frontier_score": 0.99})
     active = CandidateGenome(id="A1", artifact={"ok": 1}, artifact_type="machine", current_fate=CandidateFate.ACTIVE.value, multihead_scores={"frontier_score": 0.4})
     synthesis = SynthesizedResult(status="completed", final_answer="", best_candidate_id="F1")
@@ -645,7 +645,10 @@ def test_final_projection_excludes_failed_and_culled_answer_candidates() -> None
     projection = build_final_projection(population=CandidatePopulation([failed, active]), synthesis=synthesis, graded_output=_graded_portfolio(), final_certificate={"blocking_reasons": ["not_final"]})
 
     assert projection.status == "completed"
-    assert projection.candidate_id == "A1"
+    assert projection.candidate_id == "F1"
+    assert projection.objective_solved is False
+    assert projection.best_current_direction["route"] == "best_current"
+    assert projection.best_current_direction["verification_status"] == "failed"
 
 
 def test_artifact_identity_hash_includes_artifact_type_and_policy() -> None:

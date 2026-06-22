@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -13,7 +14,8 @@ from cognitive_evolve_runtime.nexus._serde import coerce_str_list
 from cognitive_evolve_runtime.nexus.protocols import NexusModelLike
 from cognitive_evolve_runtime.nexus.fallbacks import record_fallback
 from cognitive_evolve_runtime.core.scalars import bounded_score
-from cognitive_evolve_runtime.nexus.stage_policy import parse_metric_value, stage_eligibility
+from cognitive_evolve_runtime.nexus.stage_policy import parse_metric_value
+from cognitive_evolve_runtime.nexus.nextgen import record_candidate_budget_decision, structurally_blocked
 
 
 @dataclass
@@ -122,7 +124,7 @@ class RelativeRater:
                 # judge surface.  Quota/provider errors still propagate from the
                 # first call so runs pause truthfully instead of silently
                 # degrading.
-                if len(candidates) > 1:
+                if _rank_order_audit_enabled(candidates):
                     try:
                         reverse = _ranking_from_raw(
                             self.model.relative_rank(candidates=list(reversed(candidates)), contract=contract, policy=policy, archives=archives)
@@ -158,6 +160,16 @@ def _ranking_from_raw(raw: Any) -> RelativeRankingResult:
     if isinstance(raw, dict):
         return RelativeRankingResult.from_dict(raw)
     raise ValueError("relative_rank model response must be a RelativeRankingResult or dict")
+
+
+def _rank_order_audit_enabled(candidates: list[CandidateGenome]) -> bool:
+    mode = os.environ.get("COGEV_RANK_ORDER_AUDIT", "sample").strip().lower()
+    if mode in {"off", "0", "false", "no"} or len(candidates) <= 1:
+        return False
+    if mode in {"always", "1", "true", "yes"}:
+        return True
+    # Deterministic sample; full audit remains opt-in.
+    return len(candidates) <= 4
 
 
 def _merge_ab_rankings(a: RelativeRankingResult, b: RelativeRankingResult, candidates: list[CandidateGenome]) -> RelativeRankingResult:
@@ -397,22 +409,18 @@ def _deterministic_pairwise_preferences(candidates: list[CandidateGenome]) -> li
 
 
 def _rank_eligible(candidate: CandidateGenome) -> bool:
+    if structurally_blocked(candidate):
+        return False
     metadata = getattr(candidate, "metadata", {}) or {}
     if isinstance(metadata, dict) and (metadata.get("terminal_failure") or metadata.get("terminal_reject")):
-        return False
-    fate = str(getattr(candidate, "current_fate", "") or "").lower()
-    if fate in {"failed", "culled"}:
-        return False
+        record_candidate_budget_decision(candidate, source="relative_rater", reason="legacy_terminal_flag_defanged", action="soft_rank")
     return bool(str(candidate.artifact or candidate.concise_claim or candidate.core_mechanism).strip() or candidate.multihead_scores)
 
 
 def _parent_eligible(candidate: CandidateGenome) -> bool:
-    metadata = getattr(candidate, "metadata", {}) or {}
-    decision = metadata.get("stage_eligibility") if isinstance(metadata, dict) else None
-    if isinstance(decision, dict):
-        return bool(decision.get("parent_eligible")) and bool(decision.get("repair_required"))
-    computed = stage_eligibility(candidate)
-    return computed.parent_eligible and computed.repair_required
+    if structurally_blocked(candidate):
+        return False
+    return bool(str(candidate.artifact or candidate.concise_claim or candidate.core_mechanism).strip() or candidate.multihead_scores)
 
 
 def _verification_score(candidate: CandidateGenome) -> float:

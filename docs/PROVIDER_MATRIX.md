@@ -10,3 +10,15 @@ CognitiveEvolve requires an explicit model provider for production model calls. 
 | Missing/failed provider | Error path | No valid provider configuration or exhausted retries | Explicit failure / partial state |
 
 The public provider boundary is `LLMProviderInterface`; implementations must remain generic provider adapters, not private application relays. Provider-facing concurrency and budget settings are controlled by `COGEV_LLM_MAX_CONCURRENT`, `COGEV_LLM_RPM`, `COGEV_LLM_TPM`, and stage-budget settings. Nexus model batch fan-out is controlled by `COGEV_MODEL_FANOUT_CONCURRENCY`; when unset it follows the shared LLM governor and therefore cannot exceed `COGEV_LLM_MAX_CONCURRENT`. Set `COGEV_MODEL_FANOUT_CONCURRENCY=1` for deterministic serial model-call debugging.
+
+## Profile-aware routing
+
+Newer Nexus runs can attach a public `model_profile_id` to a call. The profile id
+separates breaker state, idempotency, journals, ledgers, telemetry, and cost
+accounting while keeping the legacy `provider` and `model` fields readable.
+Seed exploration may use an ensemble of seed adapters; non-seed roles remain
+single-profile unless a caller explicitly supplies a different route.
+
+Profile records must contain only public routing coordinates and environment
+variable names for credentials. Do not store credential values, private relay
+details, or machine-specific paths in source-controlled config or docs.

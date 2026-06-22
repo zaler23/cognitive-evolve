@@ -155,6 +155,7 @@ def _generate_model_seed_batches(
             fanout_workers=_seed_fanout_workers(policy=policy, target_size=target_size),
             stop_at_target=False,
             exhaust_on_no_new=True,
+            reservoir_mode=True,
         ),
     )
 
@@ -174,6 +175,16 @@ def _generate_model_seed_batches(
     )
     for candidate in result.accepted:
         candidate.metadata.setdefault("seed_harvest", result.to_dict())
+        if result.reservoir:
+            candidate.metadata.setdefault(
+                "seed_reservoir",
+                {
+                    "mode": "soft_reject_retention",
+                    "candidate_ids": [item.id for item in result.reservoir[-100:]],
+                    "count": len(result.reservoir),
+                    "checkpoint_policy": "metadata_summary_only_until_sidecar_runtime_promotion",
+                },
+            )
     return result.accepted, result.rejected, result.fatal_model_error
 
 

@@ -282,8 +282,8 @@ def test_reproduction_advances_generation_plan_and_records_offspring_archive_upd
     assert plan["parent_ids"]
     assert plan["mutation_objectives"]
     assert plan["offspring_ids"]
-    assert plan["reproduction_archive_updates"]
-    assert {item["fate"] for item in plan["reproduction_archive_updates"]} == {CandidateFate.FAILED.value}
+    assert plan["reproduction_archive_updates"] == []
+    assert all(candidate.current_fate != CandidateFate.FAILED.value for candidate in parents.candidates)
 
 
 def test_generation_plan_history_accepts_completed_plan_with_archive_update_witness() -> None:

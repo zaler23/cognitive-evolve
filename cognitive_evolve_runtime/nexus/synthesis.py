@@ -1,9 +1,9 @@
 """Answer-first final synthesis for Nexus runs.
 
 This module has exactly one user-facing selection authority: choose the strongest
-non-terminal answer candidate and surface its answer material. Verification,
+non-structural answer candidate and surface its answer material. Verification,
 source binding, proof objects, and patch materialization are advisory telemetry;
-they must not create a second final/reference/best-current completion path.
+they must not create a second final authority; unverified material is surfaced as best_current_direction only.
 """
 from __future__ import annotations
 
@@ -15,6 +15,13 @@ from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateG
 from cognitive_evolve_runtime.nexus.adaptive_signals import mean_percentile, observed_frontier_signal
 from cognitive_evolve_runtime.nexus.fallbacks import record_fallback
 from cognitive_evolve_runtime.nexus.protocols import NexusModelLike
+from cognitive_evolve_runtime.nexus.nextgen import (
+    bind_candidate_intent,
+    best_current_direction_payload,
+    candidate_verification_status,
+    select_best_current_direction,
+    structurally_blocked,
+)
 
 
 @dataclass
@@ -31,6 +38,7 @@ class SynthesizedResult:
     answer_produced: bool = False
     continuation_available: bool = False
     closure_certificate: dict[str, Any] = field(default_factory=dict)
+    best_current_direction: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -52,9 +60,13 @@ class FinalSynthesizer:
             warnings.append(self._model_fallback_warning)
         best = _runtime_answer_candidate(archives, population.candidates)
         if best is None:
-            best = _best_answer_candidate(population.candidates)
+            best = _best_answer_candidate(population.candidates, contract=contract)
             if best is not None:
                 warnings.append("answer_first_used_best_available_candidate")
+        if best is None:
+            best = select_best_current_direction(population.candidates, contract=contract)
+            if best is not None:
+                warnings.append("answer_first_used_best_current_direction")
         auxiliary = _best_auxiliary(archives, population=population)
         if best is None:
             return SynthesizedResult(
@@ -63,7 +75,7 @@ class FinalSynthesizer:
                 best_auxiliary_candidate_id=auxiliary.id if auxiliary else "",
                 archives_summary=archives.summary(),
                 warnings=warnings,
-                failure_analysis="No non-terminal candidate carried answer material.",
+                failure_analysis="No non-structural candidate carried answer material.",
             )
         return SynthesizedResult(
             status="final_synthesis_local_fallback" if self._model_fallback_warning else "synthesized",
@@ -74,6 +86,7 @@ class FinalSynthesizer:
             warnings=warnings,
             objective_solved=False,
             answer_produced=True,
+            best_current_direction=best_current_direction_payload(best, route=_answer_route(best), contract=contract),
         )
 
     def _model_synthesis(self, *, population: CandidatePopulation, archives: ArchiveManager, contract: Any | None, world: Any | None) -> SynthesizedResult | None:
@@ -113,11 +126,26 @@ class FinalSynthesizer:
                 return None
             selected = requested
         elif selected is None:
-            selected = _best_answer_candidate(population.candidates)
+            selected = _best_answer_candidate(population.candidates, contract=contract)
             if selected is not None:
                 warnings.append("model_synthesis_without_candidate_id_used_best_answer_candidate")
+            else:
+                selected = select_best_current_direction(population.candidates, contract=contract)
+                if selected is not None:
+                    warnings.append("model_synthesis_without_candidate_id_used_best_current_direction")
 
         selected_id = selected.id if selected is not None else ""
+        if selected is not None and ("intent_directness" in raw or "intent_alignment_rationale" in raw):
+            binding = bind_candidate_intent(selected, contract=contract)
+            if "intent_directness" in raw:
+                try:
+                    binding["direct_answer_score"] = max(0.0, min(1.0, float(raw.get("intent_directness") or 0.0)))
+                except (TypeError, ValueError):
+                    pass
+            if raw.get("intent_alignment_rationale"):
+                binding["alignment_rationale"] = str(raw.get("intent_alignment_rationale") or "")[:600]
+            selected.metadata["intent_binding"] = binding
+            selected.metadata.setdefault("nextgen", {})["intent_binding"] = dict(binding)
         if selected is not None and _normalize_answer_text(final) != _normalize_answer_text(_candidate_answer_text(selected)):
             warnings.append("model_final_answer_unbound_to_candidate_artifact")
             selected_id = ""
@@ -131,6 +159,7 @@ class FinalSynthesizer:
             failure_analysis=str(raw.get("failure_analysis") or ""),
             objective_solved=False,
             answer_produced=True,
+            best_current_direction=best_current_direction_payload(selected, route=_answer_route(selected), contract=contract) if selected is not None else {},
         )
 
 
@@ -148,28 +177,37 @@ def _runtime_answer_candidate(archives: ArchiveManager, candidates: list[Candida
     return None
 
 
-def _best_answer_candidate(candidates: list[CandidateGenome]) -> CandidateGenome | None:
-    eligible = [candidate for candidate in candidates if _answer_candidate_eligible(candidate)]
+def _best_answer_candidate(candidates: list[CandidateGenome], *, contract: Any | None = None) -> CandidateGenome | None:
+    eligible = [candidate for candidate in candidates if _final_answer_candidate_eligible(candidate)]
     if not eligible:
         return None
-    return max(eligible, key=lambda candidate: _answer_candidate_score(candidate, eligible))
+    return max(eligible, key=lambda candidate: (candidate_verification_status(candidate) == "verified", _answer_candidate_score(candidate, eligible, contract=contract)))
 
 
-def _answer_candidate_eligible(candidate: CandidateGenome) -> bool:
+def _final_answer_candidate_eligible(candidate: CandidateGenome) -> bool:
+    if not _answer_candidate_eligible(candidate):
+        return False
     fate = CandidateFate.normalize(getattr(candidate, "current_fate", ""))
     if fate in {CandidateFate.CULLED.value, CandidateFate.FAILED.value}:
         return False
     metadata = candidate.metadata if isinstance(candidate.metadata, dict) else {}
     if metadata.get("terminal_failure") or metadata.get("terminal_reject_reason"):
         return False
-    return bool(_candidate_answer_text(candidate).strip())
+    return True
+
+def _answer_candidate_eligible(candidate: CandidateGenome) -> bool:
+    return not structurally_blocked(candidate) and bool(_candidate_answer_text(candidate).strip())
+
+
+def _answer_route(candidate: CandidateGenome) -> str:
+    return "final" if candidate_verification_status(candidate) == "verified" else "best_current"
 
 
 def _candidate_answer_text(candidate: CandidateGenome) -> str:
     return str(candidate.artifact or candidate.concise_claim or candidate.core_mechanism or "")
 
 
-def _answer_candidate_score(candidate: CandidateGenome, context: list[CandidateGenome] | None = None) -> float:
+def _answer_candidate_score(candidate: CandidateGenome, context: list[CandidateGenome] | None = None, *, contract: Any | None = None) -> float:
     context = context or [candidate]
     scores = candidate.multihead_scores
     if CandidateFate.normalize(candidate.current_fate) == CandidateFate.AUXILIARY.value:
@@ -186,7 +224,7 @@ def _answer_candidate_score(candidate: CandidateGenome, context: list[CandidateG
     ]
     direct_signal = sum(direct_axes) / len(direct_axes)
     diversity_signal = 1.0 if observed_frontier_signal(candidate, context) else mean_percentile(candidate, context, ["novelty", "rarity"])
-    answer_signal = bounded_answer_signal(candidate)
+    answer_signal = max(bounded_answer_signal(candidate), best_current_direction_payload(candidate, contract=contract).get("direct_answer_score", 0.0))
     latent_signal = max(
         0.0,
         min(

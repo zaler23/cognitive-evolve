@@ -19,7 +19,7 @@ from cognitive_evolve_runtime.nexus.obligations import (
 )
 from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy
 from cognitive_evolve_runtime.nexus.protocols import NexusModelLike
-from cognitive_evolve_runtime.archives.quality_diversity import live_reproductive_candidates
+from cognitive_evolve_runtime.nexus.nextgen import budget_eligible_candidates
 from cognitive_evolve_runtime.ranking.lineage_saturation import detect_lineage_saturation
 
 STAGNATION_TYPES = [
@@ -161,7 +161,7 @@ class SearchStateDiagnoser:
                 notes=f"low engine-grounded marginal information gain for {low_gain.get('count')} rounds",
                 grounded_information_gain=low_gain,
             )
-        live_context = live_reproductive_candidates(population)
+        live_context = budget_eligible_candidates(population)
         frontier = _frontier_candidates(population)
         diagnosis_context = frontier or live_context or population
         active_count = len([c for c in population if CandidateFate.normalize(c.current_fate) == CandidateFate.ACTIVE.value])
@@ -419,14 +419,13 @@ class PolicyUpdater:
             }
             metadata.pop("required_evidence_kinds", None)
             metadata.pop("proof_progress_gate", None)
-            if diagnosis.over_explored_families:
-                metadata["blocked_or_overexplored_obligations"] = list(dict.fromkeys(diagnosis.over_explored_families))
             updated.metadata = metadata
         if "quarantine_lineage" in actions and diagnosis.over_explored_families:
             metadata = dict(updated.metadata)
-            previous = coerce_str_list(metadata.get("frozen_lineages"))
-            metadata["frozen_lineages"] = list(dict.fromkeys(previous + diagnosis.over_explored_families))
-            metadata["lineage_freeze_policy"] = "same_mechanism_requires_new_evidence_delta_before_selection_or_reactivation"
+            metadata["lineage_pressure_advisory"] = {
+                "families": list(dict.fromkeys(diagnosis.over_explored_families)),
+                "effect": "selection_scoring_only_not_a_freeze",
+            }
             updated.metadata = metadata
         if archives is not None:
             constraints = archives.constraints_for_policy(limit=20)

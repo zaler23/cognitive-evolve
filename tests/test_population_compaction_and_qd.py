@@ -25,7 +25,7 @@ def _candidate(candidate_id: str, *, niche: str = "same", score: float = 0.1, fa
     )
 
 
-def test_terminal_candidates_leave_live_population_but_keep_tombstones() -> None:
+def test_nonstructural_terminal_candidates_reopen_as_dormant_reserve() -> None:
     failed = _candidate("failed", fate=CandidateFate.FAILED.value)
     live = _candidate("live")
     population = CandidatePopulation([failed, live])
@@ -39,12 +39,12 @@ def test_terminal_candidates_leave_live_population_but_keep_tombstones() -> None
         round_index=3,
     )
 
-    assert [candidate.id for candidate in population.candidates] == ["live"]
-    assert result.removed_terminal_ids == ["failed"]
-    assert "failed" in archives.terminal_tombstones
-    assert "failed" in archives.failure_archive.records
+    assert [candidate.id for candidate in population.candidates] == ["failed", "live"]
+    assert failed.current_fate == CandidateFate.DORMANT.value
+    assert result.removed_terminal_ids == []
+    assert "failed" not in archives.terminal_tombstones
     reloaded = ArchiveManager.from_dict(archives.to_dict())
-    assert "failed" in reloaded.terminal_tombstones
+    assert "failed" not in reloaded.terminal_tombstones
 
 
 def test_quality_diversity_compacts_per_bin_without_fixed_global_cap() -> None:
@@ -68,5 +68,4 @@ def test_quality_diversity_compacts_per_bin_without_fixed_global_cap() -> None:
     assert len([candidate for candidate in population.candidates if candidate_bin_key(candidate).startswith("alpha|")]) <= 3
     assert len([candidate for candidate in population.candidates if candidate_bin_key(candidate).startswith("beta|")]) <= 3
     assert len(population.candidates) > 2  # bins, not one fixed global cap
-    assert set(result.compacted_clone_ids).issubset(set(archives.terminal_tombstones))
-
+    assert set(result.compacted_clone_ids).issubset(set(archives.dormant_archive.candidates))

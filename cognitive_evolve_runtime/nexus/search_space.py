@@ -11,6 +11,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from cognitive_evolve_runtime.nexus._serde import stable_hash
+
 
 def build_search_space_map(assessment: dict[str, Any], requested_candidate_count: int = 0) -> dict[str, Any]:
     task_type = str(assessment.get("task_type") or "")
@@ -74,7 +76,7 @@ def classify_candidate(candidate: dict[str, Any], search_space_map: dict[str, An
         family_id = _infer_family_by_overlap(text, families)
     known = {str(item.get("id")) for item in families}
     if family_id not in known and families:
-        family_id = str(families[0].get("id"))
+        family_id = "singleton_" + stable_hash({"candidate": text[:1200], "declared_family": family_id})[:12]
     selected = next((item for item in families if str(item.get("id")) == family_id), {})
     return {
         "family_id": family_id,
@@ -84,7 +86,7 @@ def classify_candidate(candidate: dict[str, Any], search_space_map: dict[str, An
         "breakthrough_proximity": _score_overlap(text, selected),
         "meta_task": False,
         "objective_final_eligible": True,
-        "classification_reason": "nexus_search_space_classification",
+        "classification_reason": "nexus_search_space_classification" if family_id in known else "nextgen_provisional_singleton_family",
     }
 
 

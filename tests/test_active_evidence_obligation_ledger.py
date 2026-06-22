@@ -87,7 +87,7 @@ def test_archive_constraints_penalize_proposal_only_lineage_until_evidence_delta
 
     assert archives.constraint_records
     assert reproductive_value(with_delta, [proposal_only, with_delta], archives) > reproductive_value(proposal_only, [proposal_only, with_delta], archives)
-    assert archives.reactivate_dormant("C-old") is None
+    assert archives.reactivate_dormant("C-old") is not None
 
 
 def test_context_packet_is_obligation_targeted_and_hashes_sources(tmp_path: Path) -> None:

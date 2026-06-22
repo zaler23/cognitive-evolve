@@ -8,6 +8,7 @@ from cognitive_evolve_runtime.candidates.genome import CandidateGenome
 from cognitive_evolve_runtime.candidates.mutation import MutationPlan
 from cognitive_evolve_runtime.llm.fanout import model_fanout_workers, run_ordered_fanout
 from cognitive_evolve_runtime.nexus._serde import stable_hash
+from cognitive_evolve_runtime.nexus.nextgen import ensure_nextgen_identity, record_candidate_budget_decision
 from cognitive_evolve_runtime.nexus.semantic_dedupe import CandidateDeduper
 from .descriptor_cells import descriptor_cell_key
 from .fingerprints import candidate_fingerprint
@@ -26,6 +27,8 @@ class HarvestPolicy:
     fanout_workers: int | None = None
     stop_at_target: bool = True
     exhaust_on_no_new: bool = False
+    reservoir_mode: bool = False
+    reservoir_limit: int = 256
 
 
 @dataclass
@@ -37,6 +40,9 @@ class HarvestResult:
     fatal_model_error: Exception | None = None
     recoverable_batch_errors: list[dict[str, Any]] = field(default_factory=list)
     failed_batch_ids: list[int] = field(default_factory=list)
+    reservoir: list[CandidateGenome] = field(default_factory=list)
+    reservoir_truncated_count: int = 0
+    reservoir_truncated_summaries: list[dict[str, Any]] = field(default_factory=list)
     stage: str = ""
 
     @property
@@ -58,6 +64,10 @@ class HarvestResult:
             "fatal_model_error": f"{self.fatal_model_error.__class__.__name__}: {self.fatal_model_error}" if self.fatal_model_error else "",
             "recoverable_batch_errors": list(self.recoverable_batch_errors[-50:]),
             "failed_batch_ids": list(self.failed_batch_ids),
+            "reservoir_ids": [candidate.id for candidate in self.reservoir[-100:]],
+            "reservoir_count": len(self.reservoir),
+            "reservoir_truncated_count": self.reservoir_truncated_count,
+            "reservoir_truncated_summaries": list(self.reservoir_truncated_summaries[-50:]),
         }
 
 
@@ -153,16 +163,42 @@ class CandidateHarvester:
             candidate.metadata["search_kernel_relevance"] = rel
             candidate.metadata["search_kernel_fingerprint"] = candidate_fingerprint(candidate).to_dict()
             candidate.metadata["descriptor_cell"] = descriptor_cell_key(candidate)
+            ensure_nextgen_identity(candidate)
             if rel < self.policy.relevance_floor:
-                result.rejected.append({"batch": batch_index, "candidate_id": candidate.id, "reason": "low_relevance", "relevance": rel})
+                record = {"batch": batch_index, "candidate_id": candidate.id, "reason": "low_relevance", "relevance": rel}
+                result.rejected.append(record)
+                record_candidate_budget_decision(candidate, source=f"{self.policy.stage}_harvester", reason="low_relevance", action="soft_reservoir" if self.policy.reservoir_mode else "soft_reject", details=record)
+                if self.policy.reservoir_mode:
+                    candidate.metadata.setdefault("seed_reservoir_reason", "low_relevance")
+                    self._store_reservoir(result, candidate, reason="low_relevance")
                 continue
             relevant += 1
             if self.deduper.add(candidate):
                 novel += 1
                 result.accepted.append(candidate)
             else:
-                result.rejected.append({"batch": batch_index, "candidate_id": candidate.id, "reason": "duplicate_semantic_signature", "signature": candidate.metadata.get("dedupe_signature")})
+                record = {"batch": batch_index, "candidate_id": candidate.id, "reason": "duplicate_semantic_signature", "signature": candidate.metadata.get("dedupe_signature")}
+                result.rejected.append(record)
+                record_candidate_budget_decision(candidate, source=f"{self.policy.stage}_harvester", reason="duplicate_semantic_signature", action="soft_reservoir" if self.policy.reservoir_mode else "soft_reject", details=record)
+                if self.policy.reservoir_mode:
+                    candidate.metadata.setdefault("seed_reservoir_reason", "duplicate_semantic_signature")
+                    self._store_reservoir(result, candidate, reason="duplicate_semantic_signature")
         return batch_gain(accepted_count=len(result.accepted) - before, novel_count=novel, batch_size=max(1, len(batch)), relevant_count=relevant)
+
+    def _store_reservoir(self, result: HarvestResult, candidate: CandidateGenome, *, reason: str) -> None:
+        limit = max(0, int(self.policy.reservoir_limit or 0))
+        if len(result.reservoir) < limit:
+            result.reservoir.append(candidate)
+            return
+        result.reservoir_truncated_count += 1
+        summary = {
+            "candidate_id": candidate.id,
+            "reason": reason,
+            "concise_claim": str(candidate.concise_claim or candidate.core_mechanism or candidate.artifact or "")[:240],
+        }
+        result.reservoir_truncated_summaries.append(summary)
+        del result.reservoir_truncated_summaries[:-50]
+        candidate.metadata["seed_reservoir_truncated"] = summary
 
 
 def _harvest_workers(*, max_batches: int, configured: int | None) -> int:
@@ -191,7 +227,14 @@ def dedupe_plans(plans: Iterable[MutationPlan]) -> tuple[list[MutationPlan], lis
         sig = plan_signature(plan)
         plan.metadata.setdefault("search_kernel_plan_signature", sig)
         if sig in seen:
-            rejected.append({"reason": "duplicate_plan_signature", "signature": sig, "operator": plan.operator, "parent_ids": list(plan.parent_ids)})
+            plan.metadata["candidate_budget_decision"] = {
+                "source": "dedupe_plans",
+                "reason": "duplicate_plan_signature",
+                "action": "soft_retain",
+                "hard_gate": False,
+            }
+            rejected.append({"reason": "duplicate_plan_signature", "signature": sig, "operator": plan.operator, "parent_ids": list(plan.parent_ids), "action": "soft_retain"})
+            accepted.append(plan)
             continue
         seen.add(sig)
         accepted.append(plan)

@@ -129,7 +129,7 @@ def test_classifier_maps_schema_and_static_failures_to_repair_lanes() -> None:
     assert static_verdict.lifecycle_action == "bounded_static_repair_lane"
 
 
-def test_exhausted_incubating_repair_candidate_is_not_selected_as_parent() -> None:
+def test_exhausted_incubating_repair_candidate_remains_explorable_parent() -> None:
     candidate = CandidateGenome(
         id="exhausted-repair",
         current_fate=CandidateFate.INCUBATING,
@@ -144,4 +144,7 @@ def test_exhausted_incubating_repair_candidate_is_not_selected_as_parent() -> No
         multihead_scores={"objective_alignment": 0.8, "answer_likelihood": 0.4},
     )
 
-    assert ParentSelector().select([candidate], ArchiveManager(), limit=1) == []
+    selected = ParentSelector().select([candidate], ArchiveManager(), limit=1)
+
+    assert [item.id for item in selected] == ["exhausted-repair"]
+    assert candidate.metadata["candidate_budget_decision"]["reason"] == "low_sample_or_novelty_protected"

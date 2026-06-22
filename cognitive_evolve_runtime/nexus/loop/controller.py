@@ -28,6 +28,7 @@ from cognitive_evolve_runtime.nexus.population_control import compact_live_popul
 from cognitive_evolve_runtime.nexus.protocols import NexusModelLike, NexusMutationPlannerModelProtocol, NexusOffspringModelProtocol, NexusSeedModelProtocol, NexusStopModelProtocol
 from cognitive_evolve_runtime.nexus.repair_reactivation import recover_failure_archive_repair_seeds, recover_repairable_dormant_seeds
 from cognitive_evolve_runtime.nexus.synthesis import SynthesizedResult, synthesize_result
+from cognitive_evolve_runtime.nexus.nextgen import best_current_direction_payload
 from cognitive_evolve_runtime.verification.ladder import VerificationStrength
 from cognitive_evolve_runtime.verification.grading import certificate_allows_verified_result
 from cognitive_evolve_runtime.verification.types import GradedOutput, VerifiedResult, Direction, VerificationPlan
@@ -375,6 +376,16 @@ class EvolutionLoopController:
         synthesis.closure_certificate["graded_output"] = graded_output.to_dict()
         if graded_output.mode != "verified_result":
             synthesis.closure_certificate["graded_output_advisory"] = "verification_result_not_required_for_answer_first_completion"
+        selected_for_display = _selected_final_candidate(self.population, synthesis=synthesis, final_certificate=final_certificate)
+        if selected_for_display is not None:
+            current_best = synthesis.best_current_direction if isinstance(synthesis.best_current_direction, dict) else {}
+            synthesis.best_current_direction = best_current_direction_payload(
+                selected_for_display,
+                route=str(current_best.get("route") or "final"),
+                contract=self.contract,
+                final_certificate=final_certificate,
+                graded_output=graded_output.to_dict(),
+            )
         synthesis.objective_solved = bool(synthesis.closure_certificate.get("objective_solved"))
         synthesis.answer_produced = bool(synthesis.closure_certificate.get("answer_produced"))
         final_progress_event = self.progress_events[-1] if self.progress_events else {}

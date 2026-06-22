@@ -74,6 +74,10 @@ class CandidateMetadata(TypedDict, total=False):
     generation_plan_source: str
     generation_plan_round: int
     generation_plan_fate: str
+    nextgen: dict[str, Any]
+    candidate_budget_decision: dict[str, Any]
+    candidate_budget_decisions: list[dict[str, Any]]
+    seed_reservoir: dict[str, Any]
 
 
 @dataclass(frozen=True)

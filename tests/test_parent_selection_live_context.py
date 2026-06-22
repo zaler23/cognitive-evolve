@@ -38,7 +38,7 @@ def test_dead_siblings_do_not_create_live_lineage_penalty() -> None:
     assert with_dead == baseline
 
 
-def test_parent_selector_ignores_terminal_candidates_even_when_many() -> None:
+def test_parent_selector_keeps_nonstructural_terminal_candidates_as_reserve() -> None:
     live = _live("live")
     dead = [
         CandidateGenome(
@@ -53,7 +53,8 @@ def test_parent_selector_ignores_terminal_candidates_even_when_many() -> None:
 
     selected = ParentSelector().select([*dead, live], ArchiveManager(), limit=3)
 
-    assert [candidate.id for candidate in selected] == ["live"]
+    assert selected[0].id == "live"
+    assert {candidate.id for candidate in selected[1:]} <= {candidate.id for candidate in dead}
 
 
 def test_negative_scored_elite_remains_parent_floor_when_only_live_candidate() -> None:
@@ -76,7 +77,7 @@ def test_negative_scored_elite_remains_parent_floor_when_only_live_candidate() -
     assert [candidate.id for candidate in selected] == ["elite-floor"]
 
 
-def test_parent_floor_still_respects_stage_parent_ineligible_elite() -> None:
+def test_parent_floor_defangs_stage_parent_ineligible_elite() -> None:
     blocked = CandidateGenome(
         id="blocked-elite",
         current_fate=CandidateFate.ELITE,
@@ -88,4 +89,4 @@ def test_parent_floor_still_respects_stage_parent_ineligible_elite() -> None:
 
     selected = ParentSelector().select([blocked], ArchiveManager(), limit=2)
 
-    assert selected == []
+    assert [candidate.id for candidate in selected] == ["blocked-elite"]

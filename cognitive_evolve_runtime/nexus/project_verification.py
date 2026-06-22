@@ -8,6 +8,7 @@ from typing import Any
 from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome
 from cognitive_evolve_runtime.candidates.project_candidate import PatchApplicationResult, ProjectCandidateGenome
 from cognitive_evolve_runtime.nexus.failure_classifier import classify_recovery_eligibility
+from cognitive_evolve_runtime.nexus.nextgen import record_candidate_budget_decision, structurally_blocked
 from cognitive_evolve_runtime.tools.adapters import LocalToolSuite
 from cognitive_evolve_runtime.tools.feedback import ToolFeedback
 from cognitive_evolve_runtime.tools.patch_sandbox import PatchSandbox, _looks_like_unified_patch_text
@@ -119,13 +120,28 @@ def _route_failed_project_candidate(candidate: CandidateGenome, payload: dict[st
     self-evolution genes.  Treat those like failed offspring: block them from
     final synthesis, but keep them as Incubating repair parents.  Terminal
     failures such as docs-only, seed-note-only, missing targets, and source-free
-    narrative claims still become Failed.
+    narrative claims now remain exploratory unless they expose structural/safety
+    damage; they are blocked only from verified/final claims.
     """
 
     verdict = classify_recovery_eligibility(candidate, payload, project_root=payload.get("source_root"))
     candidate.metadata["failure_classification"] = _verdict_with_candidate_id(verdict.to_dict(), candidate.id)
     if not verdict.repairable:
-        candidate.mark_fate(CandidateFate.FAILED.value)
+        candidate.metadata["final_answer_advisory"] = {
+            "final_eligible": False,
+            "claim_eligible": False,
+            "reason": verdict.category,
+        }
+        record_candidate_budget_decision(candidate, source="project_verification", reason=verdict.category, action="soft_retain")
+        if structurally_blocked(candidate):
+            candidate.mark_fate(CandidateFate.FAILED.value)
+        else:
+            candidate.mark_fate(CandidateFate.INCUBATING.value)
+            candidate.metadata["bootstrap_entry_survival"] = {
+                "reason": "non_structural_project_failure_kept_for_answer_first_exploration",
+                "category": verdict.category,
+                "final_answer_blocked": True,
+            }
         return
     candidate.mark_fate(CandidateFate.INCUBATING.value)
     candidate.metadata["final_answer_blocked_until_repaired"] = True

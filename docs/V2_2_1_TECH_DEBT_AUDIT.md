@@ -560,3 +560,78 @@ Runtime evidence behind this closure:
 - Fresh retry evidence under the local test-run tree showed `seed_overlay.seed_safety_max_batches=24` but checkpoint `seed_harvest.batches=16` with `stopped_reason=batch_limit`.
 - The hard cap was source-local in `cognitive_evolve_runtime/nexus/loop/seeding.py`, not a provider or bridge behavior.
 - The source fix is required before launching the next fresh 24-seed run from `source-current`.
+
+## v3 NextGen CBT-PCBG landing ledger — 2026-06-22
+
+Scope: land the NextGen CognitiveEvolve CBT-PCBG review plan while preserving answer-first exploration semantics. The implementation removes pre-existing exploration hard gates before adding Critical Branching soft budget signals, keeps verification/authority walls advisory for final claims only, avoids new heavy dependencies, and keeps the public source tree clean.
+
+Status: closed in code + tests on this branch.
+
+| Debt ID | Closure status | Code / test evidence |
+|---|---|---|
+| TD-V3-NG-PR0-HARVEST-RESERVOIR-SOFT-REJECT | Closed in code + tests | `CandidateHarvester` supports `reservoir_mode`; low-relevance and semantic-duplicate seed outputs enter `HarvestResult.reservoir` with `candidate_budget_decision` soft traces. Covered by `tests/test_nextgen_cbt_pcbg_landing.py`. |
+| TD-V3-NG-PR0-OFFSPRING-PLAN-DEDUPE-SOFT | Closed in code + tests | Offspring semantic duplicates and plan signature duplicates are retained with soft trace metadata; exact structural blockers remain the only hard exclusion lane. Covered by nextgen and reproduction regressions. |
+| TD-V3-NG-PR0-FATE-NONTERMINAL-EXPLORATION | Closed in code + tests | Verifier/project/archive/compaction paths now keep non-structural source-free, docs-only, narrative-only, and repairable failures as Active/Incubating/Dormant advisory material. Covered by archive, population, dormant repair, failure classifier, and nextgen regressions. |
+| TD-V3-NG-PR0-BUDGET-ELIGIBLE-LANE | Closed in code + tests | `budget_eligible_candidates()` includes dormant/reserve/reservoir material and excludes only structural or safety failures; parent/ranking/diagnosis paths use this lane. |
+| TD-V3-NG-PR0-CANDIDATE-BUDGET-TRACE | Closed in code + tests | Former hard gates write capped `candidate_budget_decisions` events through `record_candidate_budget_decision()`, including harvest, archive, parent, compaction, verifier, and repair reactivation paths. |
+| TD-V3-NG-PR1-SUBSTRATE-REGRESSION | Closed in code + tests | Existing A-E substrate tests remain green; stage-budget strict env and `llm_provider` cost namespace were preserved by the full regression suite. |
+| TD-V3-NG-PR2-CANONICAL-FAMILY-ID | Closed in code + tests | Compatible `metadata.nextgen` identity fields are populated; unknown search-space families become provisional singleton families instead of falling back to the first configured family. |
+| TD-V3-NG-PR2-PRODUCTIVE-OBSERVATION-NONBLOCKING | Closed in code + tests | `ProductiveChildObservation` is observation-only and has no `.passed` or `must_not_block` runtime branch field. |
+| TD-V3-NG-PR2-CONSUMER-ALLOWLIST | Closed in code + tests | Static consumer tests scan archive, parent, ranking, verifier, repair, synthesis, final-gate, and verification-stack files to prevent productive/CBT soft signals from becoming hard gate consumers. |
+| TD-V3-NG-PR3-LLM-PROFILE-IDENTITY | Closed in code + tests | `LLMCallIdentity` and `LLMModelSpec.profile_id` flow through breaker keys, idempotency, journal, call ledger, telemetry, and public route summary while preserving legacy provider/model fields. |
+| TD-V3-NG-PR4-SEED-RESERVOIR-CHECKPOINT | Closed in code + tests | Seed reservoir summaries are carried in seed metadata and checkpoint-safe population serialization; source acceptance does not require a real-provider rerun. |
+| TD-V3-NG-PR4-PROMPT-PROTECTED-FRONTIER | Closed in code + tests | Prompt view compression preserves protected candidate objects by shrinking detail before dropping frontier candidates; tiny-budget fallback keeps protected ids and summaries. |
+| TD-V3-NG-PR5-CBT-SOFT-QUOTA | Closed in code + tests | CBT Critical Branching is implemented as a soft trace/score adjustment with floor `1`; singleton, rare, novel, and edge branches are protected rather than blocked. |
+| TD-V3-NG-PR5-FALSE-CULL-NOVELTY-MONITOR | Closed in code + tests | Prompt population stats expose false-cull and boundary-loop counters so throttle can be defanged when exploration quality worsens. |
+| TD-V3-NG-PR6-COST-OPT-IN-ONLY | Closed in code + tests | Ranking reverse-order audit is controlled by `COGEV_RANK_ORDER_AUDIT=off|sample|always`; transport cost metadata stays in provider ledgers and prompt limits only shrink payloads. |
+| TD-V3-NG-PR7-PUBLIC-USABILITY | Closed in code + tests | README and provider docs are fixture-first and profile-aware, with no host-local paths, private relay facts, or runtime artifacts added. |
+| TD-V3-NG-PUBLIC-HYGIENE-MIRROR | Closed in code + tests | Full local acceptance passed; final cleanup and mirror sync are performed after `package_clean.sh` and public hygiene scans. |
+
+Validation after NextGen CBT-PCBG landing:
+
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m compileall -q cognitive_evolve_runtime scripts tests` — passed.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider` — `704 passed, 1 skipped`.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B scripts/cogev.py doctor --scope all` — `50/50 checks passed`.
+- Subagent closeout review found no blocking old-gate, dual-authority, public-hygiene, or over-engineering issues; one static-test coverage suggestion was closed by expanding the consumer allowlist test.
+
+## v3 Final Best Direction + Resurrection cleanup ledger — 2026-06-22
+
+Scope: make answer-first output total over all non-structural/non-safety candidates, add a minimal loser-pool resurrection lane inspired by Swiss/non-elimination and double-elimination loser brackets, and close the small review debts without adding a second selector, tournament framework, database, or new dependency.
+
+Status: closed in code + tests on this branch.
+
+| Debt ID | Closure status | Code / test evidence |
+|---|---|---|
+| TD-V3-NG-FINAL-BEST-CURRENT | Closed in code + tests | `SynthesizedResult` and `FinalProjection` expose `best_current_direction` for the best non-structural candidate; failed/source-free candidates can produce an answer while `objective_solved=false`, and structural/stage hard rejects remain excluded. Covered by `tests/test_nextgen_cbt_pcbg_landing.py`, `tests/test_nexus_audit_regressions.py`, and adaptive projection regressions. |
+| TD-V3-NG-RESURRECTION-LANE | Closed in code + tests | `ParentSelector` adds a bounded soft resurrection quota from dormant/reserve/failed/reservoir candidates, writes `resurrection_*` trace metadata, and protects Critical Branching over pure framework noise without adding a bracket scheduler or second selector. |
+| TD-V3-NG-RESERVOIR-CAP | Closed in code + tests | `HarvestPolicy.reservoir_limit` defaults to `256`; overflow records `reservoir_truncated_count` and capped summaries instead of appending full objects indefinitely. |
+| TD-V3-NG-SOFT-CAP-NAMING | Closed in code + tests | Legacy `max_per_group` repair/reseed config is documented and emitted as `soft_group_hint`; overrepresented groups remain selectable and are not hard-capped. |
+| TD-V3-NG-SEED-ENSEMBLE-LINEAGE | Closed in code + tests | `SeedModelEnsembleAdapter` preserves `origin_model_index` for both dict seed outputs and `CandidateGenome` seed outputs while keeping input-order-stable fanout. |
+| TD-V3-NG-IDENTITY-NO-PARALLEL-PATH | Closed in code + tests | LLM profile identity regression verifies provider dispatch still uses provider/model, while breaker/idempotency/journal/call-ledger use profile identity for isolation rather than a duplicate provider path. |
+
+Validation after Final Best Direction + Resurrection cleanup:
+
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m compileall -q cognitive_evolve_runtime scripts tests` — passed.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider` — `712 passed, 1 skipped` after explicit removal of a pre-existing `.pytest_cache/` runtime artifact.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B scripts/cogev.py doctor --scope all` — `50/50 checks passed`.
+- `bash scripts/package_clean.sh` — completed; generated `dist/` is removed again during final public hygiene cleanup.
+- Independent subagent review findings on structural hard rejects, fallback ordering, display route tests, and public hygiene self-cleaning were addressed before closure.
+
+## v3 NextGen intent binding final-direction correction ledger — 2026-06-22
+
+Scope: close the smoke-run finding that final selection could choose an audit/ledger support object as the best direction when the frozen user goal asked for mechanism/model/framework exploration, and that final summaries could surface advisory material as `verified`.
+
+Status: closed in code + tests on this branch.
+
+| Debt ID | Closure status | Code / test evidence |
+|---|---|---|
+| TD-V3-NG-INTENT-BINDING-NO-ENUM | Closed in code + tests | `metadata.intent_binding` stores free-text `search_intent`, `candidate_main_claim`, `supporting_claims`, `alignment_rationale`, and continuous `direct_answer_score`; no target-kind enum was added. |
+| TD-V3-NG-NO-DOMAIN-HARDCODED-FINAL-SCORE | Closed in code + tests | Final and resurrection scoring now use intent directness plus existing soft signals; static regression tests reject domain-specific final/resurrection scoring constants. |
+| TD-V3-NG-SUPPORTING-ARTIFACT-NOT-BEST-DIRECTION | Closed in code + tests | When the frozen goal asks for a search/model direction, direct goal claims outrank support artifacts even if the support artifact has stronger artifact/verifiability scores; the same support artifact can still win when the goal asks for it. |
+| TD-V3-NG-USER-FACING-VERIFICATION-HONESTY | Closed in code + tests | `best_current_direction.verification_status` only reports `verified` from graded verified output or replayable final certificate evidence; candidate-local metadata alone is advisory. |
+| TD-V3-NG-SUMMARY-ANSWER-PRODUCED-CONSISTENCY | Closed in code + tests | The controller refreshes `best_current_direction` after graded output is known, preserving `objective_solved=false` while keeping answer-first output available. |
+
+Validation after intent binding correction:
+
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m compileall -q cognitive_evolve_runtime/nexus tests/test_nextgen_cbt_pcbg_landing.py tests/test_failure_classifier.py` — passed.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider tests/test_nextgen_cbt_pcbg_landing.py tests/test_failure_classifier.py tests/test_nexus_audit_regressions.py tests/adaptive/test_evidence_control_plane.py` — `77 passed`.

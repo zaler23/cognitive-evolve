@@ -5,10 +5,11 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
-from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome
+from cognitive_evolve_runtime.candidates.genome import CandidateGenome
 from cognitive_evolve_runtime.evaluators.evidence import evidence_state, latest_evidence_record
 from cognitive_evolve_runtime.nexus._serde import coerce_dict, coerce_str_list
 from cognitive_evolve_runtime.nexus.source_binding_resolver import annotate_candidate_source_bindings, candidate_source_binding_class
+from cognitive_evolve_runtime.nexus.nextgen import structurally_blocked
 from cognitive_evolve_runtime.ranking.relative_rater import RelativeRankingResult
 
 
@@ -157,13 +158,7 @@ def _source_block_reason(candidate: CandidateGenome, context: DisplayContext) ->
 
 
 def _default_answer_eligible(candidate: CandidateGenome) -> bool:
-    metadata = candidate.metadata if isinstance(candidate.metadata, dict) else {}
-    fate = CandidateFate.normalize(getattr(candidate, "current_fate", ""), default="")
-    if fate in {CandidateFate.FAILED.value, CandidateFate.CULLED.value}:
-        return False
-    if metadata.get("hard_reject_reason") or metadata.get("terminal_reject_reason"):
-        return False
-    return bool(str(candidate.artifact or candidate.concise_claim or candidate.core_mechanism).strip())
+    return not structurally_blocked(candidate) and bool(str(candidate.artifact or candidate.concise_claim or candidate.core_mechanism).strip())
 
 
 def _contract_requires_source(contract: Any | None) -> bool:

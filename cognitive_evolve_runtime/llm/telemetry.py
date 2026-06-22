@@ -26,6 +26,8 @@ def record_event(
         "stage": get_llm_stage() or "unscoped",
         "provider": status.get("provider"),
         "model": status.get("model"),
+        "model_profile_id": status.get("model_profile_id"),
+        "llm_call_identity": status.get("llm_call_identity"),
         "test_provider_only": status.get("test_provider_only", False),
         "confidence": response.get("confidence"),
         "attempts": attempts,

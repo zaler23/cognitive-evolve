@@ -224,6 +224,12 @@ def final_answer_artifact_text(result: EvolutionLoopResult) -> str:
             "",
         ]
     )
+    best_current = getattr(result.synthesis, "best_current_direction", {}) or {}
+    if isinstance(best_current, dict) and best_current:
+        header.extend(["## Best current direction", ""])
+        for key, value in best_current.items():
+            header.append(f"- {key}: `{value}`")
+        header.append("")
     return "\n".join(header) + str(result.synthesis.final_answer or "")
 
 

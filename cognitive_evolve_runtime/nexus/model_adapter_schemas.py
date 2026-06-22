@@ -256,6 +256,8 @@ def _synthesis_schema() -> dict[str, Any]:
             "final_answer": {"type": "string"},
             "best_candidate_id": {"type": "string"},
             "best_auxiliary_candidate_id": {"type": "string"},
+            "intent_alignment_rationale": {"type": "string"},
+            "intent_directness": {"type": "number"},
             "warnings": _string_array(),
             "failure_analysis": {"type": "string"},
         },
