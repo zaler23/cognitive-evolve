@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from cognitive_evolve_runtime.nexus._serde import coerce_dict
+from cognitive_evolve_runtime.core.serialization import coerce_dict
 
 from .honesty_core import GroundingRegime
 from .types import VerificationResult
@@ -100,7 +100,7 @@ def _bool_hint(mapping: dict[str, Any], key: str) -> bool:
 
 
 def _stable_probe_digest(content: str) -> str:
-    from cognitive_evolve_runtime.nexus._serde import stable_hash
+    from cognitive_evolve_runtime.core.serialization import stable_hash
 
     return stable_hash({"probe_content": str(content or "")})[:24]
 

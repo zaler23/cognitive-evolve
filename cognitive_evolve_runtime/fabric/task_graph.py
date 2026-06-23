@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 import threading
 from typing import Any
 
-from cognitive_evolve_runtime.nexus._serde import coerce_dict, utc_now
+from cognitive_evolve_runtime.core.serialization import coerce_dict, utc_now
 from .task import ExplorationTask, TaskStatus
 
 _TERMINAL = {TaskStatus.DONE, TaskStatus.FAILED, TaskStatus.SKIPPED, TaskStatus.CANCELLED}

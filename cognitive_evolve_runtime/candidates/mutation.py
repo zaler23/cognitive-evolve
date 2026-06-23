@@ -6,7 +6,7 @@ from typing import Any
 
 from .genome import CandidateGenome
 from .project_candidate import PatchOperation, ProjectCandidateGenome
-from cognitive_evolve_runtime.nexus._serde import coerce_dict, coerce_str_list
+from cognitive_evolve_runtime.core.serialization import coerce_dict, coerce_str_list
 
 
 class MutationOperator:

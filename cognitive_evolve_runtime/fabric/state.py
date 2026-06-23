@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from cognitive_evolve_runtime.nexus._serde import coerce_dict
+from cognitive_evolve_runtime.core.serialization import coerce_dict
 from .dossier import DossierIndexEntry
 from .task_graph import TaskGraph
 

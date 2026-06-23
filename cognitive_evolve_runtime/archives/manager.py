@@ -7,7 +7,7 @@ from typing import Any
 
 from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome, candidate_from_dict
 from cognitive_evolve_runtime.evaluators.evidence import evidence_final_blocked, evidence_parent_blocked, evidence_terminal_reject, has_repair_value, latest_evidence_record
-from cognitive_evolve_runtime.nexus._serde import coerce_dict, coerce_str_list, utc_now
+from cognitive_evolve_runtime.core.serialization import coerce_dict, coerce_str_list, utc_now
 from cognitive_evolve_runtime.nexus.adaptive_signals import in_bottom_band, in_top_band, observed_frontier_signal, score
 from cognitive_evolve_runtime.nexus.obligations import HARD_EVIDENCE_FAILURES, HARD_PROOF_FAILURES, candidate_has_obligation_or_evidence_delta
 from cognitive_evolve_runtime.nexus.nextgen import record_candidate_budget_decision, structurally_blocked

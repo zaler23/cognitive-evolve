@@ -5,7 +5,7 @@ import ast
 import json
 from typing import Any
 
-from cognitive_evolve_runtime.nexus._serde import stable_hash
+from cognitive_evolve_runtime.core.serialization import stable_hash
 
 RUNTIME_KEYS = {"runtime", "jitter", "name", "round", "round_index", "id", "candidate_id", "created_at", "updated_at"}
 UNDEFINED_SIGNATURE = "UNDEFINED"

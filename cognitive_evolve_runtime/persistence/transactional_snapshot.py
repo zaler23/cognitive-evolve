@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from cognitive_evolve_runtime.durable.file_lock import atomic_write_json, atomic_write_text, file_lock
-from cognitive_evolve_runtime.nexus._serde import utc_now
+from cognitive_evolve_runtime.core.serialization import utc_now
 
 
 @dataclass(frozen=True)

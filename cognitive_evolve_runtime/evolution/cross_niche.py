@@ -6,7 +6,7 @@ from typing import Any
 from cognitive_evolve_runtime.candidates.crossover import crossover
 from cognitive_evolve_runtime.candidates.genome import CandidateGenome
 from cognitive_evolve_runtime.candidates.project_candidate import ProjectCandidateGenome
-from cognitive_evolve_runtime.nexus._serde import coerce_dict, stable_hash
+from cognitive_evolve_runtime.core.serialization import coerce_dict, stable_hash
 
 from .niches import SpeciesIndex, normalize_niche_id, resolve_niche_id
 

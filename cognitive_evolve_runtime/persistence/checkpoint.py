@@ -11,7 +11,7 @@ from cognitive_evolve_runtime.candidates.genome import CandidatePopulation
 from cognitive_evolve_runtime.durable.file_lock import atomic_write_json
 from cognitive_evolve_runtime.llm.call_ledger import ledger_summary
 from cognitive_evolve_runtime.llm.session import current_llm_session
-from cognitive_evolve_runtime.nexus._serde import coerce_dict, utc_now
+from cognitive_evolve_runtime.core.serialization import coerce_dict, utc_now
 from cognitive_evolve_runtime.persistence.checkpoint_profile import apply_checkpoint_profile_to_history, apply_checkpoint_profile_to_population, checkpoint_profile_from_env
 
 
@@ -40,6 +40,7 @@ class NexusCheckpoint:
     checkpoint_profile: dict[str, Any] = field(default_factory=dict)
     call_ledger_summary: dict[str, Any] = field(default_factory=dict)
     fabric: dict[str, Any] = field(default_factory=dict)
+    runtime_options: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=utc_now)
 
     def to_dict(self) -> dict[str, Any]:
@@ -71,6 +72,7 @@ class NexusCheckpoint:
             checkpoint_profile=coerce_dict(data.get("checkpoint_profile")) or {"name": "full", "legacy_checkpoint": True},
             call_ledger_summary=coerce_dict(data.get("call_ledger_summary")),
             fabric=coerce_dict(data.get("fabric")),
+            runtime_options=coerce_dict(data.get("runtime_options")),
             created_at=str(data.get("created_at") or utc_now()),
         )
 
@@ -132,6 +134,7 @@ class CheckpointStore:
             "checkpoint_profile": dict(checkpoint.checkpoint_profile),
             "call_ledger_summary": dict(checkpoint.call_ledger_summary),
             "fabric": dict(checkpoint.fabric),
+            "runtime_options": dict(checkpoint.runtime_options),
             "contract": contract,
             "world": checkpoint.world,
             "mode": checkpoint.mode,
@@ -161,6 +164,7 @@ class CheckpointStore:
         graded_output: dict[str, Any] | None = None,
         search_kernel: dict[str, Any] | None = None,
         fabric: dict[str, Any] | None = None,
+        runtime_options: dict[str, Any] | None = None,
         allow_progress_round_repair: bool = False,
     ) -> NexusCheckpoint:
         checkpoint = build_checkpoint_state(
@@ -185,6 +189,7 @@ class CheckpointStore:
             graded_output=graded_output,
             search_kernel=search_kernel,
             fabric=fabric,
+            runtime_options=runtime_options,
             allow_progress_round_repair=allow_progress_round_repair,
         )
         self.save(checkpoint, allow_progress_round_repair=allow_progress_round_repair)
@@ -214,6 +219,7 @@ def build_checkpoint_state(
     graded_output: dict[str, Any] | None = None,
     search_kernel: dict[str, Any] | None = None,
     fabric: dict[str, Any] | None = None,
+    runtime_options: dict[str, Any] | None = None,
     allow_progress_round_repair: bool = False,
 ) -> NexusCheckpoint:
     profile = checkpoint_profile_from_env()
@@ -241,6 +247,7 @@ def build_checkpoint_state(
         graded_output=coerce_dict(graded_output),
         search_kernel=coerce_dict(search_kernel),
         fabric=coerce_dict(fabric),
+        runtime_options=coerce_dict(runtime_options),
         checkpoint_profile=profile.to_dict(),
         call_ledger_summary=ledger_summary(),
     )
@@ -306,7 +313,7 @@ def _hydrate_latent_ledger_sidecar(contract: dict[str, Any], *, base_dir: Path) 
         return payload
     expected_hash = str(ref.get("sha256") or ref.get("ledger_hash") or "")
     if expected_hash:
-        from cognitive_evolve_runtime.nexus._serde import stable_hash
+        from cognitive_evolve_runtime.core.serialization import stable_hash
 
         actual_hash = stable_hash(sidecar)
         if actual_hash != expected_hash:

@@ -10,6 +10,7 @@ import pytest
 from cognitive_evolve_runtime.llm.http_provider import DirectHTTPProvider, DirectHTTPProviderError, normalize_direct_http_model
 from cognitive_evolve_runtime.llm.retry import provider_error_category
 from cognitive_evolve_runtime.llm.provider_interface import LLMProviderResult
+from cognitive_evolve_runtime.llm.request_policy import LLMRequestPolicy
 from cognitive_evolve_runtime.llm.transport import _default_provider_for_status, llm_json, max_tokens_for_request
 
 
@@ -257,14 +258,14 @@ def test_transport_selects_direct_http_provider(monkeypatch) -> None:
     assert response["provider"] == "direct_http"
 
 
-def test_transport_uses_request_type_output_budgets(monkeypatch) -> None:
-    seen: list[tuple[str, int]] = []
+def test_transport_uses_explicit_request_policy_output_budgets(monkeypatch) -> None:
+    seen: list[int] = []
 
     class Provider:
         provider_id = "unit"
 
         def complete_json(self, **kwargs):  # noqa: ANN001
-            seen.append((kwargs.get("_request_type", ""), kwargs["max_tokens"]))
+            seen.append(kwargs["max_tokens"])
             return LLMProviderResult(
                 response=SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content='{"ok": true}'))], usage={}),
                 attempts=1,
@@ -276,17 +277,17 @@ def test_transport_uses_request_type_output_budgets(monkeypatch) -> None:
     monkeypatch.setenv("COGEV_LLM_LONG_MAX_TOKENS", "20000")
     monkeypatch.setenv("COGEV_LLM_LIGHT_MAX_TOKENS", "3000")
 
-    llm_json("nexus_synthesize_result", {"x": 1}, system="Return JSON", schema_hint={}, provider=Provider())
+    llm_json("nexus_synthesize_result", {"x": 1}, system="Return JSON", schema_hint={}, provider=Provider(), request_policy=LLMRequestPolicy(long_context=True))
     llm_json("nexus_relative_rank", {"x": 1}, system="Return JSON", schema_hint={}, provider=Provider())
 
-    assert [item[1] for item in seen] == [20000, 3000]
+    assert seen == [20000, 3000]
 
 
-def test_long_output_budget_covers_list_generation_nodes(monkeypatch) -> None:
+def test_long_output_budget_requires_explicit_request_policy(monkeypatch) -> None:
     monkeypatch.delenv("COGEV_LLM_MAX_TOKENS", raising=False)
     monkeypatch.delenv("COGEV_LLM_LONG_MAX_TOKENS", raising=False)
     monkeypatch.delenv("COGEV_LLM_LIGHT_MAX_TOKENS", raising=False)
 
-    for request_type in ("nexus_seed_population", "nexus_plan_mutations", "nexus_critique_candidates"):
-        assert max_tokens_for_request(request_type) == 32768
-    assert max_tokens_for_request("nexus_relative_rank") == 4096
+    assert max_tokens_for_request("nexus_seed_population") == 4096
+    assert max_tokens_for_request("anything", LLMRequestPolicy(long_context=True)) == 32768
+    assert max_tokens_for_request("anything", LLMRequestPolicy(max_output_tokens=123)) == 123

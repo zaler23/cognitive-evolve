@@ -11,7 +11,7 @@ from pathlib import Path
 from typing import Any
 
 from cognitive_evolve_runtime.durable.file_lock import atomic_write_json
-from cognitive_evolve_runtime.nexus._serde import coerce_dict, stable_hash, utc_now
+from cognitive_evolve_runtime.core.serialization import coerce_dict, stable_hash, utc_now
 from cognitive_evolve_runtime.outcomes.latent import PreferenceEvidence
 from cognitive_evolve_runtime.persistence.event_store import EventStore
 

@@ -8,7 +8,7 @@ from typing import Any, Iterator
 
 from cognitive_evolve_runtime.durable.file_lock import file_lock
 from cognitive_evolve_runtime.core.redaction import redact
-from cognitive_evolve_runtime.nexus._serde import stable_json, utc_now
+from cognitive_evolve_runtime.core.serialization import stable_json, utc_now
 
 
 class EventStore:

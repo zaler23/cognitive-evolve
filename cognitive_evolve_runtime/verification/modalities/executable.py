@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from cognitive_evolve_runtime.tools.runner import ToolRunner
-from cognitive_evolve_runtime.nexus._serde import stable_hash
+from cognitive_evolve_runtime.core.serialization import stable_hash
 from cognitive_evolve_runtime.verification.types import VerificationResult
 
 

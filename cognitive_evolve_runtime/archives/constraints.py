@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Any
 
 from cognitive_evolve_runtime.candidates.genome import CandidateGenome
-from cognitive_evolve_runtime.nexus._serde import coerce_dict, stable_hash
+from cognitive_evolve_runtime.core.serialization import coerce_dict, stable_hash
 
 def candidate_verification_blocks_final(candidate: CandidateGenome) -> bool:
     metadata = coerce_dict(getattr(candidate, "metadata", {}))

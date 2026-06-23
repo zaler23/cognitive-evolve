@@ -11,7 +11,7 @@ from typing import Any
 
 from cognitive_evolve_runtime.candidates.mutation import MutationPlan
 from cognitive_evolve_runtime.candidates.genome import CandidateGenome
-from cognitive_evolve_runtime.nexus._serde import coerce_dict, stable_hash
+from cognitive_evolve_runtime.core.serialization import coerce_dict, stable_hash
 from cognitive_evolve_runtime.outcomes.improvement import ImprovementCertificate, OutcomeContract, TrialObservation, certificate_from_dict, compare_outcomes
 from cognitive_evolve_runtime.outcomes.evidence_feedback import adapt_latent_feedback
 from cognitive_evolve_runtime.outcomes.latent import (

@@ -6,7 +6,7 @@ from typing import Any
 
 from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome
 from cognitive_evolve_runtime.candidates.project_candidate import ProjectCandidateGenome
-from cognitive_evolve_runtime.nexus._serde import coerce_str_list
+from cognitive_evolve_runtime.core.serialization import coerce_str_list
 from cognitive_evolve_runtime.nexus.source_binding_resolver import annotate_candidate_source_bindings, candidate_admission_route, candidate_source_binding_class
 
 from .latent_pareto import _candidate_is_latent_pareto_frontier

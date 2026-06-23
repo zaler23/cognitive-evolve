@@ -635,3 +635,14 @@ Validation after intent binding correction:
 
 - `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m compileall -q cognitive_evolve_runtime/nexus tests/test_nextgen_cbt_pcbg_landing.py tests/test_failure_classifier.py` — passed.
 - `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider tests/test_nextgen_cbt_pcbg_landing.py tests/test_failure_classifier.py tests/test_nexus_audit_regressions.py tests/adaptive/test_evidence_control_plane.py` — `77 passed`.
+
+## v3 semantic consistency and lightweight boundary closure ledger — 2026-06-23
+
+- `TD-V3-RUNTIME-OPTIONS-RESUME-SEMANTICS` — Closed in code + tests. Checkpoints now persist open `runtime_options`; project resume restores effective `verification.include_tests` instead of falling back to a hard-coded verifier default.
+- `TD-V3-FALLBACK-CAPTURE-CONTEXT-MANAGER` — Closed in code + tests. Nexus runtime entrypoints use `capture_fallback_events()` and text-world fallback only catches component-declared fallback exceptions or model-boundary errors.
+- `TD-V3-CONTRACT-HASH-LINEAGE-NO-REBASE` — Closed in code + tests. Resumed candidates keep their generation-time `contract_hash`; current verification contract and overlays are recorded in verification summaries.
+- `TD-V3-PROJECT-CONTEXT-EXPLICIT-FLOW` — Closed in code + tests. Project context is passed through explicit runtime/Fabric context and can be resolved by downstream components without extra positional parameters.
+- `TD-V3-SEED-FAMILY-PRIORITY-OPEN-PLANES` — Closed in code + tests. Seed batches receive model-authored family priority and coverage traces without finite domain enums or hard gates.
+- `TD-V3-SERDE-BOUNDARY-LOWER-LAYER` — Closed in code + tests. Stable JSON/hash helpers moved to `core.serialization`; `nexus._serde` remains a compatibility re-export while non-Nexus low-level packages import the core module.
+- `TD-V3-LLM-REQUEST-POLICY-NO-NEXUS-TRANSPORT` — Closed in code + tests. Long-context output budgets are selected by explicit `LLMRequestPolicy` from the model adapter, not by Nexus request-name constants inside transport.
+- `TD-V3-PUBLIC-HYGIENE-MIRROR` — Closed in code + tests. No run artifacts, local virtualenvs, bridge logs, or plan files are introduced by this change; mirror sync remains part of final acceptance.

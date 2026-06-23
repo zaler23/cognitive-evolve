@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from cognitive_evolve_runtime.nexus.artifact_contract import DynamicArtifactContract, validate_dynamic_artifact_contract
-from cognitive_evolve_runtime.nexus._serde import coerce_dict
+from cognitive_evolve_runtime.core.serialization import coerce_dict
 from cognitive_evolve_runtime.nexus.protocols import NexusModelLike
 
 from ..nexus.task_types import (

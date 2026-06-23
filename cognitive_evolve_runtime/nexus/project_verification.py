@@ -19,6 +19,7 @@ class ProjectVerificationSummary:
     candidate_id: str
     patch_result: dict[str, Any]
     tool_feedback: list[dict[str, Any]] = field(default_factory=list)
+    verification_context: dict[str, Any] = field(default_factory=dict)
 
     @property
     def passed(self) -> bool:
@@ -27,16 +28,20 @@ class ProjectVerificationSummary:
         return patch_ok and tools_ok
 
     def to_dict(self) -> dict[str, Any]:
-        return {"candidate_id": self.candidate_id, "patch_result": self.patch_result, "tool_feedback": self.tool_feedback, "passed": self.passed}
+        payload = {"candidate_id": self.candidate_id, "patch_result": self.patch_result, "tool_feedback": self.tool_feedback, "passed": self.passed}
+        if self.verification_context:
+            payload.update(dict(self.verification_context))
+        return payload
 
 
 class ProjectCandidateVerifier:
-    def __init__(self, *, source_root: str | Path, sandbox_root: str | Path, tool_suite: LocalToolSuite | None = None, include_tests: bool = False, timeout_seconds: float = 60.0) -> None:
+    def __init__(self, *, source_root: str | Path, sandbox_root: str | Path, tool_suite: LocalToolSuite | None = None, include_tests: bool = False, timeout_seconds: float = 60.0, verification_context: dict[str, Any] | None = None) -> None:
         self.source_root = Path(source_root)
         self.sandbox_root = Path(sandbox_root)
         self.tool_suite = tool_suite or LocalToolSuite()
         self.include_tests = include_tests
         self.timeout_seconds = timeout_seconds
+        self.verification_context = dict(verification_context or {})
 
     def verify_population(self, candidates: list[CandidateGenome]) -> list[ProjectVerificationSummary]:
         summaries: list[ProjectVerificationSummary] = []
@@ -69,7 +74,9 @@ class ProjectCandidateVerifier:
             candidate.add_tool_feedback(fail_feedback)
             candidate.add_verification_feedback(fail_feedback)
             feedback = [fail_feedback]
-        summary = ProjectVerificationSummary(candidate_id=candidate.id, patch_result=patch_result.to_dict(), tool_feedback=[item.to_dict() for item in feedback])
+        context = dict(self.verification_context)
+        context.setdefault("candidate_contract_hash", str(getattr(candidate, "contract_hash", "") or ""))
+        summary = ProjectVerificationSummary(candidate_id=candidate.id, patch_result=patch_result.to_dict(), tool_feedback=[item.to_dict() for item in feedback], verification_context=context)
         setattr(candidate, "patch_application_result", patch_result.to_dict())
         candidate.verification_result = summary.to_dict()
         _update_scores_from_verification(candidate, patch_result, feedback)

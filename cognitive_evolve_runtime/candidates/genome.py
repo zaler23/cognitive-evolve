@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any, TypedDict
 
-from cognitive_evolve_runtime.nexus._serde import coerce_dict, coerce_str_list, stable_hash, utc_now
+from cognitive_evolve_runtime.core.serialization import coerce_dict, coerce_str_list, stable_hash, utc_now
 from cognitive_evolve_runtime.core.scalars import bounded_score_or_none as _bounded_score_or_none
 
 

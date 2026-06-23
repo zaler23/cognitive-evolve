@@ -8,6 +8,7 @@ from jsonschema import Draft202012Validator
 
 from cognitive_evolve_runtime.llm.env import LLMConfigurationError, LLMResponseError
 from cognitive_evolve_runtime.llm.model_spec import LLMModelSpec
+from cognitive_evolve_runtime.llm.request_policy import LLMRequestPolicy
 from cognitive_evolve_runtime.nexus.diagnosis import STAGNATION_TYPES
 from cognitive_evolve_runtime.nexus.prompt_audit import maybe_record_prompt_audit
 from cognitive_evolve_runtime.nexus.prompt_view import build_prompt_view
@@ -74,6 +75,20 @@ def _repair_search_diagnosis_response(data: dict[str, Any]) -> dict[str, Any]:
     repaired["stagnation_type"] = canonical
     return repaired
 
+
+_LONG_CONTEXT_MODEL_CALLS = {
+    "nexus_seed_population",
+    "nexus_critique_candidates",
+    "nexus_synthesize_result",
+    "nexus_diagnose_search_state",
+    "nexus_plan_mutations",
+    "nexus_generate_offspring",
+}
+
+
+def _request_policy_for_model_call(request_type: str) -> LLMRequestPolicy:
+    return LLMRequestPolicy(long_context=str(request_type or "") in _LONG_CONTEXT_MODEL_CALLS)
+
 @dataclass
 class StructuredModelAdapterCore:
     """Shared transport, prompt-view, repair, and schema-validation core."""
@@ -93,7 +108,13 @@ class StructuredModelAdapterCore:
         def _call(request_type: str, payload: dict[str, Any], schema: dict[str, Any]) -> dict[str, Any]:
             from cognitive_evolve_runtime.llm.transport import llm_json
 
-            return llm_json(request_type, payload, system=cls().system, schema_hint=schema, model_spec=model_spec)
+            policy = _request_policy_for_model_call(request_type)
+            try:
+                return llm_json(request_type, payload, system=cls().system, schema_hint=schema, model_spec=model_spec, request_policy=policy)
+            except TypeError as exc:
+                if "request_policy" not in str(exc):
+                    raise
+                return llm_json(request_type, payload, system=cls().system, schema_hint=schema, model_spec=model_spec)
 
         metadata = {"transport": "cogev_llm_json"}
         if model_spec is not None:

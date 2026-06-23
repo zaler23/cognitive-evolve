@@ -10,7 +10,7 @@ from cognitive_evolve_runtime.candidates.genome import CandidateGenome
 from cognitive_evolve_runtime.nexus.model_errors import is_quota_error
 from cognitive_evolve_runtime.nexus.adaptive_signals import in_top_band
 from cognitive_evolve_runtime.nexus.policy import DEFAULT_FITNESS_AXES
-from cognitive_evolve_runtime.nexus._serde import coerce_str_list
+from cognitive_evolve_runtime.core.serialization import coerce_str_list
 from cognitive_evolve_runtime.nexus.protocols import NexusModelLike
 from cognitive_evolve_runtime.nexus.fallbacks import record_fallback
 from cognitive_evolve_runtime.core.scalars import bounded_score

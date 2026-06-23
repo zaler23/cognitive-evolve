@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import asdict, is_dataclass
 from typing import Any
 
-from cognitive_evolve_runtime.nexus._serde import coerce_dict, stable_hash
+from cognitive_evolve_runtime.core.serialization import coerce_dict, stable_hash
 from cognitive_evolve_runtime.outcomes.runtime_bridge import (
     LATENT_DECISION_TRACE_KEY,
     audit_latent_decision_replay,

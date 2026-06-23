@@ -10,7 +10,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
-from cognitive_evolve_runtime.nexus._serde import coerce_dict, stable_hash, utc_now
+from cognitive_evolve_runtime.core.serialization import coerce_dict, stable_hash, utc_now
 
 ImprovementStatus = Literal["verified", "rejected", "inconclusive", "quarantined", "revoked", "stale"]
 MetricDirection = Literal["maximize", "minimize"]

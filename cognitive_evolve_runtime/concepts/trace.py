@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
 
-from cognitive_evolve_runtime.nexus._serde import json_ready, stable_hash, utc_now
+from cognitive_evolve_runtime.core.serialization import json_ready, stable_hash, utc_now
 
 
 @dataclass(frozen=True)

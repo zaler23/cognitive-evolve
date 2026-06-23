@@ -36,10 +36,22 @@ class FabricExecutionContext:
     record_reproduction: Callable[[int, RoundEvaluation, str, list[Any], dict[str, Any], "FabricExecutionContext"], None] | None = None
     fabric_config: FabricRuntimeConfig | None = None
     fabric_state: dict[str, Any] = field(default_factory=dict)
+    provided_context: dict[str, Any] = field(default_factory=dict)
     round_pipeline: Any | None = None
     diagnosis: SearchDiagnosis = field(default_factory=SearchDiagnosis)
     last_evaluation: RoundEvaluation | None = None
     should_reproduce: bool = True
+
+    def provide(self, value: Any, *, key: str | None = None) -> Any:
+        name = key or type(value).__name__
+        self.provided_context[str(name)] = value
+        return value
+
+    def resolve(self, protocol_or_key: Any, default: Any = None) -> Any:
+        if isinstance(protocol_or_key, str):
+            return self.provided_context.get(protocol_or_key, default)
+        name = getattr(protocol_or_key, "__name__", str(protocol_or_key))
+        return self.provided_context.get(name, default)
 
     def pipeline(self) -> Any:
         if self.round_pipeline is None:

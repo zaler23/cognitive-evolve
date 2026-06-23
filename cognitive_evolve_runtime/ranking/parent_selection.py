@@ -7,7 +7,7 @@ from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateG
 from cognitive_evolve_runtime.archives.quality_diversity import pareto_frontier_ids
 from cognitive_evolve_runtime.nexus.adaptive_signals import mean_percentile, percentile_rank
 from cognitive_evolve_runtime.nexus.obligations import candidate_has_obligation_or_evidence_delta
-from cognitive_evolve_runtime.nexus._serde import coerce_dict
+from cognitive_evolve_runtime.core.serialization import coerce_dict
 from cognitive_evolve_runtime.nexus.population_vitality import repair_slot_count
 from cognitive_evolve_runtime.nexus.source_binding_resolver import annotate_candidate_source_bindings, candidate_admission_route, candidate_source_binding_class
 from cognitive_evolve_runtime.nexus.nextgen import (

@@ -35,10 +35,11 @@ class NexusProjectVerificationService:
         candidates: list[Any],
         *,
         include_tests: bool = False,
+        verification_context: dict[str, Any] | None = None,
     ) -> list[ProjectVerificationSummary]:
         source_root = Path(snapshot.root_path)
         sandbox_root = (self.output_dir / "patch-sandboxes") if self.output_dir is not None else Path(tempfile.mkdtemp(prefix="cogev-nexus-sandboxes-"))
-        verifier = ProjectCandidateVerifier(source_root=source_root, sandbox_root=sandbox_root, include_tests=include_tests)
+        verifier = ProjectCandidateVerifier(source_root=source_root, sandbox_root=sandbox_root, include_tests=include_tests, verification_context=verification_context)
         patch_candidates = [candidate for candidate in candidates if has_concrete_patch_payload(candidate)]
         return verifier.verify_population(patch_candidates)
 
@@ -58,6 +59,7 @@ class NexusPersistenceService:
         world: Any,
         budget_history: list[dict[str, Any]],
         budget: EvolutionBudget | None = None,
+        runtime_options: dict[str, Any] | None = None,
     ) -> dict[str, str]:
         _sync_budget_width_metadata(run.evolution, budget)
         if self.output_dir is None:
@@ -107,6 +109,7 @@ class NexusPersistenceService:
             verification_plan=dict((adaptive_state.get("research_extensions") or {}).get("verification_plan") or {}),
             graded_output=dict(getattr(result, "graded_output", {}) or {}),
             fabric=dict(getattr(result, "fabric_state", {}) or {}),
+            runtime_options=runtime_options or dict((getattr(run, "evolution", {}) or {}).get("runtime_options") or {}),
             allow_progress_round_repair=bool(result.interrupted),
         )
         adaptive_dir = self.output_dir / "adaptive"

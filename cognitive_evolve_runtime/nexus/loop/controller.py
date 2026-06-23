@@ -89,6 +89,7 @@ class EvolutionLoopController:
         adaptive_state: dict[str, Any] | None = None,
         verification_plan: VerificationPlan | dict[str, Any] | None = None,
         fabric_state: dict[str, Any] | None = None,
+        provided_context: dict[str, Any] | None = None,
     ) -> None:
         self.population = population
         self.archives = archives
@@ -127,6 +128,7 @@ class EvolutionLoopController:
         self.error: dict[str, Any] = {}
         self.interrupted = False
         self.fabric_state: dict[str, Any] = dict(fabric_state or {})
+        self.provided_context: dict[str, Any] = dict(provided_context or {})
 
     def run(self) -> EvolutionLoopResult:
         while self.budget.remaining():
@@ -176,6 +178,7 @@ class EvolutionLoopController:
             record_reproduction=self._record_reproduction_result,
             fabric_config=fabric_config,
             fabric_state=self.fabric_state,
+            provided_context=self.provided_context,
             round_pipeline=self.round_pipeline,
             diagnosis=self.diagnosis,
         )
@@ -526,6 +529,7 @@ def evolve_once(
     adaptive_state: dict[str, Any] | None = None,
     verification_plan: VerificationPlan | dict[str, Any] | None = None,
     fabric_state: dict[str, Any] | None = None,
+    provided_context: dict[str, Any] | None = None,
 ) -> EvolutionLoopResult:
     return EvolutionLoopController(
         population=population,
@@ -542,6 +546,7 @@ def evolve_once(
         adaptive_state=adaptive_state,
         verification_plan=verification_plan,
         fabric_state=fabric_state,
+        provided_context=provided_context,
     ).run()
 
 

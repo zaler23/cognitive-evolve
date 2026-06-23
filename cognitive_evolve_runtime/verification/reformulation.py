@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from cognitive_evolve_runtime.nexus._serde import stable_hash
+from cognitive_evolve_runtime.core.serialization import stable_hash
 
 
 @dataclass(frozen=True)

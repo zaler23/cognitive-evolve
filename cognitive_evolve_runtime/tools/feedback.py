@@ -5,7 +5,7 @@ import json
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from cognitive_evolve_runtime.nexus._serde import coerce_dict, coerce_str_list, utc_now
+from cognitive_evolve_runtime.core.serialization import coerce_dict, coerce_str_list, utc_now
 from cognitive_evolve_runtime.validation.result import VerificationResult, verification_result_from_mapping
 
 

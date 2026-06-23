@@ -162,10 +162,12 @@ def _generate_model_seed_batches(
     def _request(batch_index: int, accepted: list[CandidateGenome], rejected: list[dict[str, Any]]) -> list[CandidateGenome]:
         raw = model.seed_population(contract=contract, world=world, policy=_policy_for_seed_batch(policy, batch_index=batch_index, accepted=accepted, rejected=rejected))
         batch = _coerce_seed_batch(raw)
+        priority = _seed_family_priority(policy, accepted)
         for candidate in batch:
             candidate.metadata.setdefault("exploration_source", "nexus_model_seed_batch")
             candidate.metadata.setdefault("created_in_round", 0)
             candidate.metadata["model_seed_batch"] = batch_index
+            candidate.metadata.setdefault("seed_family_priority_trace", {"batch_index": batch_index, "source": priority.get("source"), "requested_families": [item.get("id") or item.get("name") for item in list(priority.get("families") or [])[:4]]})
         return batch
 
     result = harvester.harvest(
@@ -196,15 +198,48 @@ def _coerce_seed_batch(raw: Any) -> list[CandidateGenome]:
     return []
 
 
+def _seed_family_priority(policy: EvolutionPolicy, accepted: list[CandidateGenome]) -> dict[str, Any]:
+    metadata = policy.metadata if isinstance(policy.metadata, dict) else {}
+    plan = metadata.get("search_space_plan") if isinstance(metadata.get("search_space_plan"), dict) else {}
+    raw_families = plan.get("candidate_families") or plan.get("exploration_planes") or plan.get("planes") or []
+    families = [dict(item) for item in raw_families if isinstance(item, dict) and (item.get("id") or item.get("name"))]
+    source = str(plan.get("source") or metadata.get("seed.family_priority_source") or metadata.get("seed_family_priority_source") or "model_authored_search_space")
+    counts: dict[str, int] = {}
+    for candidate in accepted:
+        candidate_metadata = getattr(candidate, "metadata", {}) if candidate is not None else {}
+        search_space = candidate_metadata.get("search_space") if isinstance(candidate_metadata, dict) else {}
+        if isinstance(search_space, dict):
+            family_id = str(search_space.get("family_id") or search_space.get("plane_id") or "").strip()
+            if family_id:
+                counts[family_id] = counts.get(family_id, 0) + 1
+    prioritized = []
+    for family in families:
+        family_id = str(family.get("id") or family.get("name") or "").strip()
+        if not family_id:
+            continue
+        item = dict(family)
+        item["accepted_count"] = counts.get(family_id, 0)
+        item["priority_reason"] = "undercovered_model_authored_family" if counts.get(family_id, 0) == 0 else "covered_family_soft_followup"
+        prioritized.append(item)
+    prioritized.sort(key=lambda item: (int(item.get("accepted_count") or 0), str(item.get("id") or "")))
+    if not prioritized:
+        source = "objective_placeholder"
+    return {"source": source, "families": prioritized[:8], "coverage": counts}
+
+
 def _policy_for_seed_batch(policy: EvolutionPolicy, *, batch_index: int, accepted: list[CandidateGenome], rejected: list[dict[str, Any]]) -> EvolutionPolicy:
     data = policy.to_dict()
     metadata = dict(data.get("metadata") or {})
+    family_priority = _seed_family_priority(policy, accepted)
     metadata.update(
         {
             "seed_batch_index": batch_index,
             "accepted_seed_signatures": [candidate.metadata.get("dedupe_signature") for candidate in accepted[-12:] if candidate.metadata.get("dedupe_signature")],
             "rejected_seed_count": len(rejected),
-            "seed_instruction": "Generate candidates that differ semantically from accepted_seed_signatures; do not rephrase the same mechanism.",
+            "seed_instruction": "Generate candidates that differ semantically from accepted_seed_signatures and prioritize undercovered seed_family_priority entries when present; do not rephrase the same mechanism.",
+            "seed_family_priority": list(family_priority.get("families") or []),
+            "seed_family_priority_source": str(family_priority.get("source") or "objective_placeholder"),
+            "seed_family_coverage_snapshot": dict(family_priority.get("coverage") or {}),
             "search_kernel_skills": search_skill_payload(limit=4),
         }
     )

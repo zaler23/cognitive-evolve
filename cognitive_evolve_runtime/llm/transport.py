@@ -36,33 +36,24 @@ from .http_provider import DirectHTTPProvider
 from .litellm_provider import LiteLLMProvider, litellm_provider_kwargs
 from .provider_interface import LLMProviderInterface
 from .model_spec import LLMModelSpec
+from .request_policy import LLMRequestPolicy
 from .session import _LAST_RETRY_HISTORY
 from .telemetry import record_event
 
 
-LONG_CONTEXT_OUTPUT_REQUESTS = {
-    "nexus_seed_population",
-    "nexus_critique_candidates",
-    "nexus_synthesize_result",
-    "nexus_diagnose_search_state",
-    "nexus_plan_mutations",
-    "nexus_generate_offspring",
-}
+def max_tokens_for_request(request_type: str, request_policy: LLMRequestPolicy | None = None) -> int:
+    """Return output budget from explicit policy or generic env defaults.
 
-
-def max_tokens_for_request(request_type: str) -> int:
-    """Return an output budget fitted to the request class.
-
-    ``COGEV_LLM_MAX_TOKENS`` remains an explicit operator override.  Without that
-    global override, light control-plane calls keep the historical compact budget
-    while long Nexus calls get enough room to avoid deterministic empty/length
-    failures during synthesis, diagnosis, or offspring generation.
+    Transport no longer knows Nexus request classes.  Nexus/model adapters pass
+    ``LLMRequestPolicy`` for long-context calls; other callers keep the generic
+    environment-driven behavior.
     """
 
+    if request_policy is not None and request_policy.max_output_tokens:
+        return max(1, int(request_policy.max_output_tokens))
     if LLM_MAX_TOKENS_ENV in os.environ:
         return max(1, env_int(LLM_MAX_TOKENS_ENV, 4096))
-    request = str(request_type or "").strip()
-    if request in LONG_CONTEXT_OUTPUT_REQUESTS:
+    if request_policy is not None and request_policy.long_context:
         return max(1, env_int(LLM_LONG_MAX_TOKENS_ENV, 32768))
     return max(1, env_int(LLM_LIGHT_MAX_TOKENS_ENV, 4096))
 
@@ -138,7 +129,7 @@ def _result_message_content(result: Any) -> str:
     return content if isinstance(content, str) else ""
 
 
-def llm_json(request_type: str, payload: dict[str, Any], *, system: str, schema_hint: dict[str, Any], provider: LLMProviderInterface | None = None, model_spec: LLMModelSpec | None = None) -> dict[str, Any]:
+def llm_json(request_type: str, payload: dict[str, Any], *, system: str, schema_hint: dict[str, Any], provider: LLMProviderInterface | None = None, model_spec: LLMModelSpec | None = None, request_policy: LLMRequestPolicy | None = None) -> dict[str, Any]:
     status = require_llm_config()
     if model_spec is not None:
         status = model_spec.apply_to_status(status)
@@ -274,9 +265,9 @@ def llm_json(request_type: str, payload: dict[str, Any], *, system: str, schema_
                 messages=active_messages,
                 api_base=str(status.get("api_base") or ""),
                 temperature=env_float(LLM_TEMPERATURE_ENV, 0.2),
-                max_tokens=max_tokens_for_request(request_type),
+                max_tokens=max_tokens_for_request(request_type, request_policy),
                 response_format={"type": "json_object"},
-                timeout=timeout_seconds(),
+                timeout=float(request_policy.timeout_seconds) if request_policy is not None and request_policy.timeout_seconds else timeout_seconds(),
                 _retry_max_attempts=remaining_attempts,
                 _retry_attempt_offset=attempts,
             )
