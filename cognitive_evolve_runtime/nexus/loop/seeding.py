@@ -296,32 +296,46 @@ def _policy_for_seed_batch(policy: EvolutionPolicy, *, batch_index: int, accepte
 
 
 SEED_BATCH_DEFAULT_MAX = 8
+_UNBOUNDED_SEED_LIMIT_VALUES = {"0", "none", "no_limit", "unbounded", "until_exhausted"}
 
 
-def _seed_safety_batch_limit(*, policy: EvolutionPolicy) -> int:
+def _seed_safety_batch_limit(*, policy: EvolutionPolicy) -> int | None:
     metadata = policy.metadata if isinstance(policy.metadata, dict) else {}
-    configured = _positive_int(
+    raw_configured = (
         metadata.get("seed_safety_max_batches")
         or metadata.get("seed_harvest_safety_max_batches")
         or metadata.get("seed_max_batches")
     )
+    if _seed_limit_is_unbounded(raw_configured):
+        return None
+    configured = _positive_int(
+        raw_configured
+    )
     if configured:
         return configured
-    configured = _positive_int(os.environ.get("COGEV_NEXUS_SEED_BATCH_LIMIT"))
+    raw_env = os.environ.get("COGEV_NEXUS_SEED_BATCH_LIMIT")
+    if _seed_limit_is_unbounded(raw_env):
+        return None
+    configured = _positive_int(raw_env)
     if configured:
         return configured
     return SEED_BATCH_DEFAULT_MAX
 
+
+def _seed_limit_is_unbounded(value: Any) -> bool:
+    return str(value or "").strip().lower() in _UNBOUNDED_SEED_LIMIT_VALUES
 
 
 def _seed_min_batches(*, policy: EvolutionPolicy) -> int:
     metadata = policy.metadata if isinstance(policy.metadata, dict) else {}
     configured = _positive_int(metadata.get("seed_min_batches") or metadata.get("seed_min_batches_before_exhaustion"))
     if configured:
-        return max(1, min(_seed_safety_batch_limit(policy=policy), configured))
+        max_batches = _seed_safety_batch_limit(policy=policy)
+        return max(1, configured if max_batches is None else min(max_batches, configured))
     configured = _positive_int(os.environ.get("COGEV_NEXUS_SEED_MIN_BATCHES"))
     if configured:
-        return max(1, min(_seed_safety_batch_limit(policy=policy), configured))
+        max_batches = _seed_safety_batch_limit(policy=policy)
+        return max(1, configured if max_batches is None else min(max_batches, configured))
     return 1
 
 def _seed_low_novelty_patience(*, policy: EvolutionPolicy) -> int:

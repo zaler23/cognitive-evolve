@@ -19,7 +19,7 @@ from .relevance import relevance_score
 @dataclass(frozen=True)
 class HarvestPolicy:
     target_size: int
-    max_batches: int
+    max_batches: int | None
     min_batches: int = 1
     low_gain_patience: int = 2
     relevance_floor: float = 0.20
@@ -87,11 +87,12 @@ class CandidateHarvester:
         result = HarvestResult(stage=self.policy.stage)
         low_gain_streak = 0
         context = dict(context or {})
-        max_batches = max(1, self.policy.max_batches)
+        max_batches = None if self.policy.max_batches is None else max(1, int(self.policy.max_batches))
         workers = _harvest_workers(max_batches=max_batches, configured=self.policy.fanout_workers)
         batch_index = 0
-        while batch_index < max_batches and not result.stopped_reason:
-            window = list(range(batch_index, min(max_batches, batch_index + workers)))
+        while (max_batches is None or batch_index < max_batches) and not result.stopped_reason:
+            window_end = batch_index + workers if max_batches is None else min(max_batches, batch_index + workers)
+            window = list(range(batch_index, window_end))
             accepted_snapshot = list(result.accepted)
             rejected_snapshot = list(result.rejected)
 
@@ -201,10 +202,11 @@ class CandidateHarvester:
         candidate.metadata["seed_reservoir_truncated"] = summary
 
 
-def _harvest_workers(*, max_batches: int, configured: int | None) -> int:
+def _harvest_workers(*, max_batches: int | None, configured: int | None) -> int:
     if configured is None:
         return model_fanout_workers(max_batches)
-    return min(max(1, int(configured or 1)), max(1, int(max_batches or 1)))
+    workers = max(1, int(configured or 1))
+    return workers if max_batches is None else min(workers, max(1, int(max_batches or 1)))
 
 
 def plan_signature(plan: MutationPlan) -> str:

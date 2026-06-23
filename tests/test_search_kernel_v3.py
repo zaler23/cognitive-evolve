@@ -27,6 +27,27 @@ class _SeedModel:
         ]
 
 
+class _LongTailSeedModel:
+    def __init__(self, *, unique_batches: int) -> None:
+        self.calls = 0
+        self.unique_batches = unique_batches
+
+    def seed_population(self, *, contract, world, policy):
+        self.calls += 1
+        batch = getattr(policy, "metadata", {}).get("seed_batch_index", self.calls - 1)
+        if batch >= self.unique_batches:
+            return []
+        return [
+            {
+                "id": f"LT-{batch}",
+                "artifact": f"long tail seed {batch}",
+                "concise_claim": f"long tail mechanism {batch}",
+                "core_mechanism": f"long tail mechanism {batch}",
+                "metadata": {},
+            }
+        ]
+
+
 class _World:
     kind = "text"
 
@@ -157,3 +178,25 @@ def test_seed_batch_limit_honors_explicit_24_batch_policy(monkeypatch) -> None:
         }
     )
     assert _seed_safety_batch_limit(policy=policy) == 24
+
+
+def test_seed_batch_limit_can_be_unbounded_until_exhausted(monkeypatch) -> None:
+    monkeypatch.setenv("COGEV_NEXUS_SEED_BATCH_LIMIT", "unbounded")
+    monkeypatch.setenv("COGEV_NEXUS_SEED_LOW_NOVELTY_PATIENCE", "1")
+    monkeypatch.setenv("COGEV_MODEL_FANOUT_CONCURRENCY", "1")
+    model = _LongTailSeedModel(unique_batches=10)
+    policy = EvolutionPolicy(metadata={"initial_candidate_count": 1})
+
+    accepted, rejected, error = _generate_model_seed_batches(
+        model=model,
+        contract=_Contract(),
+        world=_World(),
+        policy=policy,
+        target_size=1,
+    )
+
+    assert _seed_safety_batch_limit(policy=policy) is None
+    assert error is None
+    assert len(accepted) == 10
+    assert model.calls == 11
+    assert len(accepted) > 8

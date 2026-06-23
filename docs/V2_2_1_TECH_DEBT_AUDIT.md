@@ -692,6 +692,7 @@ Status: closed in code + tests on this branch.
 | TD-V3-MINCORE-FAILURE-THEOREM | Closed in code + tests | `extract_failure_theorem()`/`extract_failure_theorems()` lift reusable failure lessons into advisory theorem payloads and prompt/checkpoint traces. |
 | TD-V3-MINCORE-SINGLE-PROMOTION-GATE | Closed in code + tests | `single_promotion_gate()` separates promotion eligibility from verified-claim permission so exploratory candidates can advance without self-certifying solved. |
 | TD-V3-MINCORE-LARGE-POOL-SMALL-FRONTIER | Closed in code + tests | `apply_seed_active_frontier()` keeps large accepted seed pools intact while marking a bounded active frontier and moving overflow to Dormant with trace metadata. |
+| TD-V3-MINCORE-SEED-UNBOUNDED-RUNMODE | Closed in code + tests | `COGEV_NEXUS_SEED_BATCH_LIMIT=unbounded` disables the static seed batch cap and harvests until exhaustion/low-gain/budget/operator stop; default bounded behavior remains available for ordinary runs. |
 | TD-V3-MINCORE-SEED-RESERVOIR-SIDECAR | Closed in code + tests | Seed reservoir payloads are written to digest-named sidecars and checkpoints store only refs, not large embedded seed pools. |
 | TD-V3-MINCORE-OPTIONAL-LAYERS-PAY-RENT | Closed in code + tests | The four-way ablation reports optional-layer marginal gains and recommends minimal core unless full fusion shows enough measured advantage. |
 | TD-V3-MINCORE-ALGORITHM-EFFICIENCY-NO-CAPABILITY-LOSS | Closed in code + tests | Seed loop records algorithm-efficiency metrics and active-frontier separation while preserving reservoir/dormant material instead of deleting breadth. |
@@ -702,7 +703,7 @@ Status: closed in code + tests on this branch.
 Validation after minimal-core/full-fusion closure:
 
 - `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m compileall -q cognitive_evolve_runtime scripts tests` — passed.
-- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider tests/test_self_bootstrap_loop_controls.py tests/test_search_kernel_v3.py tests/test_security_config_and_stop_decision.py` — `33 passed`.
-- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider` — `737 passed, 1 skipped`.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider tests/test_search_kernel_v3.py tests/test_model_fanout_concurrency.py tests/test_nextgen_cbt_pcbg_landing.py tests/test_self_bootstrap_loop_controls.py tests/test_security_config_and_stop_decision.py` — `68 passed`.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider` — `738 passed, 1 skipped`.
 - `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B scripts/cogev.py doctor --scope all` — `50/50 checks passed`.
 - `bash scripts/package_clean.sh` — completed; generated `dist/` and bytecode caches were removed again during final public hygiene cleanup.
