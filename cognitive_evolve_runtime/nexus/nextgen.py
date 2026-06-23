@@ -178,14 +178,28 @@ def best_current_direction_score(candidate: CandidateGenome, context: Iterable[C
     )
 
 
-def resurrection_quota(branch_factor: int | None) -> int:
+def resurrection_quota(branch_factor: int | None, *, pool_size: int | None = None, pressure: float | None = None) -> int:
     try:
         value = int(branch_factor or 0)
     except (TypeError, ValueError):
         value = 0
     if value <= 0:
         return 1
-    return max(1, min(3, (value + 3) // 4))
+    base = max(1, (value + 3) // 4)
+    try:
+        pool = int(pool_size or 0)
+    except (TypeError, ValueError):
+        pool = 0
+    try:
+        pressure_bonus = max(0, int(float(pressure or 0.0) * value))
+    except (TypeError, ValueError):
+        pressure_bonus = 0
+    pool_bonus = 0
+    if pool >= value * 4:
+        pool_bonus += 1
+    if pool >= value * 10:
+        pool_bonus += max(1, value // 4)
+    return max(1, min(value, base + pool_bonus + pressure_bonus))
 
 
 def resurrection_score(candidate: CandidateGenome, context: Iterable[CandidateGenome] | None = None, *, contract: Any | None = None) -> float:
@@ -446,7 +460,7 @@ def false_cull_monitor(candidates: Iterable[CandidateGenome]) -> dict[str, Any]:
     items = list(candidates)
     blocked: dict[str, int] = {}
     low_similarity_or_singleton = 0
-    boundary_loop = 0
+    high_intent_nonactive = 0
     for candidate in items:
         meta = ensure_nextgen_identity(candidate)
         decisions = candidate.metadata.get("candidate_budget_decisions", [])
@@ -458,16 +472,17 @@ def false_cull_monitor(candidates: Iterable[CandidateGenome]) -> dict[str, Any]:
         cbt = coerce_dict(meta.get("cbt_soft_quota"))
         if cbt.get("would_protect"):
             low_similarity_or_singleton += 1
-        text = _text(candidate).lower()
-        if any(token in text for token in ("framework", "obligation", "equivalence", "gate", "governance")):
-            boundary_loop += 1
+        intent = bind_candidate_intent(candidate)
+        fate = CandidateFate.normalize(getattr(candidate, "current_fate", ""), default="")
+        if fate not in {CandidateFate.ACTIVE.value, CandidateFate.ELITE.value} and float(intent.get("direct_answer_score") or 0.0) >= 0.55:
+            high_intent_nonactive += 1
     total = max(1, len(items))
     return {
         "blocked_reason_histogram": blocked,
         "protected_branch_count": low_similarity_or_singleton,
-        "boundary_loop_candidate_count": boundary_loop,
-        "boundary_loop_share": round(boundary_loop / total, 4),
-        "policy": "defang_throttle_if_boundary_loop_or_false_cull_rises",
+        "high_intent_nonactive_count": high_intent_nonactive,
+        "high_intent_nonactive_share": round(high_intent_nonactive / total, 4),
+        "policy": "defang_throttle_if_high_intent_candidates_leave_active_lane",
     }
 
 
@@ -501,9 +516,7 @@ def _rough_text_delta(a: str, b: str) -> float:
 
 
 def _looks_like_engineering_noise(text: str) -> bool:
-    lowered = text.lower()
-    tokens = ("schema repair", "retry workaround", "rename only", "metadata only", "format only")
-    return any(token in lowered for token in tokens)
+    return False
 
 
 def _summary_text(candidate: CandidateGenome) -> str:

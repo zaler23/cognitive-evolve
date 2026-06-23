@@ -9,6 +9,7 @@ from cognitive_evolve_runtime.archives.manager import ArchiveManager
 from cognitive_evolve_runtime.candidates.genome import CandidatePopulation
 from cognitive_evolve_runtime.durable.file_lock import atomic_write_json, file_lock
 from cognitive_evolve_runtime.nexus._serde import coerce_dict, stable_hash, utc_now
+from cognitive_evolve_runtime.nexus.seed_coverage import SEED_RESERVOIR_SIDECAR_PAYLOAD_KEY, persist_seed_reservoir_sidecar
 from cognitive_evolve_runtime.outcomes.latent_ledger import LatentLedger, LatentLedgerStore
 from cognitive_evolve_runtime.persistence.archive_store import ArchiveStore
 from cognitive_evolve_runtime.persistence.checkpoint import CheckpointStore
@@ -51,6 +52,27 @@ class LiveNexusStore:
         budget_history = [dict(item) for item in update.get("budget_history", []) if isinstance(item, dict)]
         adaptive_state = dict(update.get("adaptive_state") or {}) if isinstance(update.get("adaptive_state"), dict) else {}
         fabric_state = dict(update.get("fabric") or {}) if isinstance(update.get("fabric"), dict) else {}
+        runtime_options = dict(update.get("runtime_options") or {}) if isinstance(update.get("runtime_options"), dict) else {}
+        policy_metadata = coerce_dict(getattr(policy, "metadata", None))
+        search_kernel_state = dict(update.get("search_kernel") or {}) if isinstance(update.get("search_kernel"), dict) else {}
+        sidecar_ref = persist_seed_reservoir_sidecar(self.output_dir, policy_metadata.get(SEED_RESERVOIR_SIDECAR_PAYLOAD_KEY))
+        if sidecar_ref:
+            if isinstance(getattr(policy, "metadata", None), dict):
+                policy.metadata.pop(SEED_RESERVOIR_SIDECAR_PAYLOAD_KEY, None)
+                policy.metadata["seed_reservoir_ref"] = sidecar_ref
+            policy_metadata.pop(SEED_RESERVOIR_SIDECAR_PAYLOAD_KEY, None)
+            policy_metadata["seed_reservoir_ref"] = sidecar_ref
+            search_kernel_state["seed_reservoir_ref"] = sidecar_ref
+        for key in ("seed_coverage", "target_perturb_seed_judgment", "factor_resurrection_summary", "algorithm_efficiency", "model_parallel_efficiency", "minimal_core_ablation", "seed_active_frontier", "seed_reservoir_ref"):
+            if key in policy_metadata:
+                search_kernel_state.setdefault(key, policy_metadata[key])
+        monitor_state = {
+            "phase": phase,
+            "round": round_index,
+            "population_size": len(population.candidates),
+            "fate_counts": _fate_counts(population),
+            "search_kernel": search_kernel_state,
+        }
         error = update.get("error") if isinstance(update.get("error"), dict) else None
 
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -80,6 +102,8 @@ class LiveNexusStore:
                 budget=budget_payload,
                 adaptive_state=adaptive_state,
                 fabric=fabric_state,
+                search_kernel=search_kernel_state,
+                runtime_options=runtime_options,
                 allow_progress_round_repair=allow_round_repair,
             )
         except Exception as exc:
@@ -110,10 +134,13 @@ class LiveNexusStore:
             "progress_event": progress_event,
             "adaptive_state": adaptive_state,
             "fabric": fabric_state,
+            "runtime_options": runtime_options,
+            "search_kernel": search_kernel_state,
+            "monitor_state": monitor_state,
         }
         atomic_write_json(self.round_dir / f"round-{round_index:04d}-{_safe_phase(phase)}.json", snapshot, sort_keys=True)
         self._append_candidate_journal(round_index, phase, population)
-        self.append_event({"type": "nexus_live_checkpoint", "round": round_index, "phase": phase, "error": error, "population_size": len(population.candidates)})
+        self.append_event({"type": "nexus_live_checkpoint", "round": round_index, "phase": phase, "error": error, "population_size": len(population.candidates), "monitor_state": monitor_state})
 
     def append_event(self, event: dict[str, Any]) -> None:
         event_hash = stable_hash(event)
@@ -194,6 +221,14 @@ def _contract_payload_for_checkpoint(contract: Any | None) -> dict[str, Any]:
         metadata.pop(LATENT_LEDGER_METADATA_KEY, None)
         payload["metadata"] = metadata
     return payload
+
+
+def _fate_counts(population: CandidatePopulation) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for candidate in population.candidates:
+        fate = str(candidate.current_fate or "Unknown")
+        counts[fate] = counts.get(fate, 0) + 1
+    return counts
 
 
 __all__ = ["LiveNexusStore"]

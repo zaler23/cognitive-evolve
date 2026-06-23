@@ -197,7 +197,7 @@ class ParentSelector:
                 enabled=repair_policy.get("enabled", True) is not False,
             )
             if resurrection_candidates:
-                repair_slots = max(repair_slots, min(resurrection_quota(target), len(resurrection_candidates), target))
+                repair_slots = max(repair_slots, min(resurrection_quota(target, pool_size=len(resurrection_candidates)), len(resurrection_candidates), target))
             selected, trace = select_diverse(
                 primary,
                 limit=max(0, target - repair_slots),
@@ -289,7 +289,7 @@ def _resurrection_candidates(candidates: list[CandidateGenome], *, target: int) 
     pool = [candidate for candidate in candidates if _resurrection_pool_candidate(candidate)]
     if not pool:
         return []
-    quota = resurrection_quota(target)
+    quota = resurrection_quota(target, pool_size=len(pool))
     ranked = sorted(pool, key=lambda candidate: (resurrection_score(candidate, candidates), candidate.id), reverse=True)
     return [candidate for candidate in ranked if resurrection_score(candidate, candidates) > -0.05][:quota]
 

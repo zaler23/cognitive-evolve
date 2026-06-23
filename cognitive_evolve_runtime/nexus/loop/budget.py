@@ -113,6 +113,21 @@ class EvolutionLoopResult:
     fabric_state: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        policy_metadata = self.policy.metadata if isinstance(getattr(self.policy, "metadata", None), dict) else {}
+        search_kernel_summary = {
+            key: policy_metadata[key]
+            for key in (
+                "seed_coverage",
+                "target_perturb_seed_judgment",
+                "factor_resurrection_summary",
+                "minimal_core_ablation",
+                "seed_active_frontier",
+                "algorithm_efficiency",
+                "model_parallel_efficiency",
+                "seed_reservoir_ref",
+            )
+            if key in policy_metadata
+        }
         return {
             "population": self.population.to_dict(),
             "archives": self.archives.to_dict(),
@@ -133,6 +148,7 @@ class EvolutionLoopResult:
             "adaptive_state": self.adaptive_state,
             "graded_output": self.graded_output,
             "fabric_state": self.fabric_state,
+            "search_kernel_summary": search_kernel_summary,
         }
 
 

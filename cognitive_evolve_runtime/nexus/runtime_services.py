@@ -18,6 +18,7 @@ from cognitive_evolve_runtime.nexus.final_projection import build_final_projecti
 from cognitive_evolve_runtime.nexus.adaptive.research.persistence import safe_research_payload
 from cognitive_evolve_runtime.nexus.project_verification import ProjectCandidateVerifier, ProjectVerificationSummary
 from cognitive_evolve_runtime.persistence.checkpoint import build_checkpoint_state
+from cognitive_evolve_runtime.nexus.seed_coverage import SEED_RESERVOIR_SIDECAR_PAYLOAD_KEY, persist_seed_reservoir_sidecar
 from cognitive_evolve_runtime.persistence.event_store import EventStore
 from cognitive_evolve_runtime.persistence.transactional_snapshot import NexusSnapshotTransaction, SnapshotWrite
 from cognitive_evolve_runtime.verification.types import GradedOutput
@@ -79,6 +80,18 @@ class NexusPersistenceService:
         adaptive_state = dict(getattr(result, "adaptive_state", {}) or {})
         adaptive_events = [dict(event) for event in adaptive_state.get("events", []) if isinstance(event, dict)]
         events_to_write = list(result.pipeline_events) + list(result.progress_events) + fallback_events + adaptive_events
+        policy_metadata = dict(getattr(result.policy, "metadata", {}) or {})
+        sidecar_ref = persist_seed_reservoir_sidecar(self.output_dir, policy_metadata.get(SEED_RESERVOIR_SIDECAR_PAYLOAD_KEY))
+        if sidecar_ref and isinstance(getattr(result.policy, "metadata", None), dict):
+            result.policy.metadata.pop(SEED_RESERVOIR_SIDECAR_PAYLOAD_KEY, None)
+            result.policy.metadata["seed_reservoir_ref"] = sidecar_ref
+            policy_metadata.pop(SEED_RESERVOIR_SIDECAR_PAYLOAD_KEY, None)
+            policy_metadata["seed_reservoir_ref"] = sidecar_ref
+        search_kernel_state = {
+            key: policy_metadata[key]
+            for key in ("seed_coverage", "target_perturb_seed_judgment", "factor_resurrection_summary", "algorithm_efficiency", "model_parallel_efficiency", "minimal_core_ablation", "seed_active_frontier", "seed_reservoir_ref")
+            if key in policy_metadata
+        }
         if result.interrupted and progress_event and not any(
             isinstance(event, dict) and event.get("type") == "evolution_progress" and int(event.get("round") or 0) == int(progress_event.get("round") or 0)
             for event in events_to_write
@@ -108,6 +121,7 @@ class NexusPersistenceService:
             concept_snapshots=dict((adaptive_state.get("research_extensions") or {}).get("extensions") or {}),
             verification_plan=dict((adaptive_state.get("research_extensions") or {}).get("verification_plan") or {}),
             graded_output=dict(getattr(result, "graded_output", {}) or {}),
+            search_kernel=search_kernel_state,
             fabric=dict(getattr(result, "fabric_state", {}) or {}),
             runtime_options=runtime_options or dict((getattr(run, "evolution", {}) or {}).get("runtime_options") or {}),
             allow_progress_round_repair=bool(result.interrupted),

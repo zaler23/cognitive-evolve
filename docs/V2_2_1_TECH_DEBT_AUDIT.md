@@ -553,7 +553,7 @@ Status: closed in code + tests on this branch.
 
 | Debt ID | Closure status | Code / test evidence |
 |---|---|---|
-| TD-V3-R-SEED24-HARD-CAP | Closed in code + tests | `_seed_safety_batch_limit()` now honors explicit policy/env seed batch values up to `SEED_BATCH_CONFIGURED_MAX=64`; regression tests prove an explicit 24-batch seed policy overrides a lower env value and oversized env values are still bounded. |
+| TD-V3-R-SEED24-HARD-CAP | Closed in code + tests | `_seed_safety_batch_limit()` honors explicit policy/env seed batch values; the later self-bootstrap loop closure removed the stale low fixed seed cap entirely while preserving the explicit 24-batch regression. |
 
 Runtime evidence behind this closure:
 
@@ -646,3 +646,63 @@ Validation after intent binding correction:
 - `TD-V3-SERDE-BOUNDARY-LOWER-LAYER` — Closed in code + tests. Stable JSON/hash helpers moved to `core.serialization`; `nexus._serde` remains a compatibility re-export while non-Nexus low-level packages import the core module.
 - `TD-V3-LLM-REQUEST-POLICY-NO-NEXUS-TRANSPORT` — Closed in code + tests. Long-context output budgets are selected by explicit `LLMRequestPolicy` from the model adapter, not by Nexus request-name constants inside transport.
 - `TD-V3-PUBLIC-HYGIENE-MIRROR` — Closed in code + tests. No run artifacts, local virtualenvs, bridge logs, or plan files are introduced by this change; mirror sync remains part of final acceptance.
+
+## v3 self-bootstrap loop seed coverage and resurrection ledger — 2026-06-24
+
+Scope: close the real self-bootstrap loop findings around low seed caps, seed family coverage, target-perturb continuation, loser-pool factor resurrection, strategy comparison, checkpoint monitor state, route discipline, and capability-preserving efficiency.
+
+Status: closed in code + tests on this branch.
+
+| Debt ID | Closure status | Code / test evidence |
+|---|---|---|
+| TD-V3-LOOP-SEED-UNCAPPED-COVERAGE | Closed in code + tests | `_seed_safety_batch_limit()` now honors explicit policy/env values without the stale 64 cap; `tests/test_search_kernel_v3.py` proves a high seed batch env is no longer clipped. |
+| TD-V3-LOOP-SEED-COVERAGE-ASSESSMENT | Closed in code + tests | `nexus/seed_coverage.py::assess_seed_coverage()` records accepted/reservoir/rejected/family/singleton/origin coverage and is written into policy/candidate metadata; `tests/test_self_bootstrap_loop_controls.py` covers broad vs thin coverage. |
+| TD-V3-LOOP-SEED-PARTIAL-FAILURE-STATUS | Closed in code + tests | Seed coverage carries `partial_failure_count`; existing harvester result keeps recoverable failed batch ids without poisoning accepted seeds, and full pytest covers harvester regressions. |
+| TD-V3-LOOP-TARGET-PERTURB-SEED | Closed in code + tests | `target_perturb_seed_judgment()` provides evidence-first `not_needed/watch/trigger_recommended` guidance from checkpoint population signals without rerunning initial seed; tests cover the round-10 stuck trigger. |
+| TD-V3-LOOP-FACTOR-RESURRECTION-TRACE | Closed in code + tests | `nexus/factor_resurrection.py` extracts advisory factors from dormant/failed/reservoir candidates while keeping source candidates non-terminal; tests cover loser-pool factor extraction. |
+| TD-V3-LOOP-FAILURE-FACTOR-VIEW | Closed in code + tests | `archive_prompt_view()` adds `failure_factor_hints` even when `FailureArchive.records` is empty but dormant candidates carry failure lessons; tests cover this exact case. |
+| TD-V3-LOOP-RESURRECTION-QUOTA-DATA-SENSITIVE | Closed in code + tests | `resurrection_quota()` now accepts pool size/pressure and can exceed 3 under large loser pools while staying within branch budget; tests prove scaling and floor. |
+| TD-V3-LOOP-NO-HARDCODED-GENERAL-SEARCH-WORDLIST | Closed in code + tests | General scaffold stripping and false-cull boundary wordlist checks were removed from search steering; tests prove terms are not stripped/flagged by those generic helpers. |
+| TD-V3-LOOP-STRATEGY-COMPARISON-CARRIER | Closed in code + tests | `nexus/strategy_comparison.py` carries open free-text hypotheses/observations into prompt views without architecture enums; tests cover arbitrary free-text strategy observations. |
+| TD-V3-LOOP-CHECKPOINT-MONITOR-STATE | Closed in code + tests | `LiveNexusStore` and final persistence carry `search_kernel`, `runtime_options`, and `monitor_state`; tests read checkpoint and round snapshot evidence. |
+| TD-V3-LOOP-CODEX-GPT55-HIGH-ROUTING | Closed in protocol + tests | Public LOOP protocol requires all real self-bootstrap roles to resolve to one high-capability profile before provider calls; route values stay run-local rather than embedded as source constants. |
+| TD-V3-LOOP-ALGORITHM-EFFICIENCY-METRICS | Closed in code + tests | Seed loop records `algorithm_efficiency` metrics such as accepted-per-batch, reservoir count, and partial failures as measure-only metadata; prompt/checkpoint tests cover persistence. |
+| TD-V3-LOOP-MODEL-PARALLEL-EFFICIENCY | Closed in code + tests | Seed loop records `model_parallel_efficiency` and no longer clips explicit seed fanout by stale seed batch cap; model fanout and seed tests pass in full pytest. |
+| TD-V3-LOOP-TRANSPORT-SCAFFOLD-HYGIENE | Closed in code + tests | Public LOOP protocol avoids private transport scaffold terms and public hygiene tests continue to guard bridge/proxy/local path leakage. |
+| TD-V3-LOOP-SELFBOOTSTRAP-PROTOCOL | Closed in docs + tests | `docs/SELF_BOOTSTRAP_LOOP_PROTOCOL.md` defines the minimal run-audit-modify-rerun protocol without adding a scheduler framework. |
+| TD-V3-LOOP-PUBLIC-HYGIENE-MIRROR | Closed in acceptance | `compileall`, full pytest, doctor, and package_clean passed; final cleanup, hygiene scan, and source-current mirror sync are required before push. |
+
+Validation evidence for this closure:
+
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m compileall -q cognitive_evolve_runtime scripts tests` — passed.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider` — `733 passed, 1 skipped`.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B scripts/cogev.py doctor --scope all` — `50/50 checks passed`.
+- `bash scripts/package_clean.sh` — produced the clean package artifact, then `dist/` and bytecode caches were removed.
+
+## v3 minimal-core/full-fusion ablation and efficiency closure ledger — 2026-06-24
+
+Scope: reopen the remaining gaps from the run-result review: minimal active core and full fusion must be represented as runnable comparison profiles, failure theorem and R_eff must exist as source mechanisms, large seed pool must be separated from the active frontier, reservoir sidecar must keep large pools out of checkpoints, and efficiency work must be capability-preserving.
+
+Status: closed in code + tests on this branch.
+
+| Debt ID | Closure status | Code / test evidence |
+|---|---|---|
+| TD-V3-MINCORE-FOUR-WAY-ABLATION | Closed in code + tests | `nexus/minimal_core.py::run_core_ablation()` replays `score_only`, `Nexus_QD_failure_replay`, `minimal_active_core`, and `full_fusion` on the same candidate pool with zero added provider calls; tests assert all four profiles are compared. |
+| TD-V3-MINCORE-R-EFF | Closed in code + tests | `estimate_reproduction_pressure()` records an advisory `r_eff.v1` signal from surviving child pressure, novelty pressure, and failure reactivation without becoming a hard gate. |
+| TD-V3-MINCORE-FAILURE-THEOREM | Closed in code + tests | `extract_failure_theorem()`/`extract_failure_theorems()` lift reusable failure lessons into advisory theorem payloads and prompt/checkpoint traces. |
+| TD-V3-MINCORE-SINGLE-PROMOTION-GATE | Closed in code + tests | `single_promotion_gate()` separates promotion eligibility from verified-claim permission so exploratory candidates can advance without self-certifying solved. |
+| TD-V3-MINCORE-LARGE-POOL-SMALL-FRONTIER | Closed in code + tests | `apply_seed_active_frontier()` keeps large accepted seed pools intact while marking a bounded active frontier and moving overflow to Dormant with trace metadata. |
+| TD-V3-MINCORE-SEED-RESERVOIR-SIDECAR | Closed in code + tests | Seed reservoir payloads are written to digest-named sidecars and checkpoints store only refs, not large embedded seed pools. |
+| TD-V3-MINCORE-OPTIONAL-LAYERS-PAY-RENT | Closed in code + tests | The four-way ablation reports optional-layer marginal gains and recommends minimal core unless full fusion shows enough measured advantage. |
+| TD-V3-MINCORE-ALGORITHM-EFFICIENCY-NO-CAPABILITY-LOSS | Closed in code + tests | Seed loop records algorithm-efficiency metrics and active-frontier separation while preserving reservoir/dormant material instead of deleting breadth. |
+| TD-V3-MINCORE-MODEL-PARALLEL-EFFICIENCY | Closed in code + tests | Seed fanout remains governed by explicit policy/env concurrency and records parallel-efficiency metadata without clipping seed breadth. |
+| TD-V3-MINCORE-GPT55-HIGH-GUARD | Closed in code + tests | `COGEV_LLM_REQUIRED_MODEL` blocks real provider calls whose resolved `COGEV_LLM_MODEL` differs from the operator-selected GPT 5.5 high model id; the self-bootstrap runner exposes `--required-model`. |
+| TD-V3-MINCORE-RUN-SUMMARY-FIELDS | Closed in code + tests | Runtime result/checkpoint/prompt paths carry `minimal_core_ablation`, `factor_resurrection_summary`, seed coverage, active frontier, reservoir ref, and efficiency summaries. |
+
+Validation after minimal-core/full-fusion closure:
+
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m compileall -q cognitive_evolve_runtime scripts tests` — passed.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider tests/test_self_bootstrap_loop_controls.py tests/test_search_kernel_v3.py tests/test_security_config_and_stop_decision.py` — `33 passed`.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider` — `737 passed, 1 skipped`.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B scripts/cogev.py doctor --scope all` — `50/50 checks passed`.
+- `bash scripts/package_clean.sh` — completed; generated `dist/` and bytecode caches were removed again during final public hygiene cleanup.

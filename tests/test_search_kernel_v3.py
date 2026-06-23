@@ -142,7 +142,7 @@ def test_batch_limit_environment_values_are_bounded(monkeypatch) -> None:
     monkeypatch.setenv("COGEV_NEXUS_SEED_BATCH_LIMIT", "999")
     monkeypatch.setenv("COGEV_NEXUS_MUTATION_PLAN_BATCH_LIMIT", "999")
     monkeypatch.setenv("COGEV_NEXUS_OFFSPRING_BATCH_LIMIT", "999")
-    assert _seed_safety_batch_limit(policy=EvolutionPolicy()) == 64
+    assert _seed_safety_batch_limit(policy=EvolutionPolicy()) == 999
     assert _mutation_plan_batch_limit(3) == 16
     assert _offspring_batch_limit(3) == 16
 

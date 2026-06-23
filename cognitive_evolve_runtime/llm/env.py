@@ -20,6 +20,7 @@ LLM_BUDGET_USD_ENV = "COGEV_LLM_BUDGET_USD"
 LLM_API_KEY_ENV = "COGEV_LLM_API_KEY"
 LLM_API_BASE_ENV = "COGEV_LLM_API_BASE"
 LLM_BASE_URL_ENV = "COGEV_LLM_BASE_URL"
+LLM_REQUIRED_MODEL_ENV = "COGEV_LLM_REQUIRED_MODEL"
 LLM_MAX_CONCURRENT_ENV = "COGEV_LLM_MAX_CONCURRENT"
 LLM_RPM_ENV = "COGEV_LLM_RPM"
 LLM_TPM_ENV = "COGEV_LLM_TPM"
@@ -134,7 +135,20 @@ def require_llm_config() -> dict[str, Any]:
             "Replace it with a real upstream model API key, or use "
             f"{LLM_PROVIDER_ENV}=fixture with {LLM_FIXTURE_ENV}=<fixture.json> for tests."
         )
+    required = _required_model_set()
+    if status.get("requires_real_llm") and required:
+        model = str(status.get("model") or "").strip()
+        if model not in required:
+            allowed = ", ".join(sorted(required))
+            raise LLMConfigurationError(
+                f"{LLM_REQUIRED_MODEL_ENV} requires model {allowed}; current {LLM_MODEL_ENV}={model or '<unset>'}."
+            )
     return status
+
+
+def _required_model_set() -> set[str]:
+    raw = os.environ.get(LLM_REQUIRED_MODEL_ENV, "")
+    return {item.strip() for item in raw.split(",") if item.strip()}
 
 
 # Current private aliases used by older tests/operators.

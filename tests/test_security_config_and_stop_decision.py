@@ -299,3 +299,17 @@ def test_require_llm_config_rejects_placeholder_upstream_key(monkeypatch: pytest
 
     with pytest.raises(LLMConfigurationError, match="placeholder"):
         require_llm_config()
+
+
+def test_require_llm_config_rejects_non_required_real_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("COGEV_HERMETIC_TEST", "1")
+    monkeypatch.setenv("COGEV_LLM_PROVIDER", "litellm")
+    monkeypatch.setenv("COGEV_LLM_MODEL", "openai/gpt-x")
+    monkeypatch.setenv("COGEV_LLM_API_KEY", "real-upstream-key")
+    monkeypatch.setenv("COGEV_LLM_REQUIRED_MODEL", "codex/gpt-5.5-high")
+
+    with pytest.raises(LLMConfigurationError, match="COGEV_LLM_REQUIRED_MODEL"):
+        require_llm_config()
+
+    monkeypatch.setenv("COGEV_LLM_REQUIRED_MODEL", "codex/gpt-5.5-high, openai/gpt-x")
+    assert require_llm_config()["model"] == "openai/gpt-x"

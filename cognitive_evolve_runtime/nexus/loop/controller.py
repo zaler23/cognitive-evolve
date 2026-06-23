@@ -20,6 +20,8 @@ from cognitive_evolve_runtime.nexus.exploration import action_palette_for_round,
 from cognitive_evolve_runtime.nexus.diagnosis import PolicyUpdater, SearchDiagnosis, SearchStateDiagnoser
 from cognitive_evolve_runtime.nexus.display_selection import build_display_context, select_displayed_candidate
 from cognitive_evolve_runtime.nexus.generation_plan import GenerationPlan, apply_generation_plan, assert_stage_ready, build_generation_plan, expected_generation_plan_id
+from cognitive_evolve_runtime.nexus.minimal_core import run_core_ablation
+from cognitive_evolve_runtime.nexus.factor_resurrection import resurrect_factor_trace
 from cognitive_evolve_runtime.nexus.model_errors import is_quota_error
 from cognitive_evolve_runtime.nexus.obligations import candidate_obligation_delta, candidate_source_bindings
 from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy
@@ -377,6 +379,10 @@ class EvolutionLoopController:
         ).to_dict()
         graded_output = _graded_output_for_final_state(population=self.population, synthesis=synthesis, final_certificate=final_certificate, latent_replay_audit=latent_replay_audit, contract=self.contract)
         synthesis.closure_certificate["graded_output"] = graded_output.to_dict()
+        if isinstance(self.policy.metadata, dict):
+            self.policy.metadata["minimal_core_ablation"] = run_core_ablation(self.population.candidates, archives=self.archives, policy=self.policy)
+            factors = resurrect_factor_trace(self.population.candidates, limit=16)
+            self.policy.metadata["factor_resurrection_summary"] = {"factor_count": len(factors), "factors": factors[:8], "policy": "advisory_final_population_factor_trace"}
         if graded_output.mode != "verified_result":
             synthesis.closure_certificate["graded_output_advisory"] = "verification_result_not_required_for_answer_first_completion"
         selected_for_display = _selected_final_candidate(self.population, synthesis=synthesis, final_certificate=final_certificate)

@@ -28,6 +28,9 @@ from cognitive_evolve_runtime.nexus.repair_reactivation import recover_failure_a
 from cognitive_evolve_runtime.nexus.synthesis import SynthesizedResult, synthesize_result
 from cognitive_evolve_runtime.nexus.stop_decision import StopDecisionEngine
 from cognitive_evolve_runtime.nexus.semantic_dedupe import CandidateDeduper
+from cognitive_evolve_runtime.nexus.factor_resurrection import resurrect_factor_trace
+from cognitive_evolve_runtime.nexus.minimal_core import apply_seed_active_frontier, run_core_ablation
+from cognitive_evolve_runtime.nexus.seed_coverage import SEED_RESERVOIR_SIDECAR_PAYLOAD_KEY, assess_seed_coverage, seed_reservoir_sidecar_payload
 from cognitive_evolve_runtime.nexus.search_kernel.harvesting import CandidateHarvester, HarvestPolicy
 from cognitive_evolve_runtime.nexus.search_kernel.skill_library import search_skill_payload
 from cognitive_evolve_runtime.outcomes.latent_audit import audit_latent_replay_bundle
@@ -175,8 +178,42 @@ def _generate_model_seed_batches(
         context={"contract": contract, "policy": policy, "world": world},
         recoverable_errors=MODEL_BOUNDARY_ERRORS,
     )
+    coverage = assess_seed_coverage(
+        result.accepted,
+        reservoir=result.reservoir,
+        rejected=result.rejected,
+        harvest_summary=result.to_dict(),
+        contract=contract,
+        policy=policy,
+    )
+    if isinstance(policy.metadata, dict):
+        frontier = apply_seed_active_frontier(result.accepted, limit=_seed_active_frontier_limit(policy=policy))
+        ablation = run_core_ablation(result.accepted, policy=policy)
+        factors = resurrect_factor_trace([*result.accepted, *result.reservoir], limit=16)
+        policy.metadata["seed_coverage"] = coverage
+        policy.metadata["seed_active_frontier"] = frontier
+        policy.metadata["minimal_core_ablation"] = ablation
+        policy.metadata["factor_resurrection_summary"] = {"factor_count": len(factors), "factors": factors[:8], "policy": "advisory_seed_pool_factor_trace"}
+        if result.reservoir:
+            policy.metadata[SEED_RESERVOIR_SIDECAR_PAYLOAD_KEY] = seed_reservoir_sidecar_payload(result.reservoir)
+        policy.metadata["algorithm_efficiency"] = {
+            "seed_batches": result.batches,
+            "accepted_per_batch": round(len(result.accepted) / max(1, result.batches), 4),
+            "reservoir_count": len(result.reservoir),
+            "partial_failure_count": len(result.failed_batch_ids),
+            "active_frontier_size": len(frontier.get("selected_ids") or []),
+            "dormant_seed_reserve_count": int(frontier.get("dormant_count") or 0),
+            "policy": "measure_only_no_capability_tradeoff",
+        }
+        policy.metadata["model_parallel_efficiency"] = {
+            "seed_fanout_workers": _seed_fanout_workers(policy=policy, target_size=target_size),
+            "max_batches": _seed_safety_batch_limit(policy=policy),
+            "policy": "parallelism_observed_not_seed_breadth_reduced",
+        }
     for candidate in result.accepted:
         candidate.metadata.setdefault("seed_harvest", result.to_dict())
+        candidate.metadata.setdefault("seed_coverage", coverage)
+        candidate.metadata.setdefault("minimal_core_ablation_profile", ablation.get("recommendation", "advisory"))
         if result.reservoir:
             candidate.metadata.setdefault(
                 "seed_reservoir",
@@ -184,10 +221,21 @@ def _generate_model_seed_batches(
                     "mode": "soft_reject_retention",
                     "candidate_ids": [item.id for item in result.reservoir[-100:]],
                     "count": len(result.reservoir),
-                    "checkpoint_policy": "metadata_summary_only_until_sidecar_runtime_promotion",
+                    "checkpoint_policy": "coverage_summary_plus_candidate_ids",
                 },
             )
     return result.accepted, result.rejected, result.fatal_model_error
+
+
+def _seed_active_frontier_limit(*, policy: EvolutionPolicy) -> int:
+    metadata = policy.metadata if isinstance(policy.metadata, dict) else {}
+    configured = _positive_int(metadata.get("seed_active_frontier_size") or metadata.get("active_frontier_size") or metadata.get("seed_active_evaluation_budget"))
+    if configured:
+        return configured
+    configured = _positive_int(os.environ.get("COGEV_NEXUS_SEED_ACTIVE_FRONTIER_SIZE"))
+    if configured:
+        return configured
+    return 64
 
 
 def _coerce_seed_batch(raw: Any) -> list[CandidateGenome]:
@@ -247,7 +295,7 @@ def _policy_for_seed_batch(policy: EvolutionPolicy, *, batch_index: int, accepte
     return EvolutionPolicy.from_dict(data)
 
 
-SEED_BATCH_CONFIGURED_MAX = 64
+SEED_BATCH_DEFAULT_MAX = 8
 
 
 def _seed_safety_batch_limit(*, policy: EvolutionPolicy) -> int:
@@ -258,11 +306,11 @@ def _seed_safety_batch_limit(*, policy: EvolutionPolicy) -> int:
         or metadata.get("seed_max_batches")
     )
     if configured:
-        return min(SEED_BATCH_CONFIGURED_MAX, configured)
-    configured = _bounded_env_int("COGEV_NEXUS_SEED_BATCH_LIMIT", maximum=SEED_BATCH_CONFIGURED_MAX)
+        return configured
+    configured = _positive_int(os.environ.get("COGEV_NEXUS_SEED_BATCH_LIMIT"))
     if configured:
         return configured
-    return 8
+    return SEED_BATCH_DEFAULT_MAX
 
 
 
@@ -284,8 +332,8 @@ def _seed_low_novelty_patience(*, policy: EvolutionPolicy) -> int:
         or metadata.get("seed_exhaustion_patience")
     )
     if configured:
-        return min(8, configured)
-    configured = _bounded_env_int("COGEV_NEXUS_SEED_LOW_NOVELTY_PATIENCE", maximum=8)
+        return configured
+    configured = _positive_int(os.environ.get("COGEV_NEXUS_SEED_LOW_NOVELTY_PATIENCE"))
     if configured:
         return configured
     return 1
@@ -299,18 +347,11 @@ def _seed_fanout_workers(*, policy: EvolutionPolicy, target_size: int) -> int | 
         or metadata.get("seed_harvest_fanout_workers")
     )
     if configured:
-        return min(_seed_safety_batch_limit(policy=policy), configured)
+        return configured
     # No seed-specific override: follow the shared model fanout governor.
     # Concurrent seed prompts intentionally share a previous-window snapshot of
     # accepted signatures; the post-fanout harvester remains the serial
     # dedupe/merge authority for deterministic acceptance.
-    return None
-
-
-def _bounded_env_int(name: str, *, maximum: int) -> int | None:
-    configured = _positive_int(os.environ.get(name))
-    if configured:
-        return min(maximum, configured)
     return None
 
 
