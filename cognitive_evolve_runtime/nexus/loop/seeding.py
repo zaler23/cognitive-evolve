@@ -166,10 +166,13 @@ def _generate_model_seed_batches(
         raw = model.seed_population(contract=contract, world=world, policy=_policy_for_seed_batch(policy, batch_index=batch_index, accepted=accepted, rejected=rejected))
         batch = _coerce_seed_batch(raw)
         priority = _seed_family_priority(policy, accepted)
+        origin = _seed_origin_metadata(model)
         for candidate in batch:
             candidate.metadata.setdefault("exploration_source", "nexus_model_seed_batch")
             candidate.metadata.setdefault("created_in_round", 0)
             candidate.metadata["model_seed_batch"] = batch_index
+            for key, value in origin.items():
+                candidate.metadata.setdefault(key, value)
             candidate.metadata.setdefault("seed_family_priority_trace", {"batch_index": batch_index, "source": priority.get("source"), "requested_families": [item.get("id") or item.get("name") for item in list(priority.get("families") or [])[:4]]})
         return batch
 
@@ -261,6 +264,24 @@ def _candidate_seed_coverage_trace(coverage: dict[str, Any]) -> dict[str, Any]:
         "needs_target_perturb": coverage.get("needs_target_perturb"),
         "policy": "compact_candidate_trace_full_coverage_in_policy_metadata",
     }
+
+
+def _seed_origin_metadata(model: Any) -> dict[str, Any]:
+    metadata = getattr(model, "metadata", {}) if isinstance(getattr(model, "metadata", None), dict) else {}
+    spec = metadata.get("model_spec") if isinstance(metadata.get("model_spec"), dict) else {}
+    provider = str(spec.get("provider") or "").strip()
+    model_name = str(spec.get("model") or spec.get("fixture") or "").strip()
+    profile_id = str(spec.get("profile_id") or spec.get("model_profile_id") or "").strip()
+    origin = "/".join(part for part in (provider, model_name) if part)
+    if not origin:
+        origin = str(metadata.get("transport") or type(model).__name__).strip()
+    out = {"origin_model": origin or type(model).__name__}
+    if profile_id:
+        out["model_profile_id"] = profile_id
+    spec_hash = str(metadata.get("model_spec_hash") or "").strip()
+    if spec_hash:
+        out["origin_model_spec_hash"] = spec_hash
+    return out
 
 
 def _seed_active_frontier_limit(*, policy: EvolutionPolicy) -> int:

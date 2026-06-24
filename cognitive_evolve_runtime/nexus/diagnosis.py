@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -154,12 +155,16 @@ class SearchStateDiagnoser:
             return SearchDiagnosis(stagnation_detected=True, stagnation_type="KnowledgeBottleneck", recommended_actions=["rare_inject", "strategy_restart"], notes="empty population")
         low_gain = _low_grounded_information_gain(history=history, policy=policy, contract=contract)
         if low_gain:
+            pressure = _open_family_pressure(budget_eligible_candidates(population) or population)
             return SearchDiagnosis(
                 stagnation_detected=True,
                 stagnation_type="SemanticLooping",
                 recommended_actions=["increase_rarity_budget", "rare_inject", "strategy_restart"],
+                over_explored_families=pressure["over_explored_families"],
+                under_explored_families=pressure["under_explored_families"],
                 notes=f"low engine-grounded marginal information gain for {low_gain.get('count')} rounds",
                 grounded_information_gain=low_gain,
+                metadata={"open_family_pressure": pressure},
             )
         live_context = budget_eligible_candidates(population)
         frontier = _frontier_candidates(population)
@@ -171,6 +176,7 @@ class SearchStateDiagnoser:
         rare_count = len(archives.rarity_archive.candidates)
         lineage_report = detect_lineage_saturation(diagnosis_context)
         if active_count == 0 and incubating:
+            pressure = _open_family_pressure(diagnosis_context)
             reasons: dict[str, int] = {}
             for candidate in incubating:
                 repair = candidate.metadata.get("repair_required") if isinstance(candidate.metadata, dict) else None
@@ -181,8 +187,11 @@ class SearchStateDiagnoser:
             return SearchDiagnosis(
                 stagnation_detected=True,
                 stagnation_type="DiversityCollapse",
+                over_explored_families=pressure["over_explored_families"],
+                under_explored_families=pressure["under_explored_families"],
                 recommended_actions=["reactivate_dormant", "rare_inject", "increase_rarity_budget"],
                 notes=f"no Active candidates, but {len(incubating)} Incubating answer candidates remain; advisory_reasons={top_reasons or 'unknown'}; dormant_count={dormant_count}",
+                metadata={"open_family_pressure": pressure},
             )
         if auxiliary and len(auxiliary) >= max(2, len(population) // 2) and not archives.answer_archive:
             return SearchDiagnosis(
@@ -194,6 +203,7 @@ class SearchStateDiagnoser:
                 notes="auxiliary candidates dominate without an answer elite",
             )
         if lineage_report.saturated:
+            pressure = _open_family_pressure(diagnosis_context, saturated_families=lineage_report.saturated_families)
             proposal_only_families: list[str] = []
             for family in lineage_report.saturated_families:
                 family_candidates = [candidate for candidate in diagnosis_context if (candidate.lineage[0] if candidate.lineage else candidate.id) == family]
@@ -203,18 +213,20 @@ class SearchStateDiagnoser:
                 return SearchDiagnosis(
                     stagnation_detected=True,
                     stagnation_type="SemanticLooping",
-                    over_explored_families=proposal_only_families,
-                    under_explored_families=["new_mechanism", "edge_theory", "cross_domain_variant"],
+                    over_explored_families=list(dict.fromkeys([*proposal_only_families, *pressure["over_explored_families"]])),
+                    under_explored_families=pressure["under_explored_families"],
                     recommended_actions=["quarantine_lineage", "route_kill", "increase_rarity_budget", "rare_inject"],
-                    notes="lineage saturation detected; spend residual budget on rare mechanisms, edge theories, and cross-domain variants",
+                    notes="lineage saturation detected; spend residual budget on low-sample families from the current open family distribution",
+                    metadata={"open_family_pressure": pressure},
                 )
             return SearchDiagnosis(
                 stagnation_detected=True,
                 stagnation_type="DiversityCollapse",
-                over_explored_families=lineage_report.saturated_families,
-                under_explored_families=["rarity", "dormant", "crossover"],
+                over_explored_families=list(dict.fromkeys([*lineage_report.saturated_families, *pressure["over_explored_families"]])),
+                under_explored_families=pressure["under_explored_families"],
                 recommended_actions=["quarantine_lineage", "increase_rarity_budget", "reactivate_dormant"],
                 notes="lineage saturation detected",
+                metadata={"open_family_pressure": pressure},
             )
         if rare_count == 0 and policy and policy.rarity_budget > 0:
             return SearchDiagnosis(
@@ -231,11 +243,15 @@ class SearchStateDiagnoser:
             or observed_majority(len(failed_frontier), len(attempted_frontier))
             or _high_value_failed_repair_targets(failed_frontier, attempted_frontier)
         ):
+            pressure = _open_family_pressure(diagnosis_context)
             return SearchDiagnosis(
                 stagnation_detected=True,
                 stagnation_type="DiversityCollapse",
+                over_explored_families=pressure["over_explored_families"],
+                under_explored_families=pressure["under_explored_families"],
                 recommended_actions=["increase_rarity_budget", "rare_inject", "continue"],
                 notes="verification failures are advisory; continue with broader answer exploration",
+                metadata={"open_family_pressure": pressure},
             )
         return SearchDiagnosis(stagnation_detected=False, recommended_actions=["continue"], notes="no generic stagnation detected")
 
@@ -276,6 +292,101 @@ def _high_value_failed_repair_targets(candidates: list[CandidateGenome], context
         ):
             return True
     return False
+
+
+def _open_family_pressure(candidates: list[CandidateGenome], *, saturated_families: list[str] | None = None) -> dict[str, Any]:
+    """Return data-derived family pressure without finite domain classes.
+
+    Family ids come from candidate metadata/content already produced by the run:
+    canonical family id, mechanism family id, niche, core mechanism, lineage, or
+    candidate id. The thresholds are distribution-derived, so this does not
+    encode a fixed "engineering vs mechanism" taxonomy or a Critical-Branching
+    special case.
+    """
+
+    distribution: dict[str, dict[str, Any]] = {}
+    for candidate in candidates:
+        family = _open_family_id(candidate)
+        record = distribution.setdefault(family, {"count": 0, "candidate_ids": [], "terms": set()})
+        record["count"] += 1
+        record["candidate_ids"].append(candidate.id)
+        record["terms"].update(_candidate_pressure_terms(candidate, family))
+    if not distribution:
+        return {
+            "schema": "cogev.open_family_pressure.v1",
+            "family_count": 0,
+            "over_explored_families": [],
+            "under_explored_families": [],
+            "family_counts": {},
+        }
+    counts = [int(record["count"]) for record in distribution.values()]
+    mean = sum(counts) / max(1, len(counts))
+    variance = sum((count - mean) ** 2 for count in counts) / max(1, len(counts))
+    stdev = math.sqrt(variance)
+    saturated = {_normalize_family_term(item) for item in saturated_families or [] if str(item or "").strip()}
+    over: list[str] = []
+    under: list[str] = []
+    low_sample_ceiling = max(1, math.floor(mean))
+    high_sample_floor = mean + stdev
+    for family, record in sorted(distribution.items(), key=lambda item: (int(item[1]["count"]), item[0])):
+        count = int(record["count"])
+        terms = sorted(str(item) for item in record["terms"] if str(item))
+        if count <= low_sample_ceiling:
+            under.extend(terms or [family])
+        if family in saturated or count > high_sample_floor:
+            over.extend(terms or [family])
+    return {
+        "schema": "cogev.open_family_pressure.v1",
+        "family_count": len(distribution),
+        "family_counts": {family: int(record["count"]) for family, record in sorted(distribution.items())},
+        "mean_family_size": mean,
+        "family_size_stdev": stdev,
+        "over_explored_families": list(dict.fromkeys(over)),
+        "under_explored_families": list(dict.fromkeys(under)),
+        "basis": "candidate_metadata_and_content_distribution",
+    }
+
+
+def _open_family_id(candidate: CandidateGenome) -> str:
+    metadata = coerce_dict(getattr(candidate, "metadata", {}))
+    nextgen = coerce_dict(metadata.get("nextgen"))
+    for value in (
+        nextgen.get("canonical_mechanism_family_id"),
+        nextgen.get("mechanism_family_id"),
+        metadata.get("canonical_mechanism_family_id"),
+        metadata.get("mechanism_family_id"),
+        (candidate.niche_memberships[0] if candidate.niche_memberships else ""),
+        candidate.core_mechanism,
+        candidate.concise_claim,
+        (candidate.lineage[0] if candidate.lineage else ""),
+        candidate.id,
+    ):
+        term = _normalize_family_term(value)
+        if term:
+            return term
+    return _normalize_family_term(candidate.id)
+
+
+def _candidate_pressure_terms(candidate: CandidateGenome, family: str) -> set[str]:
+    metadata = coerce_dict(getattr(candidate, "metadata", {}))
+    nextgen = coerce_dict(metadata.get("nextgen"))
+    values: list[Any] = [
+        family,
+        nextgen.get("canonical_mechanism_family_id"),
+        nextgen.get("mechanism_family_id"),
+        metadata.get("canonical_mechanism_family_id"),
+        metadata.get("mechanism_family_id"),
+        candidate.core_mechanism,
+        candidate.concise_claim,
+        *(candidate.niche_memberships or []),
+        *(candidate.edge_knowledge_seeds or []),
+        (candidate.lineage[0] if candidate.lineage else ""),
+    ]
+    return {term for term in (_normalize_family_term(value) for value in values) if term}
+
+
+def _normalize_family_term(value: Any) -> str:
+    return "_".join(str(value or "").strip().lower().replace("-", "_").replace("|", " ").replace(":", " ").split())
 
 
 def _low_grounded_information_gain(*, history: list[dict[str, Any]] | None, policy: EvolutionPolicy | None, contract: Any | None) -> dict[str, Any]:

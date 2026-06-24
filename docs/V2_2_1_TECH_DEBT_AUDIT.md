@@ -852,3 +852,25 @@ Status: closed in code + tests on this branch.
 Validation for this closure:
 
 - `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider tests/test_self_bootstrap_loop_controls.py` — `15 passed`.
+
+## v3 self-bootstrap LOOP effect-preserving efficiency/diversity closure ledger — 2026-06-25
+
+Scope: close LOOP5 run-confirmed issues without lowering search breadth, model strength, failure-pool resurrection, seed coverage, or attachment-stack effect. Efficiency improvements are storage/selection-algorithm improvements only; they do not delete candidates or narrow the objective.
+
+Status: closed in code + tests on this branch.
+
+| Debt ID | Closure status | Code / test evidence |
+|---|---|---|
+| TD-V3-LOOP-ARCHIVE-CHECKPOINT-REF-THINNING | Closed in code + tests | Thin checkpoints now keep candidate bodies once in `population` and store archive memberships as population refs via `apply_checkpoint_profile_to_archives(...)`; `CheckpointStore.restore_state()` hydrates refs before rebuilding `ArchiveManager`. |
+| TD-V3-LOOP-RUN-RESULT-ARCHIVE-DEDUP | Closed in code + tests | `EvolutionLoopResult.to_dict()` uses the same thin population/archive/history profile, so `run-result.json` no longer repeats full archive candidate bodies. Offline replay on LOOP5 artifacts estimates checkpoint `98,997,045 → 25,536,437` bytes and run-result `105,612,159 → 27,351,127` bytes. |
+| TD-V3-LOOP-OPEN-FAMILY-DIVERSITY-PRESSURE | Closed in code + tests | `SearchStateDiagnoser` now derives over/under explored family pressure from candidate metadata/content distribution rather than fixed placeholder families; `PolicyUpdater` feeds that into existing selection scoring. |
+| TD-V3-LOOP-SEED-ORIGIN-OBSERVABILITY | Closed in code + tests | Model-backed seed candidates now record public route metadata (`origin_model`, `model_profile_id`, `origin_model_spec_hash`) at the adapter boundary, preserving acceptance behavior while making GPT/profile coverage auditable. |
+| TD-V3-LOOP-EFFECT-PRESERVING-EFFICIENCY-GUARD | Closed in code + tests | Tests assert storage thinning preserves population payload and hydrated archive behavior; no seed cap, candidate deletion, model downgrade, or final-gate relaxation is introduced. |
+
+Validation for this closure:
+
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider tests/test_search_kernel_v3.py tests/test_v221_call_checkpoint_executor_debt.py tests/test_stagnation_diagnosis_generates_action.py` — `27 passed`.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m compileall -q cognitive_evolve_runtime scripts tests` — passed.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider` — `755 passed, 1 skipped`.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B scripts/cogev.py doctor --scope all` — `50/50 checks passed`.
+- `bash scripts/package_clean.sh` — completed; generated `dist/` and bytecode caches were removed again during public hygiene cleanup.

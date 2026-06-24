@@ -4,6 +4,7 @@ from cognitive_evolve_runtime.archives.manager import ArchiveManager
 from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome
 from cognitive_evolve_runtime.nexus.diagnosis import PolicyUpdater, SearchDiagnosis, SearchStateDiagnoser
 from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy
+from cognitive_evolve_runtime.ranking.parent_selection import ParentSelector
 
 
 def test_stagnation_diagnosis_generates_action_for_auxiliary_collapse() -> None:
@@ -98,3 +99,45 @@ def test_policy_updater_scales_rarity_budget_from_observed_archive_pressure() ->
     assert deep_update.rarity_budget == base.rarity_budget + deep_increment
     assert shallow_update.metadata["rarity_budget_update"]["population_size"] == 4
     assert deep_update.metadata["rarity_budget_update"]["rare_archive_depth"] == 10
+
+
+def test_diversity_collapse_pressure_uses_open_family_distribution_not_fixed_placeholders() -> None:
+    dominant = [
+        CandidateGenome(
+            id=f"dom-{index}",
+            lineage=["dominant-lineage", f"dom-{index}"],
+            core_mechanism="dominant basin",
+            concise_claim=f"dominant variant {index}",
+            niche_memberships=["dominant-basin"],
+            multihead_scores={"objective_alignment": 0.9, "answer_likelihood": 0.8},
+        )
+        for index in range(4)
+    ]
+    rare = CandidateGenome(
+        id="rare",
+        lineage=["rare-lineage", "rare"],
+        core_mechanism="cold path",
+        concise_claim="low sample cold path",
+        niche_memberships=["cold-path-family"],
+        edge_knowledge_seeds=["cold edge"],
+        multihead_scores={"objective_alignment": 0.65, "answer_likelihood": 0.55, "novelty": 0.9, "rarity": 0.9},
+    )
+
+    diagnosis = SearchStateDiagnoser().diagnose(population=[*dominant, rare], archives=ArchiveManager(), policy=EvolutionPolicy())
+    updated = PolicyUpdater().update(EvolutionPolicy(), diagnosis)
+    pressure = updated.metadata["selection_pressure"]
+
+    assert diagnosis.stagnation_detected is True
+    assert diagnosis.stagnation_type == "SemanticLooping"
+    assert "cold_path_family" in pressure["under_explored_families"]
+    assert "dominant_lineage" in pressure["over_explored_families"]
+    assert not {"rarity", "dormant", "crossover"}.intersection(set(pressure["under_explored_families"]))
+
+    selected = ParentSelector().select(
+        [*dominant, rare],
+        ArchiveManager(),
+        limit=2,
+        eligibility_policy=updated.metadata["eligibility_policy"],
+    )
+
+    assert rare.id in [candidate.id for candidate in selected]

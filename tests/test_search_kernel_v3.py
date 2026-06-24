@@ -28,6 +28,14 @@ class _SeedModel:
         ]
 
 
+class _RoutedSeedModel(_SeedModel):
+    metadata = {
+        "transport": "cogev_llm_json",
+        "model_spec": {"profile_id": "default-high", "provider": "openai", "model": "gpt-5.5"},
+        "model_spec_hash": "llm-model-spec-test",
+    }
+
+
 class _LongTailSeedModel:
     def __init__(self, *, unique_batches: int) -> None:
         self.calls = 0
@@ -104,6 +112,26 @@ def test_seed_generation_forces_multishot_and_dedupes_semantics(monkeypatch) -> 
     assert [candidate.id for candidate in accepted] == ["A", "C"]
     assert any(item["reason"] == "duplicate_semantic_signature" for item in rejected)
     assert all("descriptor_cell" in candidate.metadata for candidate in accepted)
+
+
+def test_seed_generation_records_single_model_origin_without_changing_acceptance(monkeypatch) -> None:
+    monkeypatch.setenv("COGEV_NEXUS_SEED_MIN_BATCHES", "2")
+    model = _RoutedSeedModel()
+
+    accepted, rejected, error = _generate_model_seed_batches(
+        model=model,
+        contract=_Contract(),
+        world=_World(),
+        policy=EvolutionPolicy(metadata={"initial_candidate_count": 1}),
+        target_size=1,
+    )
+
+    assert error is None
+    assert [candidate.id for candidate in accepted] == ["A", "C"]
+    assert rejected
+    assert {candidate.metadata["origin_model"] for candidate in accepted} == {"openai/gpt-5.5"}
+    assert {candidate.metadata["model_profile_id"] for candidate in accepted} == {"default-high"}
+    assert {candidate.metadata["origin_model_spec_hash"] for candidate in accepted} == {"llm-model-spec-test"}
 
 
 def test_parent_selector_uses_descriptor_diversity_over_top_clone() -> None:

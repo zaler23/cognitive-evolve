@@ -166,4 +166,6 @@ def test_lineage_saturation_freezes_no_evidence_family() -> None:
 
     assert diagnosis.stagnation_type == "SemanticLooping"
     assert "quarantine_lineage" in diagnosis.recommended_actions
-    assert diagnosis.under_explored_families == ["new_mechanism", "edge_theory", "cross_domain_variant"]
+    assert diagnosis.under_explored_families == ["root", "same_words"]
+    assert not {"new_mechanism", "edge_theory", "cross_domain_variant"}.intersection(diagnosis.under_explored_families)
+    assert diagnosis.metadata["open_family_pressure"]["basis"] == "candidate_metadata_and_content_distribution"

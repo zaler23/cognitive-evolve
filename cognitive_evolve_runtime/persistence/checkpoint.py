@@ -12,7 +12,13 @@ from cognitive_evolve_runtime.durable.file_lock import atomic_write_json
 from cognitive_evolve_runtime.llm.call_ledger import ledger_summary
 from cognitive_evolve_runtime.llm.session import current_llm_session
 from cognitive_evolve_runtime.core.serialization import coerce_dict, utc_now
-from cognitive_evolve_runtime.persistence.checkpoint_profile import apply_checkpoint_profile_to_history, apply_checkpoint_profile_to_population, checkpoint_profile_from_env
+from cognitive_evolve_runtime.persistence.checkpoint_profile import (
+    apply_checkpoint_profile_to_archives,
+    apply_checkpoint_profile_to_history,
+    apply_checkpoint_profile_to_population,
+    checkpoint_profile_from_env,
+    hydrate_checkpoint_archives,
+)
 
 LATENT_LEDGER_METADATA_KEY = "latent_ledger"
 LATENT_LEDGER_REF_KEYS = ("latent_ledger_ref", "latent_ledger_sidecar")
@@ -118,10 +124,12 @@ class CheckpointStore:
         )
         contract = _hydrate_latent_ledger_sidecar(checkpoint.contract, base_dir=self.path.parent)
         checkpoint.contract = contract
+        population = CandidatePopulation.from_dict(checkpoint.population)
+        archives_payload = hydrate_checkpoint_archives(checkpoint.archives, checkpoint.population)
         return {
             "checkpoint": checkpoint,
-            "population": CandidatePopulation.from_dict(checkpoint.population),
-            "archives": ArchiveManager.from_dict(checkpoint.archives),
+            "population": population,
+            "archives": ArchiveManager.from_dict(archives_payload),
             "policy": EvolutionPolicy.from_dict(checkpoint.policy) if checkpoint.policy else EvolutionPolicy(),
             "diagnosis": SearchDiagnosis.from_dict(checkpoint.diagnosis) if checkpoint.diagnosis else SearchDiagnosis(),
             "budget_history": list(checkpoint.budget_history),
@@ -227,12 +235,13 @@ def build_checkpoint_state(
 ) -> NexusCheckpoint:
     profile = checkpoint_profile_from_env()
     population_payload = apply_checkpoint_profile_to_population(population.to_dict(), profile)
+    archive_payload = apply_checkpoint_profile_to_archives(archives.to_dict(), population_payload, profile)
     budget_history_payload = apply_checkpoint_profile_to_history(budget_history or [], profile)
     checkpoint = NexusCheckpoint(
         round=round,
         max_rounds=max_rounds,
         population=population_payload,
-        archives=archives.to_dict(),
+        archives=archive_payload,
         policy=policy.to_dict() if hasattr(policy, "to_dict") else coerce_dict(policy),
         diagnosis=diagnosis.to_dict() if hasattr(diagnosis, "to_dict") else coerce_dict(diagnosis),
         progress_event=progress_event or {},
