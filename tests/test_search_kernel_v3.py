@@ -263,3 +263,30 @@ def test_unbounded_seed_handoff_floor_does_not_double_count_patience() -> None:
         min_batches=4,
         low_gain_patience=2,
     )
+
+
+def test_unbounded_seed_handoff_broadness_uses_target_not_accepted_count() -> None:
+    assert _unbounded_seed_handoff_exhausted(
+        accepted_before=368,
+        accepted_delta=6,
+        family_count_before=9,
+        family_delta=0,
+        accepted_count=374,
+        family_count=9,
+        batches=62,
+        target_size=64,
+        min_batches=4,
+        low_gain_patience=2,
+    )
+    assert not _unbounded_seed_handoff_exhausted(
+        accepted_before=368,
+        accepted_delta=6,
+        family_count_before=2,
+        family_delta=0,
+        accepted_count=374,
+        family_count=2,
+        batches=62,
+        target_size=64,
+        min_batches=4,
+        low_gain_patience=2,
+    )

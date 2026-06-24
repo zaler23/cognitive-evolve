@@ -786,3 +786,21 @@ Validation for this closure:
 - `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider` — `745 passed, 1 skipped`.
 - `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B scripts/cogev.py doctor --scope all` — `50/50 checks passed`.
 - `bash scripts/package_clean.sh` — completed; generated `dist/` and bytecode caches were removed again during public hygiene cleanup.
+
+## v3 self-bootstrap LOOP seed handoff broadness closure ledger — 2026-06-24
+
+Scope: close the LOOP4 run-confirmed bug where unbounded seed handoff still scaled the broadness floor with total accepted seeds, forcing a narrow-but-sufficient convergence-comparison goal to keep spending GPT 5.5 high calls until it invented extra families.
+
+Status: closed in code + tests on this branch.
+
+| Debt ID | Closure status | Code / test evidence |
+|---|---|---|
+| TD-V3-LOOP-SEED-HANDOFF-BROADNESS-FLOOR | Closed in code + tests | `_seed_pool_broad_enough()` now derives its minimum family floor from the requested target size, not from ever-growing accepted seed count; LOOP4 evidence shape of 374 accepted seeds / 9 families / target 64 can hand off, while a 2-family pool still cannot. |
+
+Validation for this closure:
+
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider tests/test_search_kernel_v3.py` — `12 passed`.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m compileall -q cognitive_evolve_runtime scripts tests` — passed.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider` — `746 passed, 1 skipped`.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B scripts/cogev.py doctor --scope all` — `50/50 checks passed`.
+- `bash scripts/package_clean.sh` — completed; generated `dist/` and bytecode caches were removed again during public hygiene cleanup.
