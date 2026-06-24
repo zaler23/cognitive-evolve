@@ -16,6 +16,7 @@ from cognitive_evolve_runtime.nexus.minimal_core import (
     extract_failure_theorem,
     run_core_ablation,
     single_promotion_gate,
+    useful_attachment_stack,
 )
 from cognitive_evolve_runtime.nexus.nextgen import _looks_like_engineering_noise, false_cull_monitor, resurrection_quota
 from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy
@@ -115,7 +116,7 @@ def test_strategy_comparison_is_open_carrier_not_named_architecture_gate() -> No
     assert context["observations"][0]["candidate_id"] == "S"
 
 
-def test_minimal_core_four_way_ablation_compares_profiles_without_provider_calls() -> None:
+def test_minimal_core_ablation_compares_profiles_without_provider_calls() -> None:
     score_only = _candidate("score", "common")
     score_only.multihead_scores = {"objective_alignment": 0.9, "core_mechanism_strength": 0.8}
     minimal = _candidate("minimal", "rare")
@@ -132,6 +133,41 @@ def test_minimal_core_four_way_ablation_compares_profiles_without_provider_calls
     assert report["profiles"]["minimal_active_core"]["best_candidate_id"] in {"minimal", "fusion"}
     assert report["efficiency_metrics"]["provider_calls_added"] == 0
     assert report["verification_status"] == "advisory"
+
+
+def test_minimal_core_plus_useful_attachments_keeps_all_positive_support() -> None:
+    bare = _candidate("bare", "rare")
+    bare.multihead_scores = {"objective_alignment": 0.72, "rarity": 0.9, "novelty": 0.8}
+    rich = _candidate("rich", "rare")
+    rich.multihead_scores = {"objective_alignment": 0.72, "rarity": 0.9, "novelty": 0.8}
+    rich.failure_lessons.append("reentry fails without dormant factor handles")
+    rich.formal_artifacts.append({"kind": "proof_object"})
+    rich.proof_obligations.append("bind reentry to changed next action")
+    rich.source_bindings.append({"source": "runroot"})
+    rich.edge_knowledge_seeds.append("loser factor can become future search gradient")
+    rich.metadata["intent_binding"] = {"direct_answer_score": 0.8, "alignment_rationale": "directly answers frozen goal"}
+    rich.metadata["resurrection_score"] = 0.7
+    rich.metadata["resurrection_reason"] = "dormant factor covers current mechanism gap"
+    rich.metadata["open_signal"] = {"score": 0.5, "rationale": "arbitrary model-authored support signal"}
+
+    stack = useful_attachment_stack(rich, factors=[extract_failure_theorem(rich)])
+    report = run_core_ablation([bare, rich])
+
+    assert {item["source"] for item in stack} >= {
+        "candidate.failure_lessons",
+        "candidate.formal_artifacts",
+        "candidate.proof_obligations",
+        "candidate.source_bindings",
+        "candidate.edge_knowledge_seeds",
+        "metadata.intent_binding.direct_answer_score",
+        "metadata.resurrection",
+        "metadata.open_signal",
+    }
+    stacked = report["profiles"]["minimal_core_plus_useful_attachments"]
+    assert stacked["best_candidate_id"] == "rich"
+    assert stacked["best_score"] > report["profiles"]["minimal_active_core"]["best_score"]
+    assert stacked["active_support_stack"]
+    assert report["recommendation"] == "minimal_core_with_useful_attachments"
 
 
 def test_r_eff_failure_theorem_and_single_gate_are_real_artifacts() -> None:

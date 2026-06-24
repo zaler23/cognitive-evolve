@@ -268,6 +268,43 @@ def test_final_projection_binds_synthesis_answer_to_best_current_candidate_id() 
     assert "answer_unbound_to_candidate_artifact" not in projection.advisory_issues
 
 
+def test_final_projection_unwraps_best_current_direction_carrier_to_real_direction() -> None:
+    direction = CandidateGenome(
+        id="direction",
+        artifact={"mechanism": "recover dormant factors when they change the next search action"},
+        concise_claim="Dormant factor resurrection is the best current direction.",
+        metadata={"intent_binding": {"direct_answer_score": 0.94}},
+    )
+    carrier = CandidateGenome(
+        id="carrier",
+        artifact={
+            "best_current_direction": {
+                "candidate_id": "direction",
+                "direction_name": "minimal active core with useful resurrection attachment",
+            },
+            "claim_permissions": {"may_claim_verified": False},
+        },
+        artifact_type="best_current_direction_status_contract",
+        concise_claim="Keep direction as best current but block verified claims.",
+        metadata={"intent_binding": {"direct_answer_score": 0.14}},
+    )
+    synthesis = SynthesizedResult(
+        status="completed",
+        final_answer="carrier explains status; direction is the mechanism",
+        best_current_direction={"candidate_id": "carrier"},
+    )
+
+    projection = build_final_projection(
+        population=CandidatePopulation([direction, carrier]),
+        synthesis=synthesis,
+        graded_output=_graded_portfolio(),
+    )
+
+    assert projection.candidate_id == "direction"
+    assert projection.best_current_direction["candidate_id"] == "direction"
+    assert direction.metadata["best_current_direction_carriers"] == ["carrier"]
+
+
 def test_user_facing_verification_accepts_graded_verified_result() -> None:
     candidate = CandidateGenome(id="verified", concise_claim="answer")
     graded = GradedOutput(

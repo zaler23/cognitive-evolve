@@ -14,7 +14,7 @@ from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateG
 from cognitive_evolve_runtime.core.serialization import coerce_dict, stable_hash
 from cognitive_evolve_runtime.nexus.nextgen import structurally_blocked
 
-ABLATION_PROFILES = ("score_only", "Nexus_QD_failure_replay", "minimal_active_core", "full_fusion")
+ABLATION_PROFILES = ("score_only", "Nexus_QD_failure_replay", "minimal_active_core", "minimal_core_plus_useful_attachments", "full_fusion")
 
 
 def run_core_ablation(
@@ -30,8 +30,9 @@ def run_core_ablation(
     factors = extract_failure_theorems(items)
     profile_results = {profile: _profile_result(profile, items, factors=factors, limit=limit) for profile in ABLATION_PROFILES}
     minimal = profile_results["minimal_active_core"].get("best_score", 0.0)
+    stacked = profile_results["minimal_core_plus_useful_attachments"].get("best_score", 0.0)
     fusion = profile_results["full_fusion"].get("best_score", 0.0)
-    recommendation = "full_fusion_has_incremental_signal" if fusion > minimal + 0.08 else "minimal_core_first"
+    recommendation = "full_fusion_has_incremental_signal" if fusion > max(minimal, stacked) + 0.08 else ("minimal_core_with_useful_attachments" if stacked > minimal + 0.02 else "minimal_core_first")
     families = Counter(_family_key(candidate) for candidate in items)
     return {
         "schema": "minimal_core_ablation.v1",
@@ -177,16 +178,38 @@ def single_promotion_gate(candidate: CandidateGenome) -> dict[str, Any]:
 
 
 def _profile_result(profile: str, candidates: list[CandidateGenome], *, factors: list[dict[str, Any]], limit: int) -> dict[str, Any]:
-    scored = sorted(((_profile_score(profile, candidate, candidates, factors=factors), candidate) for candidate in candidates), key=lambda item: (item[0], item[1].id), reverse=True)
-    best_score, best = scored[0]
-    return {
+    scored = sorted(_dedupe_carrier_targets(profile, candidates, factors=factors), key=lambda item: (item[0], item[1].id), reverse=True)
+    best_score, best, best_carriers = scored[0]
+    result = {
         "profile": profile,
         "best_candidate_id": best.id,
         "best_score": round(best_score, 4),
-        "top_candidates": [{"candidate_id": candidate.id, "score": round(score, 4)} for score, candidate in scored[: max(1, int(limit or 1))]],
+        "top_candidates": [{"candidate_id": candidate.id, "score": round(score, 4)} for score, candidate, _ in scored[: max(1, int(limit or 1))]],
         "moving_parts": _profile_moving_parts(profile),
         "policy": "advisory_same_pool_ablation",
     }
+    if profile == "minimal_core_plus_useful_attachments":
+        stack = useful_attachment_stack(best, factors=factors, carriers=best_carriers)
+        result["active_support_stack"] = stack
+        result["moving_parts"] = _profile_moving_parts("minimal_active_core") + len(stack)
+        result["policy"] = "advisory_same_pool_ablation_all_positive_attachments"
+    return result
+
+
+def _dedupe_carrier_targets(profile: str, candidates: list[CandidateGenome], *, factors: list[dict[str, Any]]) -> list[tuple[float, CandidateGenome, list[CandidateGenome]]]:
+    by_target: dict[str, tuple[float, CandidateGenome, list[CandidateGenome]]] = {}
+    for candidate in candidates:
+        target = _best_current_carrier_target(candidate, candidates) or candidate
+        carriers = [candidate] if target is not candidate else []
+        score = _profile_score(profile, target, candidates, factors=factors)
+        if carriers and profile == "minimal_core_plus_useful_attachments":
+            score += _carrier_attachment_signal(candidate)
+        previous = by_target.get(target.id)
+        if previous is None or score > previous[0]:
+            by_target[target.id] = (score, target, carriers)
+        elif carriers:
+            previous[2].extend(carriers)
+    return list(by_target.values())
 
 
 def _profile_score(profile: str, candidate: CandidateGenome, population: list[CandidateGenome], *, factors: list[dict[str, Any]]) -> float:
@@ -203,12 +226,116 @@ def _profile_score(profile: str, candidate: CandidateGenome, population: list[Ca
     minimal = base + qd + 0.35 * pressure + factor_bonus + gate_bonus
     if profile == "minimal_active_core":
         return minimal
+    if profile == "minimal_core_plus_useful_attachments":
+        return minimal + _useful_attachment_signal(candidate, factors=factors)
     optional = _optional_layer_signal(candidate)
     return minimal + optional - 0.06 * max(0, _profile_moving_parts("full_fusion") - _profile_moving_parts("minimal_active_core"))
 
 
 def _profile_moving_parts(profile: str) -> int:
-    return {"score_only": 1, "Nexus_QD_failure_replay": 3, "minimal_active_core": 5, "full_fusion": 9}.get(profile, 0)
+    return {"score_only": 1, "Nexus_QD_failure_replay": 3, "minimal_active_core": 5, "minimal_core_plus_useful_attachments": 5, "full_fusion": 9}.get(profile, 0)
+
+
+def useful_attachment_stack(candidate: CandidateGenome, *, factors: list[dict[str, Any]] | None = None, carriers: list[CandidateGenome] | None = None) -> list[dict[str, Any]]:
+    """Return every positive same-pool support signal for the candidate.
+
+    The entries name source fields rather than project-domain categories.  They
+    are advisory attachments: they can explain why a minimal active core should
+    carry extra support material, but they do not verify or gate the candidate.
+    """
+
+    stack = [
+        item
+        for item in [*_attachment_signals(candidate, factors=factors or []), *(_carrier_attachment_entries(carriers or []))]
+        if float(item.get("marginal_score") or 0.0) > 0.0
+    ]
+    stack.sort(key=lambda item: (float(item.get("marginal_score") or 0.0), str(item.get("source") or "")), reverse=True)
+    return stack
+
+
+def _useful_attachment_signal(candidate: CandidateGenome, *, factors: list[dict[str, Any]]) -> float:
+    return min(0.35, sum(float(item.get("marginal_score") or 0.0) for item in useful_attachment_stack(candidate, factors=factors)))
+
+
+def _best_current_carrier_target(candidate: CandidateGenome, candidates: list[CandidateGenome]) -> CandidateGenome | None:
+    if not isinstance(candidate.artifact, dict):
+        return None
+    best = candidate.artifact.get("best_current_direction")
+    if not isinstance(best, dict):
+        return None
+    target_id = str(best.get("candidate_id") or "").strip()
+    if not target_id or target_id == candidate.id:
+        return None
+    for item in candidates:
+        if item.id == target_id and _has_claim(item) and not structurally_blocked(item):
+            return item
+    return None
+
+
+def _carrier_attachment_signal(candidate: CandidateGenome) -> float:
+    return min(0.12, 0.04 + 0.02 * len(_carrier_attachment_entries([candidate])))
+
+
+def _carrier_attachment_entries(carriers: list[CandidateGenome]) -> list[dict[str, Any]]:
+    entries: list[dict[str, Any]] = []
+    for carrier in carriers:
+        if not isinstance(carrier.artifact, dict):
+            continue
+        entries.append(
+            {
+                "source": "artifact.best_current_direction.carrier",
+                "marginal_score": _carrier_attachment_signal_without_entries(carrier),
+                "policy": "advisory_support_attachment",
+                "evidence": carrier.id,
+            }
+        )
+    return entries
+
+
+def _carrier_attachment_signal_without_entries(candidate: CandidateGenome) -> float:
+    score = 0.04
+    artifact = coerce_dict(candidate.artifact)
+    if coerce_dict(artifact.get("claim_permissions")):
+        score += 0.02
+    if artifact.get("smallest_next_proof_object"):
+        score += 0.02
+    if coerce_dict(artifact.get("comparison_summary")):
+        score += 0.02
+    return round(min(0.12, score), 4)
+
+
+def _attachment_signals(candidate: CandidateGenome, *, factors: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    metadata = coerce_dict(candidate.metadata)
+    signals: list[dict[str, Any]] = []
+
+    def add(source: str, score: float, evidence: Any = None) -> None:
+        bounded = max(0.0, min(0.12, float(score or 0.0)))
+        if bounded <= 0.0:
+            return
+        payload: dict[str, Any] = {"source": source, "marginal_score": round(bounded, 4), "policy": "advisory_support_attachment"}
+        if evidence not in (None, "", [], {}):
+            payload["evidence"] = str(evidence)[:220]
+        signals.append(payload)
+
+    add("candidate.failure_lessons", 0.10 if candidate.failure_lessons else 0.0, candidate.failure_lessons[:2])
+    add("candidate.failure_theorem", 0.08 if any(item.get("source_candidate_id") == candidate.id for item in factors) else 0.0)
+    add("candidate.formal_artifacts", 0.08 if candidate.formal_artifacts else 0.0, candidate.formal_artifacts[:2])
+    add("candidate.proof_obligations", 0.07 if candidate.proof_obligations else 0.0, candidate.proof_obligations[:2])
+    add("candidate.source_bindings", 0.06 if candidate.source_bindings else 0.0, candidate.source_bindings[:2])
+    add("candidate.evidence_refs", 0.06 if candidate.evidence_refs else 0.0, candidate.evidence_refs[:2])
+    add("candidate.edge_knowledge_seeds", 0.05 if candidate.edge_knowledge_seeds else 0.0, candidate.edge_knowledge_seeds[:2])
+    add("candidate.novelty_descriptors", 0.04 if candidate.novelty_descriptors else 0.0, candidate.novelty_descriptors[:2])
+
+    intent = coerce_dict(metadata.get("intent_binding"))
+    add("metadata.intent_binding.direct_answer_score", 0.10 * _float(intent.get("direct_answer_score"), 0.0), intent.get("alignment_rationale"))
+    if metadata.get("resurrection_lane") or metadata.get("resurrection_reason") or metadata.get("resurrection_score") is not None:
+        add("metadata.resurrection", 0.10 * _float(metadata.get("resurrection_score"), 0.5), metadata.get("resurrection_reason"))
+    for key, value in metadata.items():
+        if not str(key).endswith("_signal"):
+            continue
+        signal = coerce_dict(value)
+        add(f"metadata.{key}", 0.06 * _float(signal.get("score"), 0.0), signal.get("rationale") or signal.get("reason"))
+    return signals
 
 
 def _optional_layer_signal(candidate: CandidateGenome) -> float:
@@ -286,4 +413,5 @@ __all__ = [
     "run_core_ablation",
     "select_seed_active_frontier",
     "single_promotion_gate",
+    "useful_attachment_stack",
 ]

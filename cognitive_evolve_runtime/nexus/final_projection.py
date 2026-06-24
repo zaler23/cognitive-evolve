@@ -81,6 +81,7 @@ def build_final_projection(*, population: CandidatePopulation, synthesis: Any, g
         display_context = closure_certificate.get("display_context")
     answer_text = str(getattr(synthesis, "final_answer", "") or "").strip()
     candidate = _candidate_by_id(population.candidates, _projection_candidate_id(certificate, synthesis))
+    candidate = _unwrap_best_current_carrier(candidate, population.candidates)
     if _projection_candidate_answer_eligible(candidate):
         return _projection_for_candidate(candidate, status="completed", objective_solved=False, certificate=certificate, answer_text=answer_text, contract=contract, graded_output=graded_output)
     if answer_text and candidate is not None:
@@ -232,6 +233,34 @@ def _candidate_by_id(candidates: list[CandidateGenome], candidate_id: str) -> Ca
         if candidate.id == candidate_id:
             return candidate
     return None
+
+
+def _unwrap_best_current_carrier(candidate: CandidateGenome | None, candidates: list[CandidateGenome]) -> CandidateGenome | None:
+    """Use an explicit candidate reference inside a status/support artifact.
+
+    Model synthesis can produce a small "best_current_direction" status object
+    whose artifact names the real mechanism candidate.  That object is useful
+    supporting material, but the user-facing final direction must bind to the
+    named mechanism candidate when it exists and is displayable.
+    """
+
+    if candidate is None or not isinstance(candidate.artifact, dict):
+        return candidate
+    best = candidate.artifact.get("best_current_direction")
+    if not isinstance(best, dict):
+        return candidate
+    target_id = str(best.get("candidate_id") or "").strip()
+    if not target_id or target_id == candidate.id:
+        return candidate
+    target = _candidate_by_id(candidates, target_id)
+    if target is None or not _projection_candidate_answer_eligible(target):
+        return candidate
+    metadata = target.metadata if isinstance(target.metadata, dict) else {}
+    target.metadata = metadata
+    supporting = metadata.setdefault("best_current_direction_carriers", [])
+    if isinstance(supporting, list) and candidate.id not in supporting:
+        supporting.append(candidate.id)
+    return target
 
 
 def _hard_rejected(candidate: CandidateGenome) -> bool:

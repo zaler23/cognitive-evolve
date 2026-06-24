@@ -822,3 +822,18 @@ Validation for this closure:
 - `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider` — `747 passed, 1 skipped`.
 - `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B scripts/cogev.py doctor --scope all` — `50/50 checks passed`.
 - `bash scripts/package_clean.sh` — completed; generated `dist/` and bytecode caches were removed again during public hygiene cleanup.
+
+## v3 self-bootstrap LOOP effect closure ledger — 2026-06-24
+
+Scope: close LOOP4d effect gaps where the run found a useful "minimal active core" direction but final projection displayed a status/support carrier instead of the real mechanism candidate, and the ablation compared a bare minimal core against full fusion without reporting every positive support attachment.
+
+Status: closed in code + tests on this branch.
+
+| Debt ID | Closure status | Code / test evidence |
+|---|---|---|
+| TD-V3-LOOP-FINAL-DIRECTION-CARRIER-UNWRAP | Closed in code + tests | `build_final_projection()` now unwraps an explicit `artifact.best_current_direction.candidate_id` carrier to the referenced mechanism candidate when that target exists and is displayable; the carrier is retained as supporting metadata, not the user-facing best direction. |
+| TD-V3-LOOP-MINCORE-USEFUL-ATTACHMENT-STACK | Closed in code + tests | `run_core_ablation()` now compares `minimal_core_plus_useful_attachments`, discovers all positive support attachments from candidate/open metadata fields, reports an `active_support_stack`, and recommends the stacked minimal core when the same-pool marginal signal beats the bare minimal core. |
+
+Validation for this closure:
+
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider tests/test_nextgen_cbt_pcbg_landing.py tests/test_self_bootstrap_loop_controls.py` — `41 passed`.
