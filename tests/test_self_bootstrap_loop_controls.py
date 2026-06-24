@@ -12,6 +12,7 @@ from cognitive_evolve_runtime.nexus.live_store import LiveNexusStore
 from cognitive_evolve_runtime.nexus.minimal_core import (
     ABLATION_PROFILES,
     apply_seed_active_frontier,
+    effective_project_attachment_inventory,
     estimate_reproduction_pressure,
     extract_failure_theorem,
     run_core_ablation,
@@ -167,7 +168,38 @@ def test_minimal_core_plus_useful_attachments_keeps_all_positive_support() -> No
     assert stacked["best_candidate_id"] == "rich"
     assert stacked["best_score"] > report["profiles"]["minimal_active_core"]["best_score"]
     assert stacked["active_support_stack"]
-    assert report["recommendation"] == "minimal_core_with_useful_attachments"
+    assert report["profiles"]["current_project_incumbent"]["effective_attachment_inventory"]
+    assert report["current_project_comparison"]["effective_attachment_coverage"]["coverage_complete"] is True
+    assert report["recommendation"] == "minimal_core_with_all_effective_attachments_beats_current_project"
+
+
+def test_minimal_core_does_not_claim_success_when_project_effective_attachment_is_missing() -> None:
+    rich = _candidate("rich", "rare")
+    rich.multihead_scores = {"objective_alignment": 0.72, "rarity": 0.9, "novelty": 0.8}
+    rich.failure_lessons.append("reentry fails without dormant factor handles")
+    policy = EvolutionPolicy(metadata={"incumbent_signal": {"score": 0.9, "rationale": "current project has a useful external support path"}})
+
+    report = run_core_ablation([rich], policy=policy)
+    coverage = report["current_project_comparison"]["effective_attachment_coverage"]
+
+    assert "current_project_incumbent" in report["profiles"]
+    assert coverage["coverage_complete"] is False
+    assert coverage["missing_effective_attachment_count"] >= 1
+    assert report["recommendation"] == "current_project_incumbent_until_stacked_core_covers_effective_attachments"
+
+
+def test_effective_project_attachment_inventory_is_open_field_path_inventory() -> None:
+    candidate = _candidate("rich", "rare")
+    candidate.failure_lessons.append("failure lesson")
+    candidate.metadata["arbitrary_new_signal"] = {"score": 0.8, "rationale": "future component support"}
+    policy = EvolutionPolicy(metadata={"another_component": {"status": "active"}})
+
+    inventory = effective_project_attachment_inventory([candidate], factors=[extract_failure_theorem(candidate)], policy=policy)
+    sources = {item["source"] for item in inventory}
+
+    assert "candidate.failure_lessons" in sources
+    assert "metadata.arbitrary_new_signal" in sources
+    assert "policy.metadata.another_component" in sources
 
 
 def test_r_eff_failure_theorem_and_single_gate_are_real_artifacts() -> None:

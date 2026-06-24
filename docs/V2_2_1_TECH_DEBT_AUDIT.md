@@ -837,3 +837,18 @@ Status: closed in code + tests on this branch.
 Validation for this closure:
 
 - `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider tests/test_nextgen_cbt_pcbg_landing.py tests/test_self_bootstrap_loop_controls.py` — `41 passed`.
+
+## v3 self-bootstrap LOOP incumbent comparison closure ledger — 2026-06-24
+
+Scope: close the follow-up effect bar that a minimal active core plus attachments is only acceptable if it covers the currently effective project attachments and beats the current-project incumbent baseline, not merely a bare minimal-core replay.
+
+Status: closed in code + tests on this branch.
+
+| Debt ID | Closure status | Code / test evidence |
+|---|---|---|
+| TD-V3-LOOP-CURRENT-PROJECT-INCUMBENT-BASELINE | Closed in code + tests | `run_core_ablation()` now exposes `current_project_incumbent` from `effective_project_attachment_inventory(...)`, so `full_fusion` is no longer the proxy for the existing project baseline. |
+| TD-V3-LOOP-EFFECTIVE-ATTACHMENT-COVERAGE-GATE | Closed in code + tests | `current_project_comparison.effective_attachment_coverage` reports covered/missing effective attachments and prevents a success recommendation while the stacked core lacks current-project support inventory. |
+
+Validation for this closure:
+
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider tests/test_self_bootstrap_loop_controls.py` — `15 passed`.
