@@ -5,6 +5,7 @@ from cognitive_evolve_runtime.archives.quality_diversity import QualityDiversity
 from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome
 from cognitive_evolve_runtime.nexus.loop.seeding import _generate_model_seed_batches
 from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy
+from cognitive_evolve_runtime.nexus.search_kernel.harvesting import _unbounded_seed_handoff_exhausted
 from cognitive_evolve_runtime.nexus.search_kernel.descriptor_cells import descriptor_cell_key
 from cognitive_evolve_runtime.nexus.search_kernel.fingerprints import normalized_ast_signature
 from cognitive_evolve_runtime.ranking.parent_selection import ParentSelector
@@ -247,3 +248,18 @@ def test_unbounded_seed_handoff_uses_marginal_family_yield_not_low_static_cap(mo
     assert accepted[0].metadata["seed_harvest"]["stopped_reason"] == "low_gain_patience"
     assert "accepted_ids" not in accepted[0].metadata["seed_harvest"]
     assert policy.metadata["seed_harvest"]["accepted_count"] == len(accepted)
+
+
+def test_unbounded_seed_handoff_floor_does_not_double_count_patience() -> None:
+    assert _unbounded_seed_handoff_exhausted(
+        accepted_before=247,
+        accepted_delta=40,
+        family_count_before=32,
+        family_delta=1,
+        accepted_count=287,
+        family_count=33,
+        batches=44,
+        target_size=64,
+        min_batches=4,
+        low_gain_patience=2,
+    )

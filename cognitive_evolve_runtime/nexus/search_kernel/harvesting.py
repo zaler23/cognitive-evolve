@@ -242,7 +242,9 @@ def _unbounded_seed_handoff_exhausted(
         return True
     if batches < max(1, int(min_batches or 1)):
         return False
-    handoff_floor = max(1, int(target_size or 1)) * max(1, int(min_batches or 1)) * max(1, int(low_gain_patience or 1))
+    # low_gain_patience is applied by the caller's consecutive-streak counter;
+    # multiplying it into this floor double-counts patience and delays handoff.
+    handoff_floor = max(1, int(target_size or 1)) * max(1, int(min_batches or 1))
     if accepted_count < handoff_floor:
         return False
     if not _seed_pool_broad_enough(accepted_count=accepted_count, family_count=family_count):

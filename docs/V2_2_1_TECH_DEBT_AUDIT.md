@@ -730,3 +730,17 @@ Validation after artifact-backed LOOP closure:
 - `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider` — `741 passed, 1 skipped`.
 - `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B scripts/cogev.py doctor --scope all` — `50/50 checks passed`.
 - `bash scripts/package_clean.sh` — completed; generated `dist/` and bytecode caches were removed again during final public hygiene cleanup.
+
+## v3 self-bootstrap LOOP handoff efficiency closure ledger — 2026-06-24
+
+Scope: close the run-confirmed efficiency bug where unbounded seed harvest kept spending GPT 5.5 high calls after coverage was already broad because the handoff floor double-counted `low_gain_patience`.
+
+Status: closed in code + tests on this branch.
+
+| Debt ID | Closure status | Code / test evidence |
+|---|---|---|
+| TD-V3-LOOP-HANDOFF-PATIENCE-DOUBLE-COUNT | Closed in code + tests | `_unbounded_seed_handoff_exhausted()` now uses `target_size * min_batches` as the broad-pool evidence floor; the caller still applies `low_gain_patience` as consecutive low-gain streak, avoiding duplicate patience. `tests/test_search_kernel_v3.py::test_unbounded_seed_handoff_floor_does_not_double_count_patience` replays this run's 287 accepted / 33-family handoff condition. |
+
+Validation for this closure:
+
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider tests/test_search_kernel_v3.py` — `11 passed`.
