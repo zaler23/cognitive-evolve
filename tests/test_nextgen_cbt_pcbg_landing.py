@@ -245,6 +245,29 @@ def test_user_facing_verification_does_not_trust_candidate_metadata_verified() -
     assert projection.best_current_direction["route"] == "best_current"
 
 
+def test_final_projection_binds_synthesis_answer_to_best_current_candidate_id() -> None:
+    candidate = CandidateGenome(
+        id="chosen",
+        artifact={"direction": "recoverable evidence-debt frontier"},
+        concise_claim="Recoverable evidence-debt frontier",
+    )
+    synthesis = SynthesizedResult(
+        status="completed",
+        final_answer="Synthesis text should stay bound to the selected candidate.",
+        best_current_direction={"candidate_id": "chosen"},
+    )
+
+    projection = build_final_projection(
+        population=CandidatePopulation([candidate]),
+        synthesis=synthesis,
+        graded_output=_graded_portfolio(),
+    )
+
+    assert projection.candidate_id == "chosen"
+    assert projection.best_current_direction["candidate_id"] == "chosen"
+    assert "answer_unbound_to_candidate_artifact" not in projection.advisory_issues
+
+
 def test_user_facing_verification_accepts_graded_verified_result() -> None:
     candidate = CandidateGenome(id="verified", concise_claim="answer")
     graded = GradedOutput(

@@ -80,11 +80,9 @@ def build_final_projection(*, population: CandidatePopulation, synthesis: Any, g
     if display_context is None and isinstance(closure_certificate.get("display_context"), dict):
         display_context = closure_certificate.get("display_context")
     answer_text = str(getattr(synthesis, "final_answer", "") or "").strip()
-    candidate = _candidate_by_id(population.candidates, str(certificate.get("candidate_id") or getattr(synthesis, "best_candidate_id", "") or ""))
+    candidate = _candidate_by_id(population.candidates, _projection_candidate_id(certificate, synthesis))
     if _projection_candidate_answer_eligible(candidate):
         return _projection_for_candidate(candidate, status="completed", objective_solved=False, certificate=certificate, answer_text=answer_text, contract=contract, graded_output=graded_output)
-    if answer_text and candidate is None:
-        return _projection_for_candidate(None, status="completed", objective_solved=False, certificate=certificate, answer_text=answer_text, contract=contract, graded_output=graded_output)
     if answer_text and candidate is not None:
         certificate.setdefault("blocking_reasons", [])
         if isinstance(certificate["blocking_reasons"], list):
@@ -104,6 +102,8 @@ def build_final_projection(*, population: CandidatePopulation, synthesis: Any, g
     best = _best_answer_candidate(population.candidates, contract=contract) or select_best_current_direction(population.candidates, contract=contract)
     if best is not None:
         return _projection_for_candidate(best, status="completed", objective_solved=False, certificate=certificate, answer_text="", contract=contract, graded_output=graded_output)
+    if answer_text and candidate is None:
+        return _projection_for_candidate(None, status="completed", objective_solved=False, certificate=certificate, answer_text=answer_text, contract=contract, graded_output=graded_output)
     return FinalProjection(
         status="no_candidate",
         title="No displayable candidate was available.",
@@ -111,6 +111,17 @@ def build_final_projection(*, population: CandidatePopulation, synthesis: Any, g
         continuation_plan=["resume evolution with broader seeding or refined contract"],
         objective_solved=False,
     )
+
+
+def _projection_candidate_id(certificate: dict[str, Any], synthesis: Any) -> str:
+    best_current = getattr(synthesis, "best_current_direction", {}) or {}
+    if not isinstance(best_current, dict):
+        best_current = {}
+    for value in (certificate.get("candidate_id"), getattr(synthesis, "best_candidate_id", ""), best_current.get("candidate_id")):
+        text = str(value or "").strip()
+        if text:
+            return text
+    return ""
 
 
 def _projection_for_candidate(candidate: CandidateGenome | None, *, status: str, objective_solved: bool, certificate: dict[str, Any], answer_text: str = "", contract: Any | None = None, graded_output: Any | None = None) -> FinalProjection:

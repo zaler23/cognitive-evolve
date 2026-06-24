@@ -19,6 +19,8 @@ TRACE_HASH_KEY = "latent_posterior_snapshot_hash"
 TRACE_CURSOR_KEY = "latent_ledger_cursor"
 TRACE_REF_KEY = "latent_decision_trace_ref"
 TRACE_MODEL_KEY = "latent_update_model_version"
+ACTIVE_EVIDENCE_ID_SAMPLE_LIMIT = 32
+SOURCE_PREVIEW_LIMIT = 512
 
 
 def collect_latent_decision_traces(
@@ -96,8 +98,11 @@ def audit_latent_replay_bundle(
         elif not passed and not reason:
             reason = "snapshot_hash_mismatch" if actual_hash and actual_hash != expected_hash else "latent_decision_replay_failed"
 
+        active_evidence_ids = list(raw_audit.get("active_evidence_ids") or [])
+        source = str(entry.get("source") or "")
         result = {
-            "source": str(entry.get("source") or ""),
+            "source": _preview(source, SOURCE_PREVIEW_LIMIT),
+            "source_hash": stable_hash(source),
             "trace_ref": str(entry.get("trace_ref") or _trace_ref(trace)),
             "passed": passed,
             "reason": "" if passed else reason,
@@ -105,7 +110,9 @@ def audit_latent_replay_bundle(
             "actual_snapshot_hash": actual_hash,
             "latent_ledger_cursor": _int(raw_audit.get(TRACE_CURSOR_KEY), default=_int(trace.get(TRACE_CURSOR_KEY))),
             "latent_update_model_version": str(raw_audit.get(TRACE_MODEL_KEY) or trace.get(TRACE_MODEL_KEY) or ""),
-            "active_evidence_ids": list(raw_audit.get("active_evidence_ids") or []),
+            "active_evidence_id_count": len(active_evidence_ids),
+            "active_evidence_ids": active_evidence_ids[:ACTIVE_EVIDENCE_ID_SAMPLE_LIMIT],
+            "active_evidence_ids_truncated": len(active_evidence_ids) > ACTIVE_EVIDENCE_ID_SAMPLE_LIMIT,
         }
         results.append(result)
 
@@ -164,6 +171,12 @@ def _append_trace(entries: list[dict[str, Any]], *, source: str, trace: dict[str
             "trace": dict(trace),
         }
     )
+
+
+def _preview(value: str, limit: int) -> str:
+    if len(value) <= limit:
+        return value
+    return value[: max(0, limit - 1)] + "…"
 
 
 def _looks_like_trace(data: dict[str, Any]) -> bool:

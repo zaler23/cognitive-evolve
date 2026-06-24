@@ -744,3 +744,23 @@ Status: closed in code + tests on this branch.
 Validation for this closure:
 
 - `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider tests/test_search_kernel_v3.py` — `11 passed`.
+
+## v3 self-bootstrap LOOP result projection/size closure ledger — 2026-06-24
+
+Scope: close issues confirmed by `subbootstrap-gpt55high-loop2-handofffix-20260624-115052` artifacts without changing the research direction or reducing search breadth.
+
+Status: closed in code + tests on this branch.
+
+| Debt ID | Closure status | Code / test evidence |
+|---|---|---|
+| TD-V3-LOOP-FINAL-PROJECTION-CANDIDATE-BINDING | Closed in code + tests | `build_final_projection()` now checks `synthesis.best_current_direction.candidate_id` before falling back to an unbound synthesis answer, so adaptive `final-projection.json` can stay bound to the same displayed candidate as `final-answer.md`. |
+| TD-V3-LOOP-LATENT-AUDIT-RESULT-BLOAT | Closed in code + tests | `audit_latent_replay_bundle()` now records `active_evidence_id_count` plus a bounded `active_evidence_ids` sample and source hash/preview instead of duplicating thousands of evidence ids per trace result. |
+
+Validation for this closure:
+
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider tests/test_latent_replay_audit_bundle.py tests/test_nextgen_cbt_pcbg_landing.py` — `33 passed`.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider tests/test_latent_m5_2_runtime_audit.py tests/adaptive/test_evidence_control_plane.py` — `31 passed`.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m compileall -q cognitive_evolve_runtime scripts tests` — passed.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider` — `744 passed, 1 skipped`.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B scripts/cogev.py doctor --scope all` — `50/50 checks passed`.
+- `bash scripts/package_clean.sh` — completed; generated `dist/` and bytecode caches were removed again during public hygiene cleanup.
