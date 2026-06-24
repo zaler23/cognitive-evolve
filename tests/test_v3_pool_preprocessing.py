@@ -131,6 +131,27 @@ def test_preprocess_executor_model_failure_is_advisory_non_blocking() -> None:
     assert context.fabric_state["pool_reports"][0]["model_preprocess"]["diagnostics"] == ["model_preprocess_error"]
 
 
+def test_preprocess_executor_model_authority_payload_is_advisory_non_blocking() -> None:
+    class AuthorityModel:
+        def preprocess_candidate_pool(self, **kwargs):
+            return {"final_selection_policy": {"objective_solved": False}, "schedule_hints": [{"kind": "rebalance"}]}
+
+    context = FabricExecutionContext(
+        population=CandidatePopulation([_candidate("A", claim="same"), _candidate("B", claim="same")]),
+        archives=ArchiveManager(),
+        policy=EvolutionPolicy(),
+        contract=NexusObjectiveContract(original_user_goal="goal", normalized_goal="goal"),
+        world={},
+        budget=EvolutionBudget(max_rounds=1),
+        model=AuthorityModel(),
+    )
+    result = PreprocessExecutor().execute(ExplorationTask(task_id="pre", kind=TaskKind.PREPROCESS), context)
+    assert result.to_dict()["status"] == "done"
+    report = context.fabric_state["pool_reports"][0]["model_preprocess"]
+    assert report["diagnostics"] == ["model_preprocess_authority_payload_rejected"]
+    assert report["schedule_hints"] == []
+
+
 def test_structured_adapter_supports_pool_preprocess_request_type() -> None:
     calls: list[str] = []
 

@@ -65,7 +65,17 @@ def preprocess_candidate_pool(
         }
     if not isinstance(raw, dict):
         return {"advisory": True, "schedule_hints": [], "diagnostics": ["model_preprocess_non_dict"], "prompt_payload": payload}
-    return coerce_pool_preprocess_response(raw, prompt_payload=payload)
+    try:
+        return coerce_pool_preprocess_response(raw, prompt_payload=payload)
+    except ValueError as exc:
+        return {
+            "advisory": True,
+            "schedule_hints": [],
+            "source_gap_requests": [],
+            "diagnostics": ["model_preprocess_authority_payload_rejected"],
+            "error": {"type": exc.__class__.__name__, "message": str(exc)},
+            "prompt_payload": payload,
+        }
 
 
 def coerce_pool_preprocess_response(raw: dict[str, Any], *, prompt_payload: dict[str, Any] | None = None) -> dict[str, Any]:

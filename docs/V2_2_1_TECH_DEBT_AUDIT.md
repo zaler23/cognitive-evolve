@@ -804,3 +804,21 @@ Validation for this closure:
 - `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider` — `746 passed, 1 skipped`.
 - `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B scripts/cogev.py doctor --scope all` — `50/50 checks passed`.
 - `bash scripts/package_clean.sh` — completed; generated `dist/` and bytecode caches were removed again during public hygiene cleanup.
+
+## v3 self-bootstrap LOOP advisory boundary closure ledger — 2026-06-24
+
+Scope: close the LOOP4c run-confirmed bug where a model-authored pool-preprocess advisory payload containing `final_selection_policy.objective_solved` crashed the runtime after seed handoff instead of being rejected at the model advisory boundary and downgraded to non-blocking diagnostics.
+
+Status: closed in code + tests on this branch.
+
+| Debt ID | Closure status | Code / test evidence |
+|---|---|---|
+| TD-V3-LOOP-POOL-PREPROCESS-AUTHORITY-PAYLOAD | Closed in code + tests | `preprocess_candidate_pool()` keeps `coerce_pool_preprocess_response()` strict, but catches model advisory authority-key violations at the model boundary and returns empty advisory hints plus `model_preprocess_authority_payload_rejected`; verification authority remains blocked. |
+
+Validation for this closure:
+
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider tests/test_v3_pool_preprocessing.py tests/test_v3_fabric_abstractions.py` — `22 passed`.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m compileall -q cognitive_evolve_runtime scripts tests` — passed.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider` — `747 passed, 1 skipped`.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B scripts/cogev.py doctor --scope all` — `50/50 checks passed`.
+- `bash scripts/package_clean.sh` — completed; generated `dist/` and bytecode caches were removed again during public hygiene cleanup.
