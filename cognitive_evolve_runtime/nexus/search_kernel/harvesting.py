@@ -7,7 +7,7 @@ from typing import Any, Callable, Iterable
 from cognitive_evolve_runtime.candidates.genome import CandidateGenome
 from cognitive_evolve_runtime.candidates.mutation import MutationPlan
 from cognitive_evolve_runtime.llm.fanout import model_fanout_workers, run_ordered_fanout
-from cognitive_evolve_runtime.nexus._serde import stable_hash
+from cognitive_evolve_runtime.nexus._serde import coerce_dict, stable_hash
 from cognitive_evolve_runtime.nexus.nextgen import ensure_nextgen_identity, record_candidate_budget_decision
 from cognitive_evolve_runtime.nexus.semantic_dedupe import CandidateDeduper
 from .descriptor_cells import descriptor_cell_key
@@ -124,13 +124,29 @@ class CandidateHarvester:
                     result.rejected.append(error_record)
                     continue
                 successful_batches_in_window += 1
+                families_before = _harvest_family_set(result.accepted)
                 accepted_before = len(result.accepted)
                 gain = self._apply_batch(result, batch_index=current_index, batch=batch, context=context)
                 accepted_delta = len(result.accepted) - accepted_before
                 if self.policy.stop_at_target and result.batches >= max(1, self.policy.min_batches) and len(result.accepted) >= self.policy.target_size:
                     result.stopped_reason = "target_reached"
                     break
-                exhausted_batch = accepted_delta <= 0 if self.policy.exhaust_on_no_new else gain <= 0.01
+                if self.policy.exhaust_on_no_new and max_batches is None and self.policy.stage == "seed":
+                    families_after = _harvest_family_set(result.accepted)
+                    exhausted_batch = _unbounded_seed_handoff_exhausted(
+                        accepted_before=accepted_before,
+                        accepted_delta=accepted_delta,
+                        family_count_before=len(families_before),
+                        family_delta=len(families_after - families_before),
+                        accepted_count=len(result.accepted),
+                        family_count=len(families_after),
+                        batches=result.batches,
+                        target_size=self.policy.target_size,
+                        min_batches=self.policy.min_batches,
+                        low_gain_patience=self.policy.low_gain_patience,
+                    )
+                else:
+                    exhausted_batch = accepted_delta <= 0 if self.policy.exhaust_on_no_new else gain <= 0.01
                 if exhausted_batch:
                     low_gain_streak += 1
                 else:
@@ -207,6 +223,63 @@ def _harvest_workers(*, max_batches: int | None, configured: int | None) -> int:
         return model_fanout_workers(max_batches)
     workers = max(1, int(configured or 1))
     return workers if max_batches is None else min(workers, max(1, int(max_batches or 1)))
+
+
+def _unbounded_seed_handoff_exhausted(
+    *,
+    accepted_before: int,
+    accepted_delta: int,
+    family_count_before: int,
+    family_delta: int,
+    accepted_count: int,
+    family_count: int,
+    batches: int,
+    target_size: int,
+    min_batches: int,
+    low_gain_patience: int,
+) -> bool:
+    if accepted_delta <= 0:
+        return True
+    if batches < max(1, int(min_batches or 1)):
+        return False
+    handoff_floor = max(1, int(target_size or 1)) * max(1, int(min_batches or 1)) * max(1, int(low_gain_patience or 1))
+    if accepted_count < handoff_floor:
+        return False
+    if not _seed_pool_broad_enough(accepted_count=accepted_count, family_count=family_count):
+        return False
+    if accepted_before <= 0 or family_count_before <= 0:
+        return False
+    family_growth_rate = family_delta / max(1, family_count_before)
+    candidate_growth_rate = accepted_delta / max(1, accepted_before)
+    return family_growth_rate < candidate_growth_rate
+
+
+def _seed_pool_broad_enough(*, accepted_count: int, family_count: int) -> bool:
+    family_floor = max(3, min(12, int(accepted_count or 0) // 4 or 1))
+    return int(accepted_count or 0) > 0 and int(family_count or 0) >= family_floor
+
+
+def _harvest_family_set(candidates: Iterable[CandidateGenome]) -> set[str]:
+    return {key for key in (_harvest_family_key(candidate) for candidate in candidates or []) if key}
+
+
+def _harvest_family_key(candidate: CandidateGenome) -> str:
+    metadata = coerce_dict(candidate.metadata)
+    nextgen = coerce_dict(metadata.get("nextgen"))
+    search_space = coerce_dict(metadata.get("search_space"))
+    for value in (
+        nextgen.get("canonical_mechanism_family_id"),
+        nextgen.get("mechanism_family_id"),
+        search_space.get("family_id"),
+        search_space.get("plane_id"),
+        candidate.niche_memberships[0] if candidate.niche_memberships else "",
+        candidate.lineage[0] if candidate.lineage else "",
+        candidate.core_mechanism,
+    ):
+        text = str(value or "").strip()
+        if text:
+            return text[:160]
+    return ""
 
 
 def plan_signature(plan: MutationPlan) -> str:

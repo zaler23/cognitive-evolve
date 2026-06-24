@@ -19,6 +19,7 @@ from cognitive_evolve_runtime.nexus.minimal_core import (
 )
 from cognitive_evolve_runtime.nexus.nextgen import _looks_like_engineering_noise, false_cull_monitor, resurrection_quota
 from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy
+from cognitive_evolve_runtime.nexus.diagnosis import PolicyUpdater, SearchDiagnosis
 from cognitive_evolve_runtime.nexus.prompt_view import archive_prompt_view, build_prompt_view
 from cognitive_evolve_runtime.nexus.seed_coverage import SEED_RESERVOIR_SIDECAR_PAYLOAD_KEY, assess_seed_coverage, seed_reservoir_sidecar_payload, target_perturb_seed_judgment
 from cognitive_evolve_runtime.nexus.strategy_comparison import strategy_comparison_context
@@ -203,3 +204,25 @@ def test_live_checkpoint_persists_monitor_search_kernel_and_runtime_options(tmp_
     assert SEED_RESERVOIR_SIDECAR_PAYLOAD_KEY not in str(checkpoint)
     assert Path(checkpoint["search_kernel"]["seed_reservoir_ref"]["path"]).exists()
     assert round_snapshot["monitor_state"]["population_size"] == 1
+
+
+def test_policy_update_preserves_seed_search_kernel_metadata_from_model_policy() -> None:
+    class _PolicyModel:
+        def update_policy(self, *, policy: EvolutionPolicy, diagnosis: SearchDiagnosis) -> dict:
+            return EvolutionPolicy(metadata={"updated_by_model": True}).to_dict()
+
+    policy = EvolutionPolicy(
+        metadata={
+            "seed_coverage": {"status": "broad", "fingerprint": "abc"},
+            "seed_active_frontier": {"selected_ids": ["C1"]},
+            "algorithm_efficiency": {"seed_batches": 12},
+        }
+    )
+    diagnosis = SearchDiagnosis(stagnation_type="healthy")
+
+    updated = PolicyUpdater().update(policy, diagnosis, model=_PolicyModel())
+
+    assert updated.metadata["updated_by_model"] is True
+    assert updated.metadata["seed_coverage"]["fingerprint"] == "abc"
+    assert updated.metadata["seed_active_frontier"]["selected_ids"] == ["C1"]
+    assert updated.metadata["algorithm_efficiency"]["seed_batches"] == 12

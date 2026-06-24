@@ -27,20 +27,30 @@ def bind_candidate_intent(candidate: CandidateGenome, *, contract: Any | None = 
     metadata = candidate.metadata if isinstance(candidate.metadata, dict) else {}
     candidate.metadata = metadata
     existing = coerce_dict(metadata.get(INTENT_BINDING_KEY))
-    search_intent = str(existing.get("search_intent") or _contract_search_intent(contract) or "").strip()
+    contract_intent = _contract_search_intent(contract)
+    existing_intent = str(existing.get("search_intent") or "").strip()
+    search_intent = str(contract_intent or existing_intent or "").strip()
     main_claim = str(existing.get("candidate_main_claim") or _main_claim(candidate) or "").strip()
-    score = _explicit_intent_score(candidate, existing)
+    stale_no_contract_binding = bool(
+        contract_intent
+        and not existing_intent
+        and str(existing.get("alignment_rationale") or "").startswith("no frozen search intent supplied")
+    )
+    stale_different_goal_binding = bool(contract_intent and existing_intent and existing_intent != contract_intent)
+    stale_binding = stale_no_contract_binding or stale_different_goal_binding
+    score = None if stale_binding else _explicit_intent_score(candidate, existing)
     if score is None:
         score = _direct_answer_score(search_intent, main_claim, _text(candidate))
     supporting = existing.get("supporting_claims")
     if not isinstance(supporting, list):
         supporting = _supporting_claims(candidate, main_claim)
+    rationale = "" if stale_binding else str(existing.get("alignment_rationale") or "")
     payload = {
         "search_intent": search_intent,
         "candidate_main_claim": main_claim,
         "direct_answer_score": round(_bounded(score), 4),
         "supporting_claims": [str(item)[:600] for item in supporting if str(item or "").strip()][:6],
-        "alignment_rationale": str(existing.get("alignment_rationale") or _alignment_rationale(search_intent, main_claim, float(score or 0.0)))[:600],
+        "alignment_rationale": str(rationale or _alignment_rationale(search_intent, main_claim, float(score or 0.0)))[:600],
     }
     metadata[INTENT_BINDING_KEY] = payload
     ensure_nextgen_identity(candidate)[INTENT_BINDING_KEY] = dict(payload)
@@ -609,7 +619,7 @@ def _alignment_rationale(search_intent: str, main_claim: str, score: float) -> s
 
 
 def _tokens(text: str) -> list[str]:
-    return [item.lower() for item in re.findall(r"[\\w\\-]{3,}", str(text or ""), flags=re.UNICODE)]
+    return [item.lower() for item in re.findall(r"[\w\-]{3,}", str(text or ""), flags=re.UNICODE)]
 
 
 def _normalize_text(text: str) -> str:

@@ -187,6 +187,26 @@ def test_intent_binding_falls_back_without_contract_or_metadata() -> None:
     assert candidate.metadata["intent_binding"]["direct_answer_score"] == 0.5
 
 
+def test_intent_binding_recomputes_stale_no_contract_fallback_when_goal_arrives() -> None:
+    candidate = CandidateGenome(
+        id="stale",
+        concise_claim="Use branching survival dynamics to compare architecture directions.",
+        core_mechanism="branching survival dynamics architecture search",
+    )
+    stale = nextgen.bind_candidate_intent(candidate)
+    assert stale["alignment_rationale"].startswith("no frozen search intent supplied")
+
+    contract = NexusObjectiveContract(
+        original_user_goal="Explore branching survival dynamics for CognitiveEvolve architecture search.",
+        normalized_goal="Explore branching survival dynamics for CognitiveEvolve architecture search.",
+    )
+    refreshed = nextgen.bind_candidate_intent(candidate, contract=contract)
+
+    assert refreshed["search_intent"] == contract.normalized_goal
+    assert not refreshed["alignment_rationale"].startswith("no frozen search intent supplied")
+    assert refreshed["direct_answer_score"] > 0.5
+
+
 def test_final_scoring_has_no_domain_hardcoded_resurrection_terms() -> None:
     source = "\n".join(
         inspect.getsource(obj)

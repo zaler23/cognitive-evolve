@@ -707,3 +707,26 @@ Validation after minimal-core/full-fusion closure:
 - `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider` — `738 passed, 1 skipped`.
 - `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B scripts/cogev.py doctor --scope all` — `50/50 checks passed`.
 - `bash scripts/package_clean.sh` — completed; generated `dist/` and bytecode caches were removed again during final public hygiene cleanup.
+
+## v3 self-bootstrap LOOP artifact-backed closure ledger — 2026-06-24
+
+Scope: close issues confirmed by the GPT 5.5 high unbounded-seed self-bootstrap run artifacts, without adding hardcoded finite categories or sacrificing search breadth.
+
+Status: closed in code + tests on this branch.
+
+| Debt ID | Closure status | Code / test evidence |
+|---|---|---|
+| TD-V3-LOOP-UNBOUNDED-SEED-HANDOFF | Closed in code + tests | Unbounded seed harvest now hands off after broad coverage and consecutive low marginal family-yield signals derived from target/min-batches/patience, not a static low seed cap; replaying Attempt4 would stop at 524 accepted candidates / 210 families. |
+| TD-V3-LOOP-SEED-HARVEST-METADATA-BLOAT | Closed in code + tests | Full seed harvest summary is stored once in policy metadata; each candidate now carries only a compact per-candidate seed_harvest trace while retaining failed-batch and stop evidence. |
+| TD-V3-LOOP-INTENT-BINDING-STALE-FALLBACK | Closed in code + tests | Intent binding now refreshes stale no-contract or different-goal bindings once the frozen contract intent is available, and the token matcher now computes real free-text overlap. |
+| TD-V3-LOOP-SEED-COVERAGE-PERSISTENCE | Closed in code + tests | PolicyUpdater preserves seed/search-kernel metadata when model-authored policy updates omit those fields, so final checkpoint persistence can still emit coverage/frontier/efficiency refs. |
+| TD-V3-LOOP-CAPABILITY-PRESERVING-EFFICIENCY | Closed in code + tests | The fix reduces duplicated metadata and adds dynamic handoff without deleting accepted seeds; active/dormant/reservoir semantics remain intact for later resurrection. |
+
+
+Validation after artifact-backed LOOP closure:
+
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider tests/test_search_kernel_v3.py tests/test_model_fanout_concurrency.py tests/test_nextgen_cbt_pcbg_landing.py tests/test_self_bootstrap_loop_controls.py tests/test_nexus_audit_regressions.py tests/adaptive/test_evidence_control_plane.py` — `102 passed`.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m compileall -q cognitive_evolve_runtime scripts tests` — passed.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider` — `741 passed, 1 skipped`.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B scripts/cogev.py doctor --scope all` — `50/50 checks passed`.
+- `bash scripts/package_clean.sh` — completed; generated `dist/` and bytecode caches were removed again during final public hygiene cleanup.

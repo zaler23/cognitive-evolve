@@ -190,6 +190,7 @@ def _generate_model_seed_batches(
         frontier = apply_seed_active_frontier(result.accepted, limit=_seed_active_frontier_limit(policy=policy))
         ablation = run_core_ablation(result.accepted, policy=policy)
         factors = resurrect_factor_trace([*result.accepted, *result.reservoir], limit=16)
+        policy.metadata["seed_harvest"] = result.to_dict()
         policy.metadata["seed_coverage"] = coverage
         policy.metadata["seed_active_frontier"] = frontier
         policy.metadata["minimal_core_ablation"] = ablation
@@ -211,8 +212,8 @@ def _generate_model_seed_batches(
             "policy": "parallelism_observed_not_seed_breadth_reduced",
         }
     for candidate in result.accepted:
-        candidate.metadata.setdefault("seed_harvest", result.to_dict())
-        candidate.metadata.setdefault("seed_coverage", coverage)
+        candidate.metadata.setdefault("seed_harvest", _candidate_seed_harvest_trace(result, candidate))
+        candidate.metadata.setdefault("seed_coverage", _candidate_seed_coverage_trace(coverage))
         candidate.metadata.setdefault("minimal_core_ablation_profile", ablation.get("recommendation", "advisory"))
         if result.reservoir:
             candidate.metadata.setdefault(
@@ -225,6 +226,41 @@ def _generate_model_seed_batches(
                 },
             )
     return result.accepted, result.rejected, result.fatal_model_error
+
+
+def _candidate_seed_harvest_trace(result: Any, candidate: CandidateGenome) -> dict[str, Any]:
+    return {
+        "schema": "seed_harvest_candidate_trace.v1",
+        "stage": str(getattr(result, "stage", "") or "seed"),
+        "candidate_id": candidate.id,
+        "batch": int((candidate.metadata or {}).get("model_seed_batch") or (candidate.metadata or {}).get("search_kernel_batch") or 0),
+        "batches": int(getattr(result, "batches", 0) or 0),
+        "accepted_count": len(getattr(result, "accepted", []) or []),
+        "rejected_count": len(getattr(result, "rejected", []) or []),
+        "reservoir_count": len(getattr(result, "reservoir", []) or []),
+        "stopped_reason": str(getattr(result, "stopped_reason", "") or ""),
+        "failed_batch_ids": list(getattr(result, "failed_batch_ids", []) or []),
+        "partial_failure_count": len(getattr(result, "failed_batch_ids", []) or []),
+        "fatal_model_error": f"{result.fatal_model_error.__class__.__name__}: {result.fatal_model_error}" if getattr(result, "fatal_model_error", None) else "",
+        "policy": "per_candidate_compact_trace_full_harvest_in_policy_metadata",
+    }
+
+
+def _candidate_seed_coverage_trace(coverage: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "schema": "seed_coverage_candidate_trace.v1",
+        "status": coverage.get("status") or coverage.get("coverage_status") or "",
+        "coverage_status": coverage.get("coverage_status") or coverage.get("status") or "",
+        "candidate_count": coverage.get("candidate_count"),
+        "family_count": coverage.get("family_count"),
+        "singleton_family_count": coverage.get("singleton_family_count"),
+        "top1_family_share": coverage.get("top1_family_share"),
+        "top3_family_share": coverage.get("top3_family_share"),
+        "fingerprint": coverage.get("fingerprint"),
+        "needs_more_seed": coverage.get("needs_more_seed"),
+        "needs_target_perturb": coverage.get("needs_target_perturb"),
+        "policy": "compact_candidate_trace_full_coverage_in_policy_metadata",
+    }
 
 
 def _seed_active_frontier_limit(*, policy: EvolutionPolicy) -> int:

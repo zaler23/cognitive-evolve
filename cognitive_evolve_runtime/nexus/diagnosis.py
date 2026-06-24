@@ -387,6 +387,7 @@ class PolicyUpdater:
         if updated is None:
             updated = EvolutionPolicy.from_dict(policy.to_dict())
         updated.updated_from_diagnoses.append(diagnosis.stagnation_type)
+        _preserve_search_kernel_metadata(policy, updated)
         actions = set(diagnosis.recommended_actions)
         if diagnosis.over_explored_families or diagnosis.under_explored_families or diagnosis.prematurely_culled_genes:
             metadata = dict(updated.metadata)
@@ -493,6 +494,28 @@ def _honesty_control_policy_pressure(signal: dict[str, Any]) -> dict[str, float]
         "verification_pressure",
     )
     return {key: bounded_score(raw.get(key)) for key in keys if key in raw}
+
+
+def _preserve_search_kernel_metadata(previous: EvolutionPolicy, updated: EvolutionPolicy) -> None:
+    previous_metadata = coerce_dict(getattr(previous, "metadata", None))
+    if not previous_metadata:
+        return
+    metadata = coerce_dict(getattr(updated, "metadata", None))
+    for key in (
+        "seed_harvest",
+        "seed_coverage",
+        "target_perturb_seed_judgment",
+        "factor_resurrection_summary",
+        "minimal_core_ablation",
+        "seed_active_frontier",
+        "algorithm_efficiency",
+        "model_parallel_efficiency",
+        "seed_reservoir_ref",
+        "_seed_reservoir_sidecar_payload",
+    ):
+        if key in previous_metadata and key not in metadata:
+            metadata[key] = previous_metadata[key]
+    updated.metadata = metadata
 
 
 __all__ = ["CONTROL_ACTIONS", "STAGNATION_TYPES", "SearchDiagnosis", "SearchStateDiagnoser", "PolicyUpdater"]

@@ -48,6 +48,29 @@ class _LongTailSeedModel:
         ]
 
 
+class _MarginalFamilySeedModel:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def seed_population(self, *, contract, world, policy):
+        self.calls += 1
+        batch = getattr(policy, "metadata", {}).get("seed_batch_index", self.calls - 1)
+        out = []
+        for offset in range(2):
+            idx = batch * 2 + offset
+            family = f"F{idx}" if batch < 3 else f"F{idx % 6}"
+            out.append(
+                {
+                    "id": f"MG-{idx}",
+                    "artifact": f"marginal family seed {idx}",
+                    "concise_claim": f"marginal family mechanism {idx}",
+                    "core_mechanism": f"marginal family mechanism {idx}",
+                    "metadata": {"search_space": {"family_id": family}},
+                }
+            )
+        return out
+
+
 class _World:
     kind = "text"
 
@@ -200,3 +223,27 @@ def test_seed_batch_limit_can_be_unbounded_until_exhausted(monkeypatch) -> None:
     assert len(accepted) == 10
     assert model.calls == 11
     assert len(accepted) > 8
+
+
+def test_unbounded_seed_handoff_uses_marginal_family_yield_not_low_static_cap(monkeypatch) -> None:
+    monkeypatch.setenv("COGEV_NEXUS_SEED_BATCH_LIMIT", "unbounded")
+    monkeypatch.setenv("COGEV_NEXUS_SEED_MIN_BATCHES", "2")
+    monkeypatch.setenv("COGEV_NEXUS_SEED_LOW_NOVELTY_PATIENCE", "2")
+    monkeypatch.setenv("COGEV_MODEL_FANOUT_CONCURRENCY", "1")
+    model = _MarginalFamilySeedModel()
+    policy = EvolutionPolicy(metadata={"initial_candidate_count": 4})
+
+    accepted, rejected, error = _generate_model_seed_batches(
+        model=model,
+        contract=_Contract(),
+        world=_World(),
+        policy=policy,
+        target_size=4,
+    )
+
+    assert error is None
+    assert len(accepted) > 8
+    assert model.calls < 20
+    assert accepted[0].metadata["seed_harvest"]["stopped_reason"] == "low_gain_patience"
+    assert "accepted_ids" not in accepted[0].metadata["seed_harvest"]
+    assert policy.metadata["seed_harvest"]["accepted_count"] == len(accepted)
