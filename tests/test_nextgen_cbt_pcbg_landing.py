@@ -14,7 +14,9 @@ from cognitive_evolve_runtime.llm.provider_interface import LLMProviderResult
 from cognitive_evolve_runtime.llm.session import LLMSession, llm_session
 from cognitive_evolve_runtime.llm.transport import llm_json
 from cognitive_evolve_runtime.nexus import nextgen
+from cognitive_evolve_runtime.nexus.display_selection import build_display_context
 from cognitive_evolve_runtime.nexus.final_projection import build_final_projection
+from cognitive_evolve_runtime.nexus.loop.controller import _selected_final_candidate
 from cognitive_evolve_runtime.nexus.nextgen import (
     best_current_direction_payload,
     budget_eligible_candidates,
@@ -36,6 +38,14 @@ from cognitive_evolve_runtime.verification.types import GradedOutput, VerifiedRe
 
 def _graded_portfolio() -> GradedOutput:
     return GradedOutput(mode="graded_portfolio", verification_strength=VerificationStrength.NONE)
+
+
+class _FinalTextModel:
+    def __init__(self, final_answer: str) -> None:
+        self.final_answer = final_answer
+
+    def synthesize_result(self, **_: object) -> dict[str, object]:
+        return {"status": "model_synthesized", "final_answer": self.final_answer}
 
 
 def test_final_best_current_direction_survives_failed_source_free_candidate() -> None:
@@ -303,6 +313,66 @@ def test_final_projection_unwraps_best_current_direction_carrier_to_real_directi
     assert projection.candidate_id == "direction"
     assert projection.best_current_direction["candidate_id"] == "direction"
     assert direction.metadata["best_current_direction_carriers"] == ["carrier"]
+
+
+def test_model_final_answer_rebinds_to_matching_candidate_instead_of_archive_best() -> None:
+    archive_best = CandidateGenome(
+        id="archive-best",
+        artifact={"mechanism": "open-family Pareto bandit reservoir"},
+        concise_claim="Open-family Pareto bandit reservoir",
+        current_fate=CandidateFate.ELITE.value,
+        multihead_scores={"answer_likelihood": 0.9, "objective_alignment": 0.8},
+    )
+    comparison = CandidateGenome(
+        id="comparison",
+        artifact={
+            "best_current_direction": "current_project_incumbent_until_stacked_core_covers_effective_attachments",
+            "comparison_summary": {
+                "minimal_core_plus_useful_attachments": "advisory challenger",
+                "current_project_incumbent": "retained until replayable superiority exists",
+            },
+        },
+        concise_claim="Retain the incumbent until stacked-core coverage is replayably verified.",
+        metadata={"intent_binding": {"direct_answer_score": 0.82}},
+    )
+    archives = ArchiveManager()
+    archives.update([archive_best])
+
+    result = synthesize_result(
+        population=CandidatePopulation([archive_best, comparison]),
+        archives=archives,
+        model=_FinalTextModel(
+            "Best current direction: current_project_incumbent_until_stacked_core_covers_effective_attachments. "
+            "The stacked core remains an advisory challenger until replayable superiority exists."
+        ),
+    )
+
+    assert result.best_candidate_id == "comparison"
+    assert result.best_current_direction["candidate_id"] == "comparison"
+    assert "model_final_answer_rebound_to_candidate_artifact" in result.warnings
+    assert "model_final_answer_unbound_to_candidate_artifact" not in result.warnings
+
+
+def test_unbound_model_final_answer_is_not_overwritten_by_display_context() -> None:
+    candidate = CandidateGenome(
+        id="display-fallback",
+        artifact={"mechanism": "old archive fallback"},
+        concise_claim="Old archive fallback",
+        current_fate=CandidateFate.ELITE.value,
+    )
+    synthesis = SynthesizedResult(
+        status="model_synthesized",
+        final_answer="A free-text model answer that intentionally has no candidate binding.",
+        best_candidate_id="",
+        warnings=["model_final_answer_unbound_to_candidate_artifact"],
+        best_current_direction={"candidate_id": "", "route": "best_current"},
+    )
+    synthesis.closure_certificate["display_context"] = build_display_context(
+        candidates=[candidate],
+        ranking={"best_final_answer_id": "display-fallback"},
+    ).to_dict()
+
+    assert _selected_final_candidate(CandidatePopulation([candidate]), synthesis=synthesis, final_certificate={}) is None
 
 
 def test_user_facing_verification_accepts_graded_verified_result() -> None:

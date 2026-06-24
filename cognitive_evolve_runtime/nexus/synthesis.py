@@ -7,6 +7,7 @@ they must not create a second final authority; unverified material is surfaced a
 """
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -147,8 +148,20 @@ class FinalSynthesizer:
             selected.metadata["intent_binding"] = binding
             selected.metadata.setdefault("nextgen", {})["intent_binding"] = dict(binding)
         if selected is not None and _normalize_answer_text(final) != _normalize_answer_text(_candidate_answer_text(selected)):
-            warnings.append("model_final_answer_unbound_to_candidate_artifact")
-            selected_id = ""
+            if requested_candidate_id:
+                warnings.append("model_final_answer_unbound_to_candidate_artifact")
+                selected = None
+                selected_id = ""
+            else:
+                rebound = _candidate_bound_to_final_answer(final, population.candidates, contract=contract)
+                if rebound is not None:
+                    warnings.append("model_final_answer_rebound_to_candidate_artifact")
+                    selected = rebound
+                    selected_id = rebound.id
+                else:
+                    warnings.append("model_final_answer_unbound_to_candidate_artifact")
+                    selected = None
+                    selected_id = ""
         return SynthesizedResult(
             status=str(raw.get("status") or "model_synthesized"),
             final_answer=final,
@@ -159,7 +172,11 @@ class FinalSynthesizer:
             failure_analysis=str(raw.get("failure_analysis") or ""),
             objective_solved=False,
             answer_produced=True,
-            best_current_direction=best_current_direction_payload(selected, route=_answer_route(selected), contract=contract) if selected is not None else {},
+            best_current_direction=(
+                best_current_direction_payload(selected, route=_answer_route(selected), contract=contract)
+                if selected is not None
+                else _unbound_best_current_payload(final)
+            ),
         )
 
 
@@ -205,6 +222,95 @@ def _answer_route(candidate: CandidateGenome) -> str:
 
 def _candidate_answer_text(candidate: CandidateGenome) -> str:
     return str(candidate.artifact or candidate.concise_claim or candidate.core_mechanism or "")
+
+
+def _unbound_best_current_payload(final_answer: str) -> dict[str, Any]:
+    text = str(final_answer or "").strip()
+    return {
+        "candidate_id": "",
+        "route": "best_current",
+        "mechanism_summary": text[:600],
+        "candidate_main_claim": text[:600],
+        "supporting_claims": [],
+        "intent_alignment_rationale": "model final answer was not bound to a displayable candidate artifact",
+        "direct_answer_score": 0.0,
+        "why_best": "unbound model final answer; no candidate artifact may override it",
+        "verification_status": "unverified",
+        "blocked_from_verified_claim_reason": "answer_unbound_to_candidate_artifact",
+    }
+
+
+def _candidate_bound_to_final_answer(final_answer: str, candidates: list[CandidateGenome], *, contract: Any | None = None) -> CandidateGenome | None:
+    """Find a candidate explicitly described by model final text.
+
+    The matcher is intentionally open-text: it looks for candidate-authored
+    claims and artifact strings inside the final answer.  It does not classify
+    mechanism domains, and it does not let archive/display fallbacks silently
+    replace an unbound model answer.
+    """
+
+    final = str(final_answer or "").strip()
+    if not final:
+        return None
+    final_lower = final.lower()
+    id_matches = [candidate for candidate in candidates if _answer_candidate_eligible(candidate) and candidate.id and candidate.id.lower() in final_lower]
+    if id_matches:
+        return max(id_matches, key=lambda candidate: (len(candidate.id), candidate.id))
+    focus_text = "\n".join(_final_answer_binding_focus_texts(final)).lower()
+    exact_matches: list[tuple[int, str, CandidateGenome]] = []
+    for candidate in candidates:
+        if not _answer_candidate_eligible(candidate):
+            continue
+        for text in _candidate_binding_texts(candidate):
+            text_norm = _normalize_answer_text(text)
+            if len(text_norm) >= 12 and text_norm in focus_text:
+                exact_matches.append((len(text_norm), candidate.id, candidate))
+    if exact_matches:
+        return max(exact_matches, key=lambda item: (item[0], item[1]))[2]
+    return None
+
+
+def _final_answer_binding_focus_texts(final_answer: str) -> list[str]:
+    text = str(final_answer or "")
+    matches = list(re.finditer(r"best\\s+current\\s+direction\\s*:\\s*", text, flags=re.IGNORECASE))
+    focused: list[str] = []
+    for match in matches:
+        tail = text[match.end() : match.end() + 900]
+        stop = re.search(r"(?:\\n\\s*\\n|\\n\\s*[-*#]|\\.(?:\\s+[A-Z]|\\s*$))", tail)
+        focused.append(tail[: stop.end() if stop else len(tail)].strip())
+    return focused[:3] or [text[:900]]
+
+
+def _candidate_binding_texts(candidate: CandidateGenome) -> list[str]:
+    values: list[str] = [
+        str(candidate.concise_claim or ""),
+        str(candidate.core_mechanism or ""),
+        _candidate_answer_text(candidate),
+    ]
+    values.extend(_artifact_binding_texts(candidate.artifact))
+    return [value for value in values if value.strip()]
+
+
+def _artifact_binding_texts(value: Any, *, depth: int = 0) -> list[str]:
+    if depth > 4:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, (int, float, bool)) or value is None:
+        return []
+    texts: list[str] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            key_text = str(key or "")
+            if isinstance(item, (str, int, float, bool)):
+                if any(part in key_text.lower() for part in ("direction", "claim", "mechanism", "winner", "rationale", "summary", "verdict")):
+                    texts.append(str(item))
+            else:
+                texts.extend(_artifact_binding_texts(item, depth=depth + 1))
+    elif isinstance(value, list):
+        for item in value[:24]:
+            texts.extend(_artifact_binding_texts(item, depth=depth + 1))
+    return texts
 
 
 def _answer_candidate_score(candidate: CandidateGenome, context: list[CandidateGenome] | None = None, *, contract: Any | None = None) -> float:

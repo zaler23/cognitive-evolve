@@ -478,6 +478,14 @@ def _selected_final_candidate(population: CandidatePopulation, *, synthesis: Syn
     by_id = {candidate.id: candidate for candidate in population.candidates}
     if candidate_id and candidate_id in by_id:
         return by_id[candidate_id]
+    best_current = synthesis.best_current_direction if isinstance(synthesis.best_current_direction, dict) else {}
+    if (
+        not candidate_id
+        and isinstance(getattr(synthesis, "warnings", None), list)
+        and "model_final_answer_unbound_to_candidate_artifact" in synthesis.warnings
+        and not str(best_current.get("candidate_id") or "").strip()
+    ):
+        return None
     display_context = synthesis.closure_certificate.get("display_context") if isinstance(synthesis.closure_certificate, dict) else {}
     if isinstance(display_context, dict) and display_context:
         selection = select_displayed_candidate(display_context, candidates=population.candidates)

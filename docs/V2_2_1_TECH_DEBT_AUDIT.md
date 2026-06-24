@@ -874,3 +874,24 @@ Validation for this closure:
 - `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider` — `755 passed, 1 skipped`.
 - `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B scripts/cogev.py doctor --scope all` — `50/50 checks passed`.
 - `bash scripts/package_clean.sh` — completed; generated `dist/` and bytecode caches were removed again during public hygiene cleanup.
+
+## v3 self-bootstrap LOOP final-binding closure ledger — 2026-06-25
+
+Scope: close the LOOP6b run-confirmed final-answer split where model synthesis text selected one best direction while the runtime-displayed `best_current_direction` was overwritten by an archive/display fallback candidate, creating a double-path final answer.
+
+Status: closed in code + tests on this branch.
+
+| Debt ID | Closure status | Code / test evidence |
+|---|---|---|
+| TD-V3-LOOP-FINAL-MODEL-TEXT-CANDIDATE-BINDING | Closed in code + tests | `FinalSynthesizer._model_synthesis()` now rebinds model-authored final text without a candidate id to the matching candidate by open-text artifact evidence; LOOP6b offline replay selects `C6232b2065f58` instead of stale archive candidate `C8f6847935a08`. |
+| TD-V3-LOOP-FINAL-DISPLAY-CONTEXT-NO-STALE-OVERRIDE | Closed in code + tests | `_selected_final_candidate()` refuses display-context fallback when synthesis recorded an unbound model final answer and no candidate binding exists, so old archive/display candidates cannot create a second best-direction path. |
+
+Validation for this closure:
+
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider tests/test_nextgen_cbt_pcbg_landing.py tests/test_auxiliary_candidate_not_main_winner_by_default.py tests/test_nexus_audit_regressions.py::test_model_synthesis_uses_reference_not_seed_or_final_id_for_unverified_candidate` — `32 passed`.
+- LOOP6b artifact replay: `_candidate_bound_to_final_answer(...)` selected `C6232b2065f58` from the run-local final text instead of stale archive candidate `C8f6847935a08`.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m compileall -q cognitive_evolve_runtime scripts tests` — passed.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider` — `757 passed, 1 skipped`.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B scripts/cogev.py doctor --scope all` — `50/50 checks passed`.
+- `bash scripts/package_clean.sh` — completed; generated `dist/` and bytecode caches were removed again during public hygiene cleanup.
+
