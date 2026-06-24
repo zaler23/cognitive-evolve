@@ -12,7 +12,7 @@ from cognitive_evolve_runtime.nexus._serde import coerce_dict, stable_hash, utc_
 from cognitive_evolve_runtime.nexus.seed_coverage import SEED_RESERVOIR_SIDECAR_PAYLOAD_KEY, persist_seed_reservoir_sidecar
 from cognitive_evolve_runtime.outcomes.latent_ledger import LatentLedger, LatentLedgerStore
 from cognitive_evolve_runtime.persistence.archive_store import ArchiveStore
-from cognitive_evolve_runtime.persistence.checkpoint import CheckpointStore
+from cognitive_evolve_runtime.persistence.checkpoint import CheckpointStore, contract_payload_for_persistence
 from cognitive_evolve_runtime.persistence.event_store import EventStore
 from cognitive_evolve_runtime.persistence.population_store import PopulationStore
 
@@ -86,7 +86,7 @@ class LiveNexusStore:
         allow_round_repair = phase == "error_checkpoint"
         try:
             self._persist_latent_metadata()
-            checkpoint_contract = _contract_payload_for_checkpoint(self.contract)
+            checkpoint_contract = contract_payload_for_persistence(self.contract)
             self.checkpoint_store.save_state(
                 round=round_index,
                 max_rounds=self.max_rounds,
@@ -212,15 +212,6 @@ def _contract_metadata(contract: Any | None) -> dict[str, Any]:
     if hasattr(contract, "to_dict"):
         return coerce_dict(contract.to_dict().get("metadata"))
     return {}
-
-
-def _contract_payload_for_checkpoint(contract: Any | None) -> dict[str, Any]:
-    payload = contract.to_dict() if hasattr(contract, "to_dict") else coerce_dict(contract)
-    metadata = coerce_dict(payload.get("metadata"))
-    if metadata.get("latent_ledger_ref"):
-        metadata.pop(LATENT_LEDGER_METADATA_KEY, None)
-        payload["metadata"] = metadata
-    return payload
 
 
 def _fate_counts(population: CandidatePopulation) -> dict[str, int]:

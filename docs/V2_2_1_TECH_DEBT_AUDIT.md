@@ -764,3 +764,25 @@ Validation for this closure:
 - `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider` — `744 passed, 1 skipped`.
 - `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B scripts/cogev.py doctor --scope all` — `50/50 checks passed`.
 - `bash scripts/package_clean.sh` — completed; generated `dist/` and bytecode caches were removed again during public hygiene cleanup.
+
+## v3 self-bootstrap LOOP post-run persistence closure ledger — 2026-06-24
+
+Scope: close issues confirmed by `subbootstrap-gpt55high-loop3-postresultfix-20260624-134900` artifacts without reducing search breadth or changing the selected research direction.
+
+Status: closed in code + tests on this branch.
+
+| Debt ID | Closure status | Code / test evidence |
+|---|---|---|
+| TD-V3-LOOP-LATENT-LEDGER-CHECKPOINT-REGRESSION | Closed in code + tests | `build_checkpoint_state()` now uses `contract_payload_for_persistence()` to strip hydrated `metadata.latent_ledger` whenever a sidecar ref exists; restore still hydrates from the ref. |
+| TD-V3-LOOP-RUN-RESULT-CONTRACT-PERSISTENCE | Closed in code + tests | `NexusRuntime` now serializes text/project/resume run contracts with `contract_payload_for_persistence()`, so `run-result.json` keeps `latent_ledger_ref` without re-embedding the hydrated ledger. |
+
+
+Validation for this closure:
+
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider tests/test_latent_live_store_persistence.py` — `2 passed`.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider tests/test_latent_live_store_persistence.py tests/test_progress_events_match_checkpoint.py tests/test_runtime_options_and_context.py` — `11 passed`.
+- Actual LOOP3 artifact replay through `contract_payload_for_persistence()` reduces the persisted contract payload from ~20.3 MB to ~1.21 MB while retaining `latent_ledger_ref`.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m compileall -q cognitive_evolve_runtime scripts tests` — passed.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider` — `745 passed, 1 skipped`.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B scripts/cogev.py doctor --scope all` — `50/50 checks passed`.
+- `bash scripts/package_clean.sh` — completed; generated `dist/` and bytecode caches were removed again during public hygiene cleanup.

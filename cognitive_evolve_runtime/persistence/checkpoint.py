@@ -14,6 +14,9 @@ from cognitive_evolve_runtime.llm.session import current_llm_session
 from cognitive_evolve_runtime.core.serialization import coerce_dict, utc_now
 from cognitive_evolve_runtime.persistence.checkpoint_profile import apply_checkpoint_profile_to_history, apply_checkpoint_profile_to_population, checkpoint_profile_from_env
 
+LATENT_LEDGER_METADATA_KEY = "latent_ledger"
+LATENT_LEDGER_REF_KEYS = ("latent_ledger_ref", "latent_ledger_sidecar")
+
 
 @dataclass
 class NexusCheckpoint:
@@ -233,7 +236,7 @@ def build_checkpoint_state(
         policy=policy.to_dict() if hasattr(policy, "to_dict") else coerce_dict(policy),
         diagnosis=diagnosis.to_dict() if hasattr(diagnosis, "to_dict") else coerce_dict(diagnosis),
         progress_event=progress_event or {},
-        contract=contract.to_dict() if hasattr(contract, "to_dict") else coerce_dict(contract),
+        contract=contract_payload_for_persistence(contract),
         world=world.to_dict() if hasattr(world, "to_dict") else coerce_dict(world),
         mode=mode,
         budget_history=budget_history_payload,
@@ -257,6 +260,22 @@ def build_checkpoint_state(
         if event_round is not None and int(event_round) != checkpoint.round:
             raise ValueError("checkpoint round and progress event round differ")
     return checkpoint
+
+
+def contract_payload_for_persistence(contract: Any | None) -> dict[str, Any]:
+    """Return a checkpoint/result-safe contract payload.
+
+    Restore hydrates ``metadata.latent_ledger`` from the sidecar ref when needed,
+    but persistence must not re-embed the hydrated ledger after a resume or final
+    snapshot write.
+    """
+
+    payload = contract.to_dict() if hasattr(contract, "to_dict") else coerce_dict(contract)
+    metadata = coerce_dict(payload.get("metadata"))
+    if any(metadata.get(key) for key in LATENT_LEDGER_REF_KEYS):
+        metadata.pop(LATENT_LEDGER_METADATA_KEY, None)
+        payload["metadata"] = metadata
+    return payload
 
 
 def _checkpoint_cost_ledger(cost_ledger: Any | None) -> dict[str, Any]:
@@ -362,4 +381,4 @@ def _repair_progress_event_round(checkpoint: NexusCheckpoint) -> NexusCheckpoint
     return NexusCheckpoint.from_dict(data)
 
 
-__all__ = ["CheckpointStore", "NexusCheckpoint", "build_checkpoint_state"]
+__all__ = ["CheckpointStore", "NexusCheckpoint", "build_checkpoint_state", "contract_payload_for_persistence"]

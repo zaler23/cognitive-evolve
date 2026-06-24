@@ -35,7 +35,7 @@ from cognitive_evolve_runtime.nexus.fallbacks import capture_fallback_events, re
 from cognitive_evolve_runtime.nexus.runtime_options import option_bool, resolve_runtime_options, restore_runtime_options
 from cognitive_evolve_runtime.nexus.runtime_services import NexusPersistenceService, NexusProjectVerificationService
 from cognitive_evolve_runtime.nexus._shared import MODEL_BOUNDARY_ERRORS, positive_int
-from cognitive_evolve_runtime.persistence.checkpoint import CheckpointStore
+from cognitive_evolve_runtime.persistence.checkpoint import CheckpointStore, contract_payload_for_persistence
 
 
 @dataclass
@@ -170,7 +170,7 @@ class NexusRuntime:
             )
             run = NexusRunResult(
                 mode="text",
-                contract=contract.to_dict() | {"contract_hash": contract.contract_hash()},
+                contract=contract_payload_for_persistence(contract) | {"contract_hash": contract.contract_hash()},
                 policy=result.policy.to_dict(),
                 world=world_payload,
                 evolution=result.to_dict(),
@@ -276,7 +276,7 @@ class NexusRuntime:
             )
             run = NexusRunResult(
                 mode="project",
-                contract=contract.to_dict() | {"contract_hash": contract.contract_hash()},
+                contract=contract_payload_for_persistence(contract) | {"contract_hash": contract.contract_hash()},
                 policy=result.policy.to_dict(),
                 world=project_world_payload,
                 evolution=result.to_dict(),
@@ -364,7 +364,7 @@ class NexusRuntime:
             world_payload = _world_to_dict_with_latent_metadata(world, contract)
             run = NexusRunResult(
                 mode=mode,
-                contract=contract.to_dict() | {"contract_hash": contract.contract_hash()},
+                contract=contract_payload_for_persistence(contract) | {"contract_hash": contract.contract_hash()},
                 policy=result.policy.to_dict(),
                 world=world_payload,
                 evolution=result.to_dict(),
