@@ -352,6 +352,8 @@ def _compress_payload(request_type: str, payload: dict[str, Any]) -> dict[str, A
         compressed["round_index"] = payload.get("round_index")
     if "actions" in payload:
         compressed["actions"] = _clip_list(payload.get("actions") or [], 20, 160)
+    if "source_context" in payload:
+        compressed["source_context"] = _source_context_view(payload.get("source_context"))
     if "mutation_instruction" in payload:
         compressed["mutation_instruction"] = _clip(payload.get("mutation_instruction"), 1000)
     if "plans" in payload:
@@ -383,13 +385,44 @@ def _compress_payload(request_type: str, payload: dict[str, Any]) -> dict[str, A
         compressed["diagnosis"] = _small_mapping(_to_mapping(diagnosis), max_items=14, string_chars=400)
     # Keep unknown scalar/small fields, but never carry huge nested blobs by default.
     for key, value in payload.items():
-        if key in {"user_goal", "contract", "world", "snapshot", "policy", "candidates", "population", "parents", "archives", "history", "diagnosis", "plans", "actions", "mutation_instruction", "round_index"}:
+        if key in {"user_goal", "contract", "world", "snapshot", "policy", "candidates", "population", "parents", "archives", "history", "diagnosis", "plans", "actions", "source_context", "mutation_instruction", "round_index"}:
             continue
         if _json_chars(value) <= 4000:
             compressed[key] = value
         else:
             compressed[key] = _summarize_value(value)
     return compressed
+
+
+def _source_context_view(value: Any) -> dict[str, Any]:
+    data = _to_mapping(value)
+    out: dict[str, Any] = {}
+    selected = data.get("selected_files")
+    if isinstance(selected, list):
+        out["selected_files"] = [str(item) for item in selected[:12] if str(item or "").strip()]
+    elif selected:
+        out["selected_files"] = _clip_list([selected], 1, 260)
+    budget = data.get("budget_policy")
+    if isinstance(budget, dict):
+        out["budget_policy"] = _small_mapping(budget, max_items=8, string_chars=260)
+    elif budget is not None:
+        out["budget_policy"] = _clip(budget, 260)
+    slices: list[dict[str, Any]] = []
+    raw_slices = data.get("slices") if isinstance(data.get("slices"), list) else []
+    for item in raw_slices[:8]:
+        if not isinstance(item, dict):
+            continue
+        view: dict[str, Any] = {}
+        for key in ("path", "hash", "start", "end"):
+            if key in item and item.get(key) is not None:
+                view[key] = item.get(key)
+        if "text" in item:
+            view["text"] = _stringify(item.get("text"))
+        if view:
+            slices.append(view)
+    if slices:
+        out["slices"] = slices
+    return out
 
 
 def _artifact_generation_contract(contract: Any, *, request_type: str) -> dict[str, Any]:
@@ -1112,7 +1145,13 @@ def _positive_int(value: Any) -> int | None:
 
 
 def _is_long_context_request(request_type: str) -> bool:
-    return request_type in {"nexus_synthesize_result", "nexus_diagnose_search_state", "nexus_generate_offspring"}
+    return request_type in {
+        "nexus_seed_population",
+        "nexus_plan_mutations",
+        "nexus_generate_offspring",
+        "nexus_synthesize_result",
+        "nexus_diagnose_search_state",
+    }
 
 
 __all__ = [

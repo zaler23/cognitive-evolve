@@ -6,6 +6,8 @@ boundary helpers without becoming a new runtime layer.
 from __future__ import annotations
 
 import math
+import inspect
+from collections.abc import Callable
 from typing import Any, TypeAlias
 
 from cognitive_evolve_runtime.llm.env import LLMConfigurationError, LLMResponseError
@@ -65,10 +67,27 @@ def classify_with_fallback(prompt: str, *, model: object | None = None) -> objec
     return classify(prompt)
 
 
+def call_with_optional_context(method: Callable[..., Any], /, *, provided_context: dict[str, Any] | None = None, **kwargs: Any) -> Any:
+    """Call a model method with ``provided_context`` only when it accepts it."""
+
+    if provided_context is not None and _accepts_kwarg(method, "provided_context"):
+        kwargs["provided_context"] = provided_context
+    return method(**kwargs)
+
+
+def _accepts_kwarg(method: Callable[..., Any], name: str) -> bool:
+    try:
+        signature = inspect.signature(method)
+    except (TypeError, ValueError):
+        return False
+    return name in signature.parameters or any(param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values())
+
+
 __all__ = [
     "MODEL_BOUNDARY_ERRORS",
     "bounded_score",
     "bounded_score_or_none",
+    "call_with_optional_context",
     "classify_with_fallback",
     "positive_int",
     "positive_int_or_default",

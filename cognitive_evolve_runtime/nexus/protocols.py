@@ -26,7 +26,7 @@ class NexusPolicyModelProtocol(Protocol):
 
 @runtime_checkable
 class NexusSeedModelProtocol(Protocol):
-    def seed_population(self, *, contract: Any, world: Any, policy: Any) -> list[dict[str, Any]]: ...
+    def seed_population(self, *, contract: Any, world: Any, policy: Any, provided_context: dict[str, Any] | None = None) -> list[dict[str, Any]]: ...
 
 
 @runtime_checkable
@@ -58,12 +58,12 @@ class NexusContextModelProtocol(Protocol):
 
 @runtime_checkable
 class NexusMutationPlannerModelProtocol(Protocol):
-    def plan_mutations(self, *, parents: list[Any], actions: list[str], archives: Any, diagnosis: Any, policy: Any) -> list[dict[str, Any]]: ...
+    def plan_mutations(self, *, parents: list[Any], actions: list[str], archives: Any, diagnosis: Any, policy: Any, provided_context: dict[str, Any] | None = None) -> list[dict[str, Any]]: ...
 
 
 @runtime_checkable
 class NexusOffspringModelProtocol(Protocol):
-    def generate_offspring(self, *, plans: list[Any], parents: list[Any], world: Any, contract: Any, policy: Any) -> list[dict[str, Any]]: ...
+    def generate_offspring(self, *, plans: list[Any], parents: list[Any], world: Any, contract: Any, policy: Any, provided_context: dict[str, Any] | None = None) -> list[dict[str, Any]]: ...
 
 
 @runtime_checkable

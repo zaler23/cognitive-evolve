@@ -6,6 +6,7 @@ from enum import StrEnum
 from typing import Any
 
 from cognitive_evolve_runtime.llm.fanout import run_ordered_fanout
+from cognitive_evolve_runtime.nexus._shared import call_with_optional_context
 from cognitive_evolve_runtime.nexus.protocols import NexusModelLike, NexusSeedModelProtocol
 
 
@@ -79,9 +80,9 @@ class SeedModelEnsembleAdapter:
     def metadata(self) -> dict[str, Any]:
         return {"adapter_type": "SeedModelEnsembleAdapter", "ensemble_size": len(self.models)}
 
-    def seed_population(self, *, contract: Any, world: Any, policy: Any) -> list[Any]:
+    def seed_population(self, *, contract: Any, world: Any, policy: Any, provided_context: dict[str, Any] | None = None) -> list[Any]:
         def _call(model: NexusSeedModelProtocol) -> list[Any]:
-            return list(model.seed_population(contract=contract, world=world, policy=policy) or [])
+            return list(call_with_optional_context(model.seed_population, contract=contract, world=world, policy=policy, provided_context=provided_context) or [])
 
         batches = run_ordered_fanout(self.models, _call, max_workers=len(self.models))
         out: list[Any] = []

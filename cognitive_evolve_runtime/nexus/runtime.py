@@ -225,8 +225,24 @@ class NexusRuntime:
             )
             _resolve_budget_width_from_policy(budget, policy)
             min_population_size = min_population_size if min_population_size is not None else budget.initial_candidate_count
-            population = seed_population(contract=contract, world=world, policy=policy, model=self.model_routes.model_for(NexusModelRole.SEED), min_population_size=min_population_size)
             archives = ArchiveManager(policy.archive_schema)
+            initial_context_result = self.context_orchestrator.build_for_parents(
+                contract=contract,
+                snapshot=snapshot,
+                world=world,
+                parents=[],
+                archives=archives,
+                model=None,
+                mutation_instruction="initial_project_seed",
+            )
+            population = seed_population(
+                contract=contract,
+                world=world,
+                policy=policy,
+                model=self.model_routes.model_for(NexusModelRole.SEED),
+                min_population_size=min_population_size,
+                provided_context=initial_context_result.to_source_context(),
+            )
             verification_plan = VerificationSynthesizer(model=self.model).synthesize({"goal": user_goal, "contract": contract.to_dict(), "mode": "project"})
             context_result = self.context_orchestrator.build_for_parents(
                 contract=contract,
@@ -272,7 +288,11 @@ class NexusRuntime:
                 offspring_verifier=verify_offspring,
                 adaptive_config=adaptive_config,
                 verification_plan=verification_plan,
-                provided_context={"ContextProtocolResult": context_result, "context_protocol": context_result.to_dict()},
+                provided_context={
+                    "ContextProtocolResult": context_result,
+                    "context_protocol": context_result.to_dict(),
+                    "source_context": context_result.to_source_context(),
+                },
             )
             run = NexusRunResult(
                 mode="project",
@@ -326,6 +346,26 @@ class NexusRuntime:
                         return summaries
 
                     offspring_verifier = verify_offspring
+                    context_world = ProjectWorldModel.from_dict(dict(world.get("project_world_model") or world)) if isinstance(world, dict) else world
+                    context_result = self.context_orchestrator.build_for_parents(
+                        contract=contract,
+                        snapshot=snapshot,
+                        world=context_world,
+                        parents=population.candidates[:3],
+                        archives=archives,
+                        model=None,
+                        mutation_instruction="resume_project_context",
+                    )
+                    provided_context = {
+                        **dict(restored.get("provided_context") or {}),
+                        "ContextProtocolResult": context_result,
+                        "context_protocol": context_result.to_dict(),
+                        "source_context": context_result.to_source_context(),
+                    }
+                else:
+                    provided_context = dict(restored.get("provided_context") or {})
+            else:
+                provided_context = dict(restored.get("provided_context") or {})
             budget_data = dict(getattr(checkpoint, "budget", {}) or {})
             adaptive_resume = bool(budget_data.get("adaptive"))
             if max_rounds is not None:
@@ -359,7 +399,7 @@ class NexusRuntime:
                 adaptive_state=restored.get("adaptive_state") or {},
                 verification_plan=verification_plan,
                 fabric_state=restored.get("fabric") or {},
-                provided_context=dict(restored.get("provided_context") or {}),
+                provided_context=provided_context,
             )
             world_payload = _world_to_dict_with_latent_metadata(world, contract)
             run = NexusRunResult(

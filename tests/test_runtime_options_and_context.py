@@ -11,6 +11,7 @@ from cognitive_evolve_runtime.nexus.context_protocol import ContextProtocolResul
 from cognitive_evolve_runtime.nexus.diagnosis import SearchDiagnosis
 from cognitive_evolve_runtime.nexus.fallbacks import capture_fallback_events
 from cognitive_evolve_runtime.nexus.loop.budget import EvolutionBudget
+from cognitive_evolve_runtime.nexus.model_routes import NexusModelRoutes
 from cognitive_evolve_runtime.nexus.loop.seeding import _policy_for_seed_batch
 from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy
 from cognitive_evolve_runtime.nexus.runtime import NexusRuntime, _build_text_world_model
@@ -48,6 +49,15 @@ def test_run_project_passes_effective_options_and_context(monkeypatch: pytest.Mo
     (repo / "mod.py").write_text("x = 1\n", encoding="utf-8")
     captured: dict[str, object] = {}
 
+    class SeedModel:
+        provided_context: dict[str, object] | None = None
+
+        def seed_population(self, *, contract, world, policy, provided_context=None):
+            self.provided_context = provided_context
+            return []
+
+    seed_model = SeedModel()
+
     def fake_evolve_once(**kwargs):
         captured.update(kwargs)
         return _Result(population=kwargs["population"], archives=kwargs["archives"], policy=kwargs["policy"], budget=kwargs["budget"])
@@ -63,7 +73,7 @@ def test_run_project_passes_effective_options_and_context(monkeypatch: pytest.Mo
         return []
 
     monkeypatch.setattr(NexusRuntime, "_verify_project_population", fake_verify)
-    run = NexusRuntime(output_dir=tmp_path / "out").run_project(
+    run = NexusRuntime(model_routes=NexusModelRoutes(seed_model=seed_model), output_dir=tmp_path / "out").run_project(
         repo,
         user_goal="improve",
         include_tests=True,
@@ -78,6 +88,9 @@ def test_run_project_passes_effective_options_and_context(monkeypatch: pytest.Mo
     assert isinstance(provided, dict)
     assert isinstance(provided["ContextProtocolResult"], ContextProtocolResult)
     assert provided["context_protocol"]["packets"]
+    assert provided["source_context"]["slices"][0]["text"].startswith("x = 1")
+    assert seed_model.provided_context is not None
+    assert seed_model.provided_context["slices"][0]["text"].startswith("x = 1")
 
 
 def test_checkpoint_roundtrips_runtime_options(tmp_path: Path) -> None:

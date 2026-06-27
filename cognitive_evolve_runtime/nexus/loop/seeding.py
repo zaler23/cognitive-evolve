@@ -56,7 +56,7 @@ from cognitive_evolve_runtime.nexus.reproduction import (
 )
 from cognitive_evolve_runtime.tools.verification_stack import NexusVerifierStack
 from cognitive_evolve_runtime.theory import TheoryConfig, TheoryLayer, build_population_representation
-from cognitive_evolve_runtime.nexus._shared import MODEL_BOUNDARY_ERRORS, positive_int as _positive_int
+from cognitive_evolve_runtime.nexus._shared import MODEL_BOUNDARY_ERRORS, call_with_optional_context, positive_int as _positive_int
 from cognitive_evolve_runtime.llm.retry import provider_error_category
 from cognitive_evolve_runtime.ranking.multihead_elo import MultiHeadElo
 from cognitive_evolve_runtime.ranking.parent_selection import ParentSelector
@@ -88,6 +88,7 @@ def seed_population(
     policy: EvolutionPolicy,
     model: NexusModelLike | None = None,
     min_population_size: int | None = None,
+    provided_context: dict[str, Any] | None = None,
 ) -> CandidatePopulation:
     model_error: Exception | None = None
     model_candidates: list[CandidateGenome] = []
@@ -100,6 +101,7 @@ def seed_population(
             world=world,
             policy=policy,
             target_size=target_size,
+            provided_context=provided_context,
         )
     candidates: list[CandidateGenome] = list(model_candidates)
     population = amplify_population(
@@ -144,6 +146,7 @@ def _generate_model_seed_batches(
     world: Any,
     policy: EvolutionPolicy,
     target_size: int,
+    provided_context: dict[str, Any] | None = None,
 ) -> tuple[list[CandidateGenome], list[dict[str, Any]], Exception | None]:
     deduper = CandidateDeduper()
     harvester = CandidateHarvester(
@@ -163,7 +166,13 @@ def _generate_model_seed_batches(
     )
 
     def _request(batch_index: int, accepted: list[CandidateGenome], rejected: list[dict[str, Any]]) -> list[CandidateGenome]:
-        raw = model.seed_population(contract=contract, world=world, policy=_policy_for_seed_batch(policy, batch_index=batch_index, accepted=accepted, rejected=rejected))
+        raw = call_with_optional_context(
+            model.seed_population,
+            contract=contract,
+            world=world,
+            policy=_policy_for_seed_batch(policy, batch_index=batch_index, accepted=accepted, rejected=rejected),
+            provided_context=provided_context,
+        )
         batch = _coerce_seed_batch(raw)
         priority = _seed_family_priority(policy, accepted)
         origin = _seed_origin_metadata(model)

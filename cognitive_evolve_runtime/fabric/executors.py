@@ -11,6 +11,7 @@ from cognitive_evolve_runtime.nexus.adaptive.controller import AdaptiveRuntimeCo
 from cognitive_evolve_runtime.nexus.diagnosis import SearchDiagnosis
 from cognitive_evolve_runtime.nexus.loop.budget import EvolutionBudget
 from cognitive_evolve_runtime.nexus.loop.round import EvolutionRound, RoundEvaluation
+from cognitive_evolve_runtime.nexus._shared import call_with_optional_context
 from cognitive_evolve_runtime.nexus.model_routes import NexusModelRoutes
 from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy
 from cognitive_evolve_runtime.nexus.protocols import NexusModelLike
@@ -206,7 +207,8 @@ class ReproduceExecutor:
                 status=TaskStatus.SKIPPED,
                 advisory_updates={"round": current_round, "skipped": True, "reason": "round_gate_stopped" if not context.should_reproduce else "missing_evaluation"},
             )
-        reproduction_stop, offspring_verification, reproduction_compaction = context.pipeline().reproduce(
+        reproduction_stop, offspring_verification, reproduction_compaction = call_with_optional_context(
+            context.pipeline().reproduce,
             current_round=current_round,
             population=context.population,
             archives=context.archives,
@@ -218,6 +220,7 @@ class ReproduceExecutor:
             critiques=evaluation.critiques,
             offspring_verifier=context.offspring_verifier,
             repair_parent_candidates=evaluation.repair_parent_candidates,
+            provided_context=context.provided_context,
         )
         if reproduction_stop:
             context.budget.stop_reason = reproduction_stop

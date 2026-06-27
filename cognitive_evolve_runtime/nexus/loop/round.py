@@ -468,6 +468,7 @@ class EvolutionRound:
         critiques: list[CandidateCritique],
         offspring_verifier: Callable[[list[CandidateGenome]], list[Any]] | None,
         repair_parent_candidates: list[CandidateGenome] | None = None,
+        provided_context: dict[str, Any] | None = None,
     ) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
         plan = GenerationPlan.from_dict(self.last_generation_plan) if self.last_generation_plan else None
         completed_stage_ops = list(self.last_completed_stage_ops or self.last_generation_plan.get("completed_stage_ops") or [])
@@ -502,7 +503,7 @@ class EvolutionRound:
         if plan is not None:
             assert_stage_ready(plan, "plan_mutations", completed_stage_ops)
         self._sync_model_context_controls()
-        plans = _plan_mutations(model=self.model, mutation_planner=self.mutation_planner, parents=parents, actions=actions, archives=archives, diagnosis=diagnosis, policy=policy)
+        plans = _plan_mutations(model=self.model, mutation_planner=self.mutation_planner, parents=parents, actions=actions, archives=archives, diagnosis=diagnosis, policy=policy, provided_context=provided_context)
         plans, latent_exploration_plan = apply_latent_exploration_to_mutation_plans(plans, contract, exploration=latent_exploration_plan)
         plans = self._apply_search_pressure_to_plans(plans, parents=parents)
         plans = self._apply_candidate_transforms_to_plans(plans, parents=parents)
@@ -528,6 +529,7 @@ class EvolutionRound:
             world=world,
             rankings=rankings,
             diagnosis=diagnosis,
+            provided_context=provided_context,
         )
         offspring = dedupe_offspring_against_population(offspring, population)
         activation_map = _cell_activation_map(parents=parents, plans=plans, offspring=offspring)
@@ -885,6 +887,7 @@ class EvolutionRound:
         world: Any,
         rankings: RelativeRankingResult,
         diagnosis: SearchDiagnosis,
+        provided_context: dict[str, Any] | None = None,
     ) -> list[CandidateGenome]:
         sync_repair_parent_attempts_to_dormant_archive(archives, parents)
         v23_config = V23TheoryRuntimeConfig.from_runtime_context(policy=policy, contract=contract, branch_factor=self.budget.branch_factor, population_size=len(population.candidates))
@@ -898,6 +901,7 @@ class EvolutionRound:
             policy=policy,
             candidate_pool=population.candidates,
             ca_config=v23_config.ca_crossover,
+            provided_context=provided_context,
         )
         for child in offspring:
             metadata = child.metadata if isinstance(child.metadata, dict) else {}

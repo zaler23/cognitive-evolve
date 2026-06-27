@@ -50,7 +50,7 @@ from cognitive_evolve_runtime.nexus.reproduction import (
 )
 from cognitive_evolve_runtime.tools.verification_stack import NexusVerifierStack
 from cognitive_evolve_runtime.theory import TheoryConfig, TheoryLayer, build_population_representation
-from cognitive_evolve_runtime.nexus._shared import MODEL_BOUNDARY_ERRORS, positive_int
+from cognitive_evolve_runtime.nexus._shared import MODEL_BOUNDARY_ERRORS, call_with_optional_context, positive_int
 from cognitive_evolve_runtime.nexus.v23_theory_config import CACrossoverConfig
 from cognitive_evolve_runtime.nexus.semantic_dedupe import CandidateDeduper
 from cognitive_evolve_runtime.nexus.search_kernel.harvesting import CandidateHarvester, HarvestPolicy, dedupe_plans, plan_signature
@@ -63,7 +63,7 @@ from cognitive_evolve_runtime.ranking.relative_rater import RelativeRankingResul
 from .policy_directives import _attach_policy_directives_to_plans
 from .repair_guidance import _failure_micro_guidance_for_parent, _repair_operator_for_requirement, _repair_requirement_for_parent, _repair_seed_for_parent, _source_integration_points_for_parent
 
-def _plan_mutations(*, model: NexusModelLike | None, mutation_planner: MutationPlanner, parents: list[CandidateGenome], actions: list[str], archives: ArchiveManager, diagnosis: SearchDiagnosis, policy: EvolutionPolicy) -> list[MutationPlan]:
+def _plan_mutations(*, model: NexusModelLike | None, mutation_planner: MutationPlanner, parents: list[CandidateGenome], actions: list[str], archives: ArchiveManager, diagnosis: SearchDiagnosis, policy: EvolutionPolicy, provided_context: dict[str, Any] | None = None) -> list[MutationPlan]:
     fallback = mutation_planner.plan_from_actions(parents, actions, rarity_seeds=archives.rarity_archive.rare_seeds(limit=max(2, len(parents))))
     fallback = _attach_policy_directives_to_plans(fallback, policy, parents=parents)
     target = max(1, len(parents))
@@ -74,12 +74,14 @@ def _plan_mutations(*, model: NexusModelLike | None, mutation_planner: MutationP
         low_gain_streak = 0
         for batch_index in range(_mutation_plan_batch_limit(target)):
             try:
-                raw = model.plan_mutations(
+                raw = call_with_optional_context(
+                    model.plan_mutations,
                     parents=parents,
                     actions=actions,
                     archives=archives,
                     diagnosis=diagnosis,
                     policy=_policy_for_generation_batch(policy, batch_index=batch_index, accepted_signatures=list(seen), rejected=rejected, kind="mutation_plan"),
+                    provided_context=provided_context,
                 )
             except MODEL_BOUNDARY_ERRORS as exc:
                 if is_quota_error(exc):
@@ -146,6 +148,7 @@ def _generate_offspring(
     policy: EvolutionPolicy,
     candidate_pool: list[CandidateGenome] | None = None,
     ca_config: CACrossoverConfig | None = None,
+    provided_context: dict[str, Any] | None = None,
 ) -> list[CandidateGenome]:
     fallback = _deterministic_fallback_offspring(
         mutation_engine=mutation_engine,
@@ -169,12 +172,14 @@ def _generate_offspring(
         )
 
         def _request(batch_index: int, accepted: list[CandidateGenome], rejected: list[dict[str, Any]]) -> list[CandidateGenome]:
-            raw = model.generate_offspring(
+            raw = call_with_optional_context(
+                model.generate_offspring,
                 plans=plans,
                 parents=parents,
                 world=world,
                 contract=contract,
                 policy=_policy_for_generation_batch(policy, batch_index=batch_index, accepted_signatures=[c.metadata.get("dedupe_signature", "") for c in accepted], rejected=rejected, kind="offspring"),
+                provided_context=provided_context,
             )
             model_offspring = [item if isinstance(item, CandidateGenome) else candidate_from_dict(item) for item in raw if isinstance(item, (CandidateGenome, dict))]
             if model_offspring:

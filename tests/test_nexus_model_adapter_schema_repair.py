@@ -182,6 +182,34 @@ def test_seed_population_missing_candidates_triggers_exactly_one_schema_repair_r
     assert [event["repair"] for event in repairs].count("schema_repair_retry") == 1
 
 
+def test_generation_facets_forward_source_context() -> None:
+    captured: dict[str, dict[str, Any]] = {}
+    source_context = {
+        "selected_files": ["pkg/mod.py"],
+        "budget_policy": "unit",
+        "slices": [{"path": "pkg/mod.py", "hash": "h", "text": "def target():\n    return 1\n"}],
+    }
+
+    def caller(request_type: str, payload: dict[str, Any], schema: dict[str, Any]) -> dict[str, Any]:
+        captured[request_type] = payload
+        if request_type == "nexus_seed_population":
+            return {"candidates": []}
+        if request_type == "nexus_plan_mutations":
+            return {"plans": []}
+        if request_type == "nexus_generate_offspring":
+            return {"offspring": []}
+        raise AssertionError(request_type)
+
+    adapter = StructuredModelAdapter(caller=caller)
+
+    adapter.seed_population(contract={}, world={}, policy={}, provided_context=source_context)
+    adapter.plan_mutations(parents=[], actions=[], archives={}, diagnosis=SearchDiagnosis(), policy={}, provided_context=source_context)
+    adapter.generate_offspring(plans=[], parents=[], world={}, contract={}, policy={}, provided_context=source_context)
+
+    for request_type in ("nexus_seed_population", "nexus_plan_mutations", "nexus_generate_offspring"):
+        assert captured[request_type]["source_context"]["slices"][0]["text"] == source_context["slices"][0]["text"]
+
+
 def test_diagnosis_adapter_repairs_enum_without_cutting_internal_custom_signals() -> None:
     def caller(request_type: str, payload: dict[str, Any], schema: dict[str, Any]) -> dict[str, Any]:
         assert request_type == "nexus_diagnose_search_state"

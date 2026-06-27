@@ -27,32 +27,38 @@ from cognitive_evolve_runtime.nexus.model_adapter_schemas import (
 
 
 class MutationFacet:
-    def plan_mutations(self, *, parents: list[CandidateGenome], actions: list[str], archives: Any, diagnosis: SearchDiagnosis, policy: EvolutionPolicy) -> list[dict[str, Any]]:
+    def plan_mutations(self, *, parents: list[CandidateGenome], actions: list[str], archives: Any, diagnosis: SearchDiagnosis, policy: EvolutionPolicy, provided_context: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         schema = _mutation_plan_schema()
+        payload: dict[str, Any] = {
+            "parents": parents,
+            "actions": list(actions),
+            "archives": archives,
+            "diagnosis": diagnosis,
+            "policy": policy,
+        }
+        if provided_context:
+            payload["source_context"] = provided_context
         data = self._call(
             "nexus_plan_mutations",
-            {
-                "parents": parents,
-                "actions": list(actions),
-                "archives": archives,
-                "diagnosis": diagnosis,
-                "policy": policy,
-            },
+            payload,
             schema,
         )
         return [dict(item) for item in data.get("plans", []) if isinstance(item, dict)]
     
-    def generate_offspring(self, *, plans: list[MutationPlan], parents: list[CandidateGenome], world: Any, contract: Any, policy: EvolutionPolicy) -> list[dict[str, Any]]:
+    def generate_offspring(self, *, plans: list[MutationPlan], parents: list[CandidateGenome], world: Any, contract: Any, policy: EvolutionPolicy, provided_context: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         schema = _offspring_population_schema()
+        payload: dict[str, Any] = {
+            "plans": plans,
+            "parents": parents,
+            "world": world,
+            "contract": contract,
+            "policy": policy,
+        }
+        if provided_context:
+            payload["source_context"] = provided_context
         data = self._call(
             "nexus_generate_offspring",
-            {
-                "plans": plans,
-                "parents": parents,
-                "world": world,
-                "contract": contract,
-                "policy": policy,
-            },
+            payload,
             schema,
         )
         return [dict(item) for item in data.get("offspring", []) if isinstance(item, dict)]
