@@ -118,9 +118,13 @@ class ProjectCandidateGenome(CandidateGenome):
         base_data = base.to_dict()
         verification_result = coerce_dict(data.get("verification_result")) or coerce_dict(base_data.pop("verification_result", {}))
         base_data.pop("verification_result", None)
+        artifact = coerce_dict(data.get("artifact"))
+        patch_set = data.get("patch_set")
+        if not patch_set and isinstance(artifact.get("patch_set"), list):
+            patch_set = artifact.get("patch_set")
         return cls(
             **base_data,
-            patch_set=[PatchOperation.from_dict(item) for item in data.get("patch_set", []) if isinstance(item, dict)],
+            patch_set=[PatchOperation.from_dict(item) for item in patch_set or [] if isinstance(item, dict)],
             touched_files=coerce_str_list(data.get("touched_files")),
             touched_symbols=coerce_str_list(data.get("touched_symbols")),
             expected_effects=coerce_str_list(data.get("expected_effects") or data.get("expected_effect")),

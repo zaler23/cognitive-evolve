@@ -340,7 +340,9 @@ def candidate_from_dict(data: dict[str, Any]) -> CandidateGenome:
     while ensuring project patch candidates reload with their full patch genome.
     """
 
-    if isinstance(data, dict) and (data.get("artifact_type") in {"project_patch", "patch"} or data.get("patch_set")):
+    artifact = data.get("artifact") if isinstance(data, dict) else None
+    artifact_patch_set = isinstance(artifact, dict) and isinstance(artifact.get("patch_set"), list)
+    if isinstance(data, dict) and (data.get("artifact_type") in {"project_patch", "patch"} or data.get("patch_set") or artifact_patch_set):
         from cognitive_evolve_runtime.candidates.project_candidate import ProjectCandidateGenome
 
         return ProjectCandidateGenome.from_dict(data)
