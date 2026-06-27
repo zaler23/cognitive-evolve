@@ -7,8 +7,7 @@ from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateG
 from cognitive_evolve_runtime.nexus._serde import coerce_dict
 
 from .constants import (
-    EARLY_STAGE, FINAL_STAGE, HARD_EVIDENCE_FAILURES, HARD_PROOF_FAILURES,
-    HARD_REJECT_DIAGNOSTICS, PREFINAL_REPAIR_DIAGNOSTICS, TERMINAL_FATES,
+    EARLY_STAGE, FINAL_STAGE, HARD_REJECT_DIAGNOSTICS, PREFINAL_REPAIR_DIAGNOSTICS, TERMINAL_FATES,
 )
 from .stages import _final_token_present, _has_evidence_progress
 from .types import EligibilityDecision, RepairRequirement

@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import os
 import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable
 
@@ -55,7 +54,6 @@ from cognitive_evolve_runtime.nexus.reproduction import (
     sync_repair_parent_attempts_to_dormant_archive,
     verify_offspring,
 )
-from cognitive_evolve_runtime.tools.verification_stack import NexusVerifierStack
 from cognitive_evolve_runtime.verification.cache import check_with_cache
 from cognitive_evolve_runtime.verification.factory import verifier_from_plan
 from cognitive_evolve_runtime.verification.information_gain import population_information_gain_report
@@ -65,8 +63,6 @@ from cognitive_evolve_runtime.verification.types import VerificationPlan, Verifi
 from cognitive_evolve_runtime.theory import TheoryConfig, TheoryLayer, build_population_representation
 from cognitive_evolve_runtime.nexus._shared import MODEL_BOUNDARY_ERRORS, positive_int
 from cognitive_evolve_runtime.nexus.v23_theory_config import CACrossoverConfig, V23TheoryRuntimeConfig
-from cognitive_evolve_runtime.llm.env import env_int
-from cognitive_evolve_runtime.llm.governor import llm_governor
 from cognitive_evolve_runtime.llm.retry import provider_error_category
 from cognitive_evolve_runtime.ranking.multihead_elo import MultiHeadElo
 from cognitive_evolve_runtime.ranking.parent_selection import ParentSelector
@@ -76,8 +72,6 @@ from .budget import EvolutionBudget
 from .offspring import _best_auxiliary_id, _generate_offspring, _plan_mutations
 from .policy_directives import _attach_policy_directives_to_plans, _critique_actions
 from .stage_helpers import _eligibility_policy, _error_progress_event, _theory_config_from_policy
-
-_VERIFY_MAX_WORKERS_ENV = "COGEV_VERIFY_CONCURRENCY"
 
 @dataclass
 class RoundEvaluation:
@@ -114,7 +108,6 @@ class EvolutionRound:
         self.mutation_planner = MutationPlanner()
         self.mutation_engine = MutationEngine()
         self.critique_engine = CritiqueEngine(model=model)
-        self.verifier_stack = NexusVerifierStack()
         self.evaluator_runner = ExternalEvaluatorRunner()
         self.stop_decider = StopDecisionEngine()
         self.theory_layer = TheoryLayer()
@@ -333,40 +326,9 @@ class EvolutionRound:
             except Exception:
                 if isinstance(candidate.metadata, dict):
                     candidate.metadata.setdefault("source_binding_manifest", {"binding_class": "no_binding", "admission_route": "repair_only", "diagnostics": ["source_binding_annotation_failed"]})
-        blocking_obligation_ids = [
-            str(item)
-            for item in (policy.metadata or {}).get("blocked_or_overexplored_obligations", [])
-            if item
-        ]
         verification_results: list[Any] = []
-        max_workers = env_int(_VERIFY_MAX_WORKERS_ENV, llm_governor()._max_concurrent())
-
-        def _run_stack() -> list[Any]:
-            return list(
-                self.verifier_stack.verify_population(
-                    population.candidates,
-                    contract=contract,
-                    blocking_obligation_ids=blocking_obligation_ids,
-                    current_round=current_round,
-                    round_limit=self.budget.round_limit,
-                )
-            )
-
-        def _run_synthesized() -> list[Any]:
-            return list(self._run_synthesized_verifier(population.candidates, current_round=current_round))
-
-        def _run_obligations() -> list[Any]:
-            return list(self._run_verification_obligations(population.candidates, current_round=current_round, policy=policy, contract=contract))
-
-        if max_workers <= 1:
-            verification_results.extend(_run_stack())
-            verification_results.extend(_run_synthesized())
-            verification_results.extend(_run_obligations())
-        else:
-            with ThreadPoolExecutor(max_workers=min(3, max_workers)) as pool:
-                futures = [pool.submit(fn) for fn in (_run_stack, _run_synthesized, _run_obligations)]
-                for fut in as_completed(futures):
-                    verification_results.extend(fut.result())
+        verification_results.extend(self._run_synthesized_verifier(population.candidates, current_round=current_round))
+        verification_results.extend(self._run_verification_obligations(population.candidates, current_round=current_round, policy=policy, contract=contract))
         ingest_latent_feedback(
             contract=contract,
             critiques=critiques,
@@ -730,7 +692,7 @@ class EvolutionRound:
         for source in (
             self._theory_advisory_features(policy=policy, candidates=candidates, current_round=current_round),
             evidence_advisory_features(candidates),
-            self.adaptive.research_advisory_features(candidates=candidates, policy=policy),
+            self.adaptive.selection_advisory_features(candidates=candidates, policy=policy),
         ):
             for candidate_id, feature in (source or {}).items():
                 current = dict(combined.get(candidate_id) or {})

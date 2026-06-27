@@ -49,7 +49,6 @@ from cognitive_evolve_runtime.nexus.reproduction import (
     sync_repair_parent_attempts_to_dormant_archive,
     verify_offspring,
 )
-from cognitive_evolve_runtime.tools.verification_stack import NexusVerifierStack
 from cognitive_evolve_runtime.theory import TheoryConfig, TheoryLayer, build_population_representation
 from cognitive_evolve_runtime.nexus._shared import MODEL_BOUNDARY_ERRORS, positive_int
 from cognitive_evolve_runtime.llm.retry import provider_error_category
@@ -160,6 +159,7 @@ def _closure_certificate(
     certificate = improvement_certificate_from_any(improvement_certificate)
     improvement_summary = m5_certificate_summary(certificate)
     improvement_verified = bool(improvement_summary.get("improvement_verified"))
+    requires_improvement = requires_verified_improvement(contract)
     latent_assessment = dict(latent_assessment or {})
     latent_converged = latent_assessment.get("converged")
     latent_blocks_solved = False
@@ -178,7 +178,7 @@ def _closure_certificate(
         },
         {
             "check": "solved_stop_reason",
-            "passed": True,
+            "passed": stop_reason in {"completed", "solved", "max_rounds", "adaptive_safety_checkpoint"},
             "detail": stop_reason,
         },
         {
@@ -193,9 +193,9 @@ def _closure_certificate(
         },
         {
             "check": "verified_improvement_certificate_required",
-            "passed": True,
-            "detail": {
-                "requires_verified_improvement": False,
+            "passed": (not requires_improvement) or improvement_verified,
+                "detail": {
+                "requires_verified_improvement": requires_improvement,
                 "improvement_verified": improvement_verified,
                 "answer_produced": answer_produced,
                 "certificate_hash": improvement_summary.get("improvement_certificate_hash", ""),

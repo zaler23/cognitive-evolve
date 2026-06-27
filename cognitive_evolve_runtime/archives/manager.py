@@ -9,7 +9,7 @@ from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateG
 from cognitive_evolve_runtime.evaluators.evidence import evidence_final_blocked, evidence_parent_blocked, evidence_terminal_reject, has_repair_value, latest_evidence_record
 from cognitive_evolve_runtime.core.serialization import coerce_dict, coerce_str_list, utc_now
 from cognitive_evolve_runtime.nexus.adaptive_signals import in_bottom_band, in_top_band, observed_frontier_signal, score
-from cognitive_evolve_runtime.nexus.obligations import HARD_EVIDENCE_FAILURES, HARD_PROOF_FAILURES, candidate_has_obligation_or_evidence_delta
+from cognitive_evolve_runtime.nexus.obligations import candidate_has_obligation_or_evidence_delta
 from cognitive_evolve_runtime.nexus.nextgen import record_candidate_budget_decision, structurally_blocked
 from cognitive_evolve_runtime.nexus.population_vitality import (
     classify_dormant_kind,
@@ -23,7 +23,6 @@ from .constraints import (
     candidate_verification_blocks_final as _candidate_verification_blocks_final,
     constraint_id as _constraint_id,
     constraint_target as _constraint_target,
-    verification_diagnostics as _verification_diagnostics,
     verification_failure_signature as _verification_failure_signature,
 )
 from .dormant import DormantArchive
@@ -354,23 +353,8 @@ class ArchiveManager:
         ArchiveRegistry(self).route_candidate(candidate, assignment)
 
     def _record_constraints(self, candidate: CandidateGenome, assignment: FateAssignment) -> None:
-        diagnostics = _verification_diagnostics(candidate)
-        hard = diagnostics.intersection(HARD_PROOF_FAILURES | HARD_EVIDENCE_FAILURES)
         records: list[ArchiveConstraintRecord] = []
-        if hard:
-            target = _constraint_target(candidate)
-            records.append(
-                ArchiveConstraintRecord(
-                    id=_constraint_id("verification_constraint", target, sorted(hard), candidate.id),
-                    kind="verification_constraint",
-                    rule="advisory_only_final_claim_requires_named_obligation_delta_and_verified_evidence",
-                    target=target,
-                    source_candidate_id=candidate.id,
-                    severity="error" if assignment.fate in {CandidateFate.DORMANT.value, CandidateFate.CULLED.value, CandidateFate.FAILED.value} else "warning",
-                    evidence={"diagnostics": sorted(hard), "fate": assignment.fate},
-                )
-            )
-        has_failure_context = bool(hard or assignment.failure_signature or candidate.failure_lessons)
+        has_failure_context = bool(assignment.failure_signature or candidate.failure_lessons)
         if (
             has_failure_context
             and structurally_blocked(candidate)

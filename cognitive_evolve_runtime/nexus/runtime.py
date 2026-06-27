@@ -428,7 +428,8 @@ class NexusRuntime:
 
     def _verify_project_population(self, snapshot: ProjectSnapshot, candidates: list[Any], *, include_tests: bool = False, contract: Any | None = None, applied_overlays: dict[str, Any] | None = None) -> list[ProjectVerificationSummary]:
         verification_context = _verification_context(contract=contract, applied_overlays=applied_overlays)
-        return self.project_verification_service.verify_population(snapshot, candidates, include_tests=include_tests, verification_context=verification_context)
+        allowed_patch_scope = [str(item) for item in getattr(contract, "allowed_patch_scope", []) or [] if str(item).strip()]
+        return self.project_verification_service.verify_population(snapshot, candidates, include_tests=include_tests, verification_context=verification_context, allowed_patch_scope=allowed_patch_scope)
 
     def _persist(self, run: NexusRunResult, result: EvolutionLoopResult, *, contract: Any, world: Any, budget_history: list[dict[str, Any]], budget: EvolutionBudget | None = None, runtime_options: dict[str, Any] | None = None) -> dict[str, str]:
         return self.persistence_service.persist(run, result, contract=contract, world=world, budget_history=budget_history, budget=budget, runtime_options=runtime_options)
@@ -548,8 +549,8 @@ def _sync_runtime_round_metadata(evolution: dict[str, Any], result: EvolutionLoo
 
 def _verification_plan_from_restored(restored: dict[str, Any], *, contract: NexusObjectiveContract, mode: str, model: Any | None) -> VerificationPlan:
     adaptive_state = dict(restored.get("adaptive_state") or {})
-    research = dict(adaptive_state.get("research_extensions") or {})
-    plan = dict(research.get("verification_plan") or restored.get("verification_plan") or {})
+    legacy_research = dict(adaptive_state.get("research_extensions") or {})
+    plan = dict(adaptive_state.get("verification_plan") or legacy_research.get("verification_plan") or restored.get("verification_plan") or {})
     if plan:
         return VerificationPlan.from_dict(plan)
     return VerificationSynthesizer(model=model).synthesize({"goal": getattr(contract, "normalized_goal", "") or contract.to_dict(), "mode": mode, "resynthesized_from_checkpoint": True})

@@ -136,8 +136,8 @@ def test_model_synthesis_failure_falls_back_to_reference_summary() -> None:
         id="reference",
         artifact="Use a source-aware patch preflight before expensive ranking.",
         current_fate=CandidateFate.DORMANT,
-        source_bindings=[{"path": "cognitive_evolve_runtime/tools/verification_stack.py", "symbol": "NexusVerifierStack"}],
-        evidence_refs=[{"kind": "test", "path": "tests/test_project_candidate_patch_sandbox.py", "status": "planned"}],
+        source_bindings=[{"path": "cognitive_evolve_runtime/nexus/project_verification.py", "symbol": "ProjectCandidateVerifier"}],
+        evidence_refs=[{"kind": "test", "path": "tests/test_nexus_audit_regressions.py", "status": "planned"}],
         obligation_delta={"targeted": ["obl_source_preflight"]},
         multihead_scores={"objective_alignment": 0.8, "answer_likelihood": 0.55, "verifiability": 0.4},
         verification_result={
@@ -222,10 +222,10 @@ def test_answer_candidate_ranking_can_prioritize_high_answer_score_without_sourc
     )
     grounded = CandidateGenome(
         id="A-grounded",
-        artifact="Add source-aware preflight in the existing verifier stack.",
+        artifact="Add source-aware preflight in the existing project verifier.",
         current_fate=CandidateFate.DORMANT,
-        source_bindings=[{"path": "cognitive_evolve_runtime/tools/verification_stack.py", "symbol": "NexusVerifierStack"}],
-        evidence_refs=[{"kind": "test", "path": "tests/test_project_candidate_patch_sandbox.py", "status": "planned"}],
+        source_bindings=[{"path": "cognitive_evolve_runtime/nexus/project_verification.py", "symbol": "ProjectCandidateVerifier"}],
+        evidence_refs=[{"kind": "test", "path": "tests/test_nexus_audit_regressions.py", "status": "planned"}],
         obligation_delta={"targeted": ["obl_source_preflight"]},
         multihead_scores={"objective_alignment": 0.75, "answer_likelihood": 0.55, "verifiability": 0.35},
         verification_result={"passed": True, "rank_eligible": True, "final_eligible": False, "diagnostics": []},
@@ -254,6 +254,21 @@ def test_patch_sandbox_rejects_symlink_escape(tmp_path: Path) -> None:
     assert result.status == "failed"
     assert "unsafe" in " ".join(result.diagnostics)
     assert outside.read_text(encoding="utf-8") == "safe"
+
+
+def test_patch_sandbox_enforces_allowed_patch_scope(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    (source / "pkg").mkdir(parents=True)
+    (source / "docs").mkdir()
+    (source / "pkg" / "module.py").write_text("value = 1\n", encoding="utf-8")
+    (source / "docs" / "note.md").write_text("note\n", encoding="utf-8")
+
+    candidate = ProjectCandidateGenome(id="out-of-scope", patch_set=[PatchOperation(path="docs/note.md", operation="append", content="x")])
+    result = PatchSandbox(source, tmp_path / "sandboxes", allowed_patch_scope=["pkg/**/*.py"]).apply(candidate)
+
+    assert result.status == "failed"
+    assert "outside allowed_patch_scope" in " ".join(result.diagnostics)
+    assert (source / "docs" / "note.md").read_text(encoding="utf-8") == "note\n"
 
 
 def test_project_verification_failure_marks_candidate_failed(tmp_path: Path) -> None:

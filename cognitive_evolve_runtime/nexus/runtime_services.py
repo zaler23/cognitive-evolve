@@ -15,7 +15,6 @@ from cognitive_evolve_runtime.inputs.project_snapshot import ProjectSnapshot
 from cognitive_evolve_runtime.nexus.consistency import assert_runtime_consistency
 from cognitive_evolve_runtime.nexus.loop import EvolutionBudget, EvolutionLoopResult
 from cognitive_evolve_runtime.nexus.final_projection import build_final_projection
-from cognitive_evolve_runtime.nexus.adaptive.research.persistence import safe_research_payload
 from cognitive_evolve_runtime.nexus.project_verification import ProjectCandidateVerifier, ProjectVerificationSummary
 from cognitive_evolve_runtime.persistence.checkpoint import build_checkpoint_state
 from cognitive_evolve_runtime.nexus.seed_coverage import SEED_RESERVOIR_SIDECAR_PAYLOAD_KEY, persist_seed_reservoir_sidecar
@@ -37,10 +36,11 @@ class NexusProjectVerificationService:
         *,
         include_tests: bool = False,
         verification_context: dict[str, Any] | None = None,
+        allowed_patch_scope: list[str] | None = None,
     ) -> list[ProjectVerificationSummary]:
         source_root = Path(snapshot.root_path)
         sandbox_root = (self.output_dir / "patch-sandboxes") if self.output_dir is not None else Path(tempfile.mkdtemp(prefix="cogev-nexus-sandboxes-"))
-        verifier = ProjectCandidateVerifier(source_root=source_root, sandbox_root=sandbox_root, include_tests=include_tests, verification_context=verification_context)
+        verifier = ProjectCandidateVerifier(source_root=source_root, sandbox_root=sandbox_root, include_tests=include_tests, verification_context=verification_context, allowed_patch_scope=allowed_patch_scope)
         patch_candidates = [candidate for candidate in candidates if has_concrete_patch_payload(candidate)]
         return verifier.verify_population(patch_candidates)
 
@@ -89,7 +89,7 @@ class NexusPersistenceService:
             policy_metadata["seed_reservoir_ref"] = sidecar_ref
         search_kernel_state = {
             key: policy_metadata[key]
-            for key in ("seed_coverage", "target_perturb_seed_judgment", "factor_resurrection_summary", "algorithm_efficiency", "model_parallel_efficiency", "minimal_core_ablation", "seed_active_frontier", "seed_reservoir_ref")
+            for key in ("seed_coverage", "target_perturb_seed_judgment", "algorithm_efficiency", "model_parallel_efficiency", "minimal_core_ablation", "seed_active_frontier", "seed_reservoir_ref")
             if key in policy_metadata
         }
         if result.interrupted and progress_event and not any(
@@ -115,11 +115,11 @@ class NexusPersistenceService:
             budget_history=budget_history or [],
             budget=_checkpoint_budget_payload(budget, checkpoint_round=checkpoint_round),
             adaptive_state=adaptive_state,
-            trace_state={"entries": list((adaptive_state.get("research_extensions") or {}).get("trace_entries") or [])},
-            tension_map=dict((adaptive_state.get("research_extensions") or {}).get("tension_map") or {}),
-            cost_ledger=dict((adaptive_state.get("research_extensions") or {}).get("cost_ledger") or {}),
-            concept_snapshots=dict((adaptive_state.get("research_extensions") or {}).get("extensions") or {}),
-            verification_plan=dict((adaptive_state.get("research_extensions") or {}).get("verification_plan") or {}),
+            trace_state={},
+            tension_map={},
+            cost_ledger={},
+            concept_snapshots={},
+            verification_plan=dict(adaptive_state.get("verification_plan") or {}),
             graded_output=dict(getattr(result, "graded_output", {}) or {}),
             search_kernel=search_kernel_state,
             fabric=dict(getattr(result, "fabric_state", {}) or {}),
@@ -148,7 +148,6 @@ class NexusPersistenceService:
             "snapshot_transaction": str(self.output_dir / "snapshot-transaction.json"),
         }
         if adaptive_state:
-            research_dir = self.output_dir / "research"
             artifacts.update(
                 {
                     "adaptive_state": str(adaptive_dir / "adaptive-state.json"),
@@ -157,12 +156,6 @@ class NexusPersistenceService:
                     "final_projection": str(adaptive_dir / "final-projection.json"),
                     "challenge_memory": str(self.output_dir / "challenge-memory.json"),
                     "challenge_events": str(self.output_dir / "challenge-events.jsonl"),
-                    "research_state": str(research_dir / "research-state.json"),
-                    "research_events": str(research_dir / "research-events.jsonl"),
-                    "research_metrics": str(research_dir / "research-metrics.json"),
-                    "campaign_trace": str(research_dir / "campaign_trace.jsonl"),
-                    "concept_effect_report": str(research_dir / "concept-effect-report.json"),
-                    "contract_delta_proposals": str(research_dir / "contract-delta-proposals.json"),
                 }
             )
         run.artifacts = dict(artifacts)
@@ -300,16 +293,6 @@ def _adaptive_snapshot_writes(adaptive_state: dict[str, Any], final_certificate:
     evaluator = dict(adaptive_state.get("evaluator") or {})
     if evaluator:
         writes.append(SnapshotWrite("adaptive/evaluator-results.jsonl", "text", json.dumps(evaluator, ensure_ascii=False, sort_keys=True, default=str) + "\n", sort_keys=False))
-    research = safe_research_payload(dict(adaptive_state.get("research_extensions") or {}))
-    if research:
-        writes.append(SnapshotWrite("research/research-state.json", "json", research))
-        events = [safe_research_payload(dict(item), max_bytes=8192) for item in research.get("events", []) if isinstance(item, dict)]
-        writes.append(SnapshotWrite("research/research-events.jsonl", "text", "".join(json.dumps(event, ensure_ascii=False, sort_keys=True, default=str) + "\n" for event in events), sort_keys=False))
-        writes.append(SnapshotWrite("research/research-metrics.json", "json", dict(research.get("metrics") or adaptive_state.get("research_metrics") or {})))
-        trace_entries = [dict(item) for item in research.get("trace_entries", []) if isinstance(item, dict)]
-        writes.append(SnapshotWrite("research/campaign_trace.jsonl", "text", "".join(json.dumps(item, ensure_ascii=False, sort_keys=True, default=str) + "\n" for item in trace_entries), sort_keys=False))
-        writes.append(SnapshotWrite("research/concept-effect-report.json", "json", dict(research.get("concept_effect_report") or {})))
-        writes.append(SnapshotWrite("research/contract-delta-proposals.json", "json", {"proposals": [dict(item) for item in research.get("contract_delta_proposals", []) if isinstance(item, dict)]}))
     return writes
 
 

@@ -63,7 +63,7 @@ class LiveNexusStore:
             policy_metadata.pop(SEED_RESERVOIR_SIDECAR_PAYLOAD_KEY, None)
             policy_metadata["seed_reservoir_ref"] = sidecar_ref
             search_kernel_state["seed_reservoir_ref"] = sidecar_ref
-        for key in ("seed_coverage", "target_perturb_seed_judgment", "factor_resurrection_summary", "algorithm_efficiency", "model_parallel_efficiency", "minimal_core_ablation", "seed_active_frontier", "seed_reservoir_ref"):
+        for key in ("seed_coverage", "target_perturb_seed_judgment", "algorithm_efficiency", "model_parallel_efficiency", "minimal_core_ablation", "seed_active_frontier", "seed_reservoir_ref"):
             if key in policy_metadata:
                 search_kernel_state.setdefault(key, policy_metadata[key])
         monitor_state = {

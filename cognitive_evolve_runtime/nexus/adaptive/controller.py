@@ -8,7 +8,6 @@ from cognitive_evolve_runtime.contracts.objective_contract import artifact_polic
 from cognitive_evolve_runtime.core.scalars import bounded_score
 from cognitive_evolve_runtime.evaluators.challenge_memory import ChallengeMemory, challenge_from_diagnostic
 from cognitive_evolve_runtime.evaluators.evidence import EvidenceRecord, SearchPressure, latest_evidence_record
-from cognitive_evolve_runtime.nexus.adaptive.research import ResearchContext, ResearchExtensionRegistry
 from cognitive_evolve_runtime.nexus._serde import coerce_dict
 from cognitive_evolve_runtime.nexus.adaptive.config import AdaptiveConfig
 from cognitive_evolve_runtime.nexus.adaptive.spatial_population import SpatialPopulationState, build_or_update_spatial_state
@@ -24,7 +23,6 @@ class AdaptiveRuntimeController:
         self.state.enabled_features = dict(config.enabled_features)
         self._spatial_state = SpatialPopulationState.from_dict(self.state.spatial)
         self.challenge_memory = ChallengeMemory.from_dict(self.state.challenge_memory)
-        self.research_registry = ResearchExtensionRegistry.from_config(config.research, restored_state=self.state.research_extensions)
 
     @classmethod
     def from_sources(
@@ -60,7 +58,6 @@ class AdaptiveRuntimeController:
         self.state.enabled_features = dict(self.config.enabled_features)
         if self.enabled:
             self.state.record_event(adaptive_event("adaptive_round_begin", round=round_index, features=self.state.enabled_features))
-            self._sync_research_state()
         return self.state
 
     def observe_population(self, *, population: CandidatePopulation, round_index: int) -> None:
@@ -121,9 +118,6 @@ class AdaptiveRuntimeController:
         self.state.metrics["challenge_case_count"] = int(challenge_summary.get("case_count") or 0)
         self.state.metrics["challenge_case_targeted_resolution_rate"] = float(challenge_summary.get("targeted_resolution_rate") or 0.0)
         self.state.metrics["targeted_challenge_resolution_rate"] = float(challenge_summary.get("targeted_resolution_rate") or 0.0)
-        ctx = self._research_context(round_index=round_index, candidates=candidates or [])
-        self.research_registry.after_evidence(ctx)
-        self._sync_research_state()
         self.state.record_event(adaptive_event("external_evaluator_summary", round=round_index, evaluated=evaluated, passed=passed, failed=failed, challenge_cases=challenge_summary.get("case_count", 0), targeted_resolution_rate=challenge_summary.get("targeted_resolution_rate", 0.0)))
 
     def compile_search_pressure(self, *, parent_id: str | None = None, scope: str = "global", parent: Any | None = None, candidates: list[Any] | None = None) -> SearchPressure | None:
@@ -131,12 +125,7 @@ class AdaptiveRuntimeController:
             return None
         requirements = dict(self.config.evidence or {})
         base = self.challenge_memory.compile_search_pressure(parent_id=parent_id, scope=scope, artifact_requirements=requirements)
-        ctx = self._research_context(round_index=self.state.round_index, candidates=candidates or [], parent=parent)
-        self.research_registry.before_mutation_planning(ctx)
-        pressures = self.research_registry.pending_search_pressures(parent_id=parent_id)
-        pressure = _merge_pressures(base, pressures, parent_id=parent_id, scope=scope)
-        self._sync_research_state()
-        return pressure
+        return base
 
     def record_contract_artifact_policy_conflicts(self, *, contract: Any | None) -> None:
         if not self.enabled or contract is None or not self.config.evidence:
@@ -178,20 +167,11 @@ class AdaptiveRuntimeController:
         self.state.challenge_memory = self.challenge_memory.to_dict()
         self.state.metrics["contract_artifact_policy_conflict_count"] = len(diagnostics)
 
-    def research_advisory_features(self, *, candidates: list[Any], policy: Any | None = None, contract: Any | None = None, world: Any | None = None) -> dict[str, Any]:
-        if not self.enabled:
-            return {}
-        ctx = self._research_context(round_index=self.state.round_index, candidates=candidates, policy=policy, contract=contract, world=world)
-        signal = self.research_registry.before_parent_selection(ctx)
-        self._sync_research_state()
-        return dict(signal.selection_advisory)
+    def selection_advisory_features(self, *, candidates: list[Any], policy: Any | None = None, contract: Any | None = None, world: Any | None = None) -> dict[str, Any]:
+        return {}
 
     def before_final_projection(self, *, candidates: list[Any], final_certificate: dict[str, Any] | None = None) -> None:
-        if not self.enabled:
-            return
-        ctx = self._research_context(round_index=self.state.round_index, candidates=candidates, final_certificate=final_certificate or {})
-        self.research_registry.before_final_projection(ctx)
-        self._sync_research_state()
+        return None
 
     def set_verification_plan(self, plan: Any | None) -> None:
         if plan is None:
@@ -202,81 +182,62 @@ class AdaptiveRuntimeController:
             data = dict(plan)
         else:
             return
-        self.research_registry.state.verification_plan = data
-        self._sync_research_state()
+        self.state.verification_plan = data
+        if self.enabled:
+            self.state.record_event({"event": "verification_plan_set"})
 
     def verification_plan_dict(self) -> dict[str, Any]:
-        return dict(self.research_registry.state.verification_plan or {})
+        return dict(self.state.verification_plan or {})
 
     def verification_cache(self) -> dict[str, dict[str, Any]]:
-        return self.research_registry.state.verification_cache
+        return self.state.verification_cache
 
     def update_verification_cache(self, cache: dict[str, dict[str, Any]]) -> None:
-        self.research_registry.state.verification_cache = {str(k): dict(v) for k, v in dict(cache or {}).items() if isinstance(v, dict)}
-        self._sync_research_state()
+        self.state.verification_cache = {str(k): dict(v) for k, v in dict(cache or {}).items() if isinstance(v, dict)}
 
     def record_verification_plan_resynthesized(self, *, reason: str = "") -> None:
-        self.research_registry.state.record_event({"event": "verification_plan_resynthesized", "reason": str(reason or "")})
-        self._sync_research_state()
+        if self.enabled:
+            self.state.record_event({"event": "verification_plan_resynthesized", "reason": str(reason or "")})
 
     def final_gate_directives(self) -> list[dict[str, Any]]:
-        if not self.enabled:
-            return []
-        current_round = int(self.state.round_index or 0)
-        return [
-            dict(item)
-            for item in self.research_registry.state.final_gate_directives
-            if isinstance(item, dict) and _int_or_default(item.get("round_index"), -1) == current_round
-        ]
+        return []
 
     def budget_directive_features(self) -> list[dict[str, Any]]:
-        if not self.enabled:
-            return []
-        return self.research_registry.budget_directive_features()
+        return []
 
     def archive_directive_features(self) -> list[dict[str, Any]]:
-        if not self.enabled:
-            return []
-        return self.research_registry.archive_directive_features()
+        return []
 
     def context_transform_features(self) -> list[dict[str, Any]]:
-        if not self.enabled:
-            return []
-        return self.research_registry.context_transform_features()
+        return []
 
     def candidate_transform_features(self) -> list[dict[str, Any]]:
-        if not self.enabled:
-            return []
-        return self.research_registry.candidate_transform_features()
+        return []
 
     def verification_obligation_features(self) -> list[dict[str, Any]]:
-        if not self.enabled:
-            return []
-        return self.research_registry.verification_obligation_features()
+        return []
 
     def effect_consumed(self, channel: str, item: Any, *, key: str | None = None) -> bool:
-        if not self.enabled:
-            return True
-        return self.research_registry.effect_consumed(channel, item, key=key)
+        return True
 
     def record_effect_application(self, *, channel: str, item: Any, changed: bool, consumer: str, reason: str = "", result: dict[str, Any] | None = None, key: str | None = None, consume: bool = True) -> dict[str, Any]:
         if not self.enabled:
             return {}
-        record = self.research_registry.record_effect_application(channel=channel, item=item, changed=changed, consumer=consumer, reason=reason, result=result, key=key, consume=consume)
-        self._sync_research_state()
+        record = {"channel": str(channel), "changed": bool(changed), "consumer": str(consumer), "reason": str(reason or "")}
+        if result:
+            record["result"] = dict(result)
+        self.state.effect_applications.append(record)
+        self.state.effect_applications = self.state.effect_applications[-200:]
         return record
 
     def record_generated_targets(self, *, candidate_id: str, challenge_ids: list[str], pressure_id: str, round_index: int) -> None:
-        self.research_registry.record_generated_targets(candidate_id=candidate_id, challenge_ids=challenge_ids, pressure_id=pressure_id, round_index=round_index)
-        self._sync_research_state()
+        return None
 
     def record_evaluated_targets(self, *, candidate_id: str, challenge_ids: list[str], record: Any | None, round_index: int) -> None:
-        self.research_registry.record_evaluated_targets(candidate_id=candidate_id, challenge_ids=challenge_ids, record=record, round_index=round_index)
-        self._sync_research_state()
+        return None
 
     def record_resolved_targets(self, *, candidate_id: str, challenge_ids: list[str], record: Any | None, round_index: int) -> None:
-        self.research_registry.record_resolved_targets(candidate_id=candidate_id, challenge_ids=challenge_ids, record=record, round_index=round_index)
-        self._sync_research_state()
+        return None
 
     def record_honesty_control_signal(self, signal: Any, *, history_limit: int) -> None:
         data = signal.to_dict() if hasattr(signal, "to_dict") else dict(signal or {})
@@ -310,30 +271,6 @@ class AdaptiveRuntimeController:
         self.state.record_event(adaptive_event("cell_activation_map", round=round_index, cell_count=len(data)))
 
 
-    def _research_context(self, *, round_index: int, candidates: list[Any] | None = None, parent: Any | None = None, policy: Any | None = None, contract: Any | None = None, world: Any | None = None, final_certificate: dict[str, Any] | None = None) -> ResearchContext:
-        return ResearchContext(
-            round_index=int(round_index or 0),
-            candidates=list(candidates or []),
-            challenge_memory=self.challenge_memory,
-            adaptive_state=self.state,
-            spatial_state=self._spatial_state,
-            config=self.config.to_dict(),
-            policy=policy,
-            contract=contract,
-            world=world,
-            parent=parent,
-            final_certificate=final_certificate or {},
-        )
-
-    def _sync_research_state(self) -> None:
-        snapshot = self.research_registry.snapshot()
-        self.state.research_extensions = snapshot
-        self.state.research_metrics = dict(snapshot.get("metrics") or {})
-        self.state.research_warnings = [str(item) for item in snapshot.get("warnings", []) if item]
-        self.state.metrics.update({f"research.{k}": v for k, v in self.state.research_metrics.items()})
-        if self.state.research_warnings:
-            self.state.warnings = list(dict.fromkeys([*self.state.warnings, *self.state.research_warnings]))[-200:]
-
     def attach_final_certificate(self, certificate: dict[str, Any]) -> None:
         if not self.enabled and not certificate:
             return
@@ -343,7 +280,6 @@ class AdaptiveRuntimeController:
 
     def to_dict(self) -> dict[str, Any]:
         self.state.challenge_memory = self.challenge_memory.to_dict()
-        self._sync_research_state()
         return self.state.to_dict()
 
 

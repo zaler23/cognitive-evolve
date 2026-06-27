@@ -28,7 +28,6 @@ from cognitive_evolve_runtime.nexus.repair_reactivation import recover_failure_a
 from cognitive_evolve_runtime.nexus.synthesis import SynthesizedResult, synthesize_result
 from cognitive_evolve_runtime.nexus.stop_decision import StopDecisionEngine
 from cognitive_evolve_runtime.nexus.semantic_dedupe import CandidateDeduper
-from cognitive_evolve_runtime.nexus.factor_resurrection import resurrect_factor_trace
 from cognitive_evolve_runtime.nexus.minimal_core import apply_seed_active_frontier, run_core_ablation
 from cognitive_evolve_runtime.nexus.seed_coverage import SEED_RESERVOIR_SIDECAR_PAYLOAD_KEY, assess_seed_coverage, seed_reservoir_sidecar_payload
 from cognitive_evolve_runtime.nexus.search_kernel.harvesting import CandidateHarvester, HarvestPolicy
@@ -54,7 +53,6 @@ from cognitive_evolve_runtime.nexus.reproduction import (
     sync_repair_parent_attempts_to_dormant_archive,
     verify_offspring,
 )
-from cognitive_evolve_runtime.tools.verification_stack import NexusVerifierStack
 from cognitive_evolve_runtime.theory import TheoryConfig, TheoryLayer, build_population_representation
 from cognitive_evolve_runtime.nexus._shared import MODEL_BOUNDARY_ERRORS, call_with_optional_context, positive_int as _positive_int
 from cognitive_evolve_runtime.llm.retry import provider_error_category
@@ -201,12 +199,10 @@ def _generate_model_seed_batches(
     if isinstance(policy.metadata, dict):
         frontier = apply_seed_active_frontier(result.accepted, limit=_seed_active_frontier_limit(policy=policy))
         ablation = run_core_ablation(result.accepted, policy=policy)
-        factors = resurrect_factor_trace([*result.accepted, *result.reservoir], limit=16)
         policy.metadata["seed_harvest"] = result.to_dict()
         policy.metadata["seed_coverage"] = coverage
         policy.metadata["seed_active_frontier"] = frontier
         policy.metadata["minimal_core_ablation"] = ablation
-        policy.metadata["factor_resurrection_summary"] = {"factor_count": len(factors), "factors": factors[:8], "policy": "advisory_seed_pool_factor_trace"}
         if result.reservoir:
             policy.metadata[SEED_RESERVOIR_SIDECAR_PAYLOAD_KEY] = seed_reservoir_sidecar_payload(result.reservoir)
         policy.metadata["algorithm_efficiency"] = {

@@ -15,8 +15,6 @@ from cognitive_evolve_runtime.nexus.adaptive_signals import in_top_band, observe
 from cognitive_evolve_runtime.nexus.obligations import (
     blocking_obligations_from_history,
     candidate_has_obligation_or_evidence_delta,
-    repeated_proof_failure_counts,
-    requires_proof_progress,
 )
 from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy
 from cognitive_evolve_runtime.nexus.protocols import NexusModelLike
@@ -616,7 +614,6 @@ def _preserve_search_kernel_metadata(previous: EvolutionPolicy, updated: Evoluti
         "seed_harvest",
         "seed_coverage",
         "target_perturb_seed_judgment",
-        "factor_resurrection_summary",
         "minimal_core_ablation",
         "seed_active_frontier",
         "algorithm_efficiency",

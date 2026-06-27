@@ -460,9 +460,9 @@ def _candidate_from_failure_record(
         source_bindings=[{"path": path, "kind": "source_file", "source": "failure_archive_reseed"} for path in targets[:6]],
         evidence_delta={"planned": ["convert archived failure lesson into answer-first mechanism"]},
         verification_result={
-            "passed": True,
+            "passed": False,
             "rank_eligible": True,
-            "final_eligible": True,
+            "final_eligible": False,
             "diagnostics": blockers[:6],
             "failure_guidance": guidance,
             "source": "failure_archive_reseed",

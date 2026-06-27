@@ -35,13 +35,14 @@ class ProjectVerificationSummary:
 
 
 class ProjectCandidateVerifier:
-    def __init__(self, *, source_root: str | Path, sandbox_root: str | Path, tool_suite: LocalToolSuite | None = None, include_tests: bool = False, timeout_seconds: float = 60.0, verification_context: dict[str, Any] | None = None) -> None:
+    def __init__(self, *, source_root: str | Path, sandbox_root: str | Path, tool_suite: LocalToolSuite | None = None, include_tests: bool = False, timeout_seconds: float = 60.0, verification_context: dict[str, Any] | None = None, allowed_patch_scope: list[str] | None = None) -> None:
         self.source_root = Path(source_root)
         self.sandbox_root = Path(sandbox_root)
         self.tool_suite = tool_suite or LocalToolSuite()
         self.include_tests = include_tests
         self.timeout_seconds = timeout_seconds
         self.verification_context = dict(verification_context or {})
+        self.allowed_patch_scope = [str(item) for item in allowed_patch_scope or [] if str(item).strip()]
 
     def verify_population(self, candidates: list[CandidateGenome]) -> list[ProjectVerificationSummary]:
         summaries: list[ProjectVerificationSummary] = []
@@ -51,7 +52,7 @@ class ProjectCandidateVerifier:
         return summaries
 
     def verify(self, candidate: CandidateGenome) -> ProjectVerificationSummary:
-        sandbox = PatchSandbox(self.source_root, self.sandbox_root)
+        sandbox = PatchSandbox(self.source_root, self.sandbox_root, allowed_patch_scope=self.allowed_patch_scope)
         patch_result = sandbox.apply(candidate)
         feedback: list[ToolFeedback] = []
         if patch_result.passed:

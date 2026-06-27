@@ -13,7 +13,7 @@ from cognitive_evolve_runtime.candidates.mutation import MutationEngine, Mutatio
 from cognitive_evolve_runtime.contracts.objective_contract import NexusObjectiveContract
 from cognitive_evolve_runtime.events.progress import EvolutionProgressEvent, PipelineProgressEvent
 from cognitive_evolve_runtime.nexus.critique import CandidateCritique, CritiqueEngine
-from cognitive_evolve_runtime.nexus.adaptive import AdaptiveRuntimeController, apply_final_certificate_to_closure, apply_research_final_gate_directives, build_final_certificate
+from cognitive_evolve_runtime.nexus.adaptive import AdaptiveRuntimeController, apply_final_certificate_to_closure, build_final_certificate
 from cognitive_evolve_runtime.nexus.activation_reseed import emergency_activation_reseed
 from cognitive_evolve_runtime.nexus._serde import utc_now
 from cognitive_evolve_runtime.nexus.exploration import action_palette_for_round, amplify_population
@@ -21,7 +21,6 @@ from cognitive_evolve_runtime.nexus.diagnosis import PolicyUpdater, SearchDiagno
 from cognitive_evolve_runtime.nexus.display_selection import build_display_context, select_displayed_candidate
 from cognitive_evolve_runtime.nexus.generation_plan import GenerationPlan, apply_generation_plan, assert_stage_ready, build_generation_plan, expected_generation_plan_id
 from cognitive_evolve_runtime.nexus.minimal_core import run_core_ablation
-from cognitive_evolve_runtime.nexus.factor_resurrection import resurrect_factor_trace
 from cognitive_evolve_runtime.nexus.model_errors import is_quota_error
 from cognitive_evolve_runtime.nexus.obligations import candidate_obligation_delta, candidate_source_bindings
 from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy
@@ -58,7 +57,6 @@ from cognitive_evolve_runtime.nexus.reproduction import (
     sync_repair_parent_attempts_to_dormant_archive,
     verify_offspring,
 )
-from cognitive_evolve_runtime.tools.verification_stack import NexusVerifierStack
 from cognitive_evolve_runtime.theory import TheoryConfig, TheoryLayer, build_population_representation
 from cognitive_evolve_runtime.nexus._shared import MODEL_BOUNDARY_ERRORS, positive_int
 from cognitive_evolve_runtime.llm.retry import provider_error_category
@@ -136,7 +134,7 @@ class EvolutionLoopController:
         while self.budget.remaining():
             current_round = self.budget.current_round + 1
             try:
-                stop = self._run_scheduler_epoch(current_round)
+                stop = self._run_direct_epoch(current_round)
                 if stop:
                     break
             except InterruptedError as exc:
@@ -156,71 +154,42 @@ class EvolutionLoopController:
                 break
         return self._finalize()
 
-    def _run_scheduler_epoch(self, planned_round: int) -> bool:
-        from cognitive_evolve_runtime.fabric.executors import FabricExecutionContext
-        from cognitive_evolve_runtime.fabric.config import FabricRuntimeConfig
-        from cognitive_evolve_runtime.fabric.scheduler import EpochConfig, TaskGraphScheduler
-
+    def _run_direct_epoch(self, planned_round: int) -> bool:
         _raise_if_cancelled(self.cancellation_callback)
-        fabric_config = FabricRuntimeConfig.from_runtime_context(policy=self.policy, contract=self.contract)
-        graph = self._graph_for_scheduler_epoch(planned_round, fabric_config=fabric_config)
-        context = FabricExecutionContext(
+        if self.budget.current_round < planned_round:
+            self.budget.current_round = planned_round
+        evaluation = self.round_pipeline.evaluate(
+            current_round=planned_round,
+            population=self.population,
+            archives=self.archives,
+            policy=self.policy,
+            contract=self.contract,
+        )
+        self.policy = evaluation.policy
+        self.diagnosis = evaluation.diagnosis
+        self._record_evaluation(planned_round, evaluation)
+        if evaluation.stop_reason:
+            self.budget.stop_reason = evaluation.stop_reason
+            return True
+        if planned_round >= self.budget.round_limit:
+            self.budget.stop_reason = "adaptive_safety_checkpoint" if self.budget.adaptive else "max_rounds"
+            return True
+        reproduction_stop, offspring_verification, reproduction_compaction = self.round_pipeline.reproduce(
+            current_round=planned_round,
             population=self.population,
             archives=self.archives,
             policy=self.policy,
             contract=self.contract,
             world=self.world,
-            budget=self.budget,
-            model=self.model,
-            observer=self.observer,
-            adaptive=self.adaptive,
-            offspring_verifier=self.offspring_verifier,
-            cancellation_callback=self.cancellation_callback,
-            record_evaluation=self._record_scheduler_evaluation,
-            record_reproduction=self._record_reproduction_result,
-            fabric_config=fabric_config,
-            fabric_state=self.fabric_state,
-            provided_context=self.provided_context,
-            round_pipeline=self.round_pipeline,
+            rankings=evaluation.rankings,
             diagnosis=self.diagnosis,
+            critiques=evaluation.critiques,
+            offspring_verifier=self.offspring_verifier,
+            repair_parent_candidates=evaluation.repair_parent_candidates,
+            provided_context=self.provided_context,
         )
-        result = TaskGraphScheduler(
-            graph=graph,
-            context=context,
-            config=fabric_config,
-            epoch_config=EpochConfig(barrier="full", raise_task_exceptions=True),
-        ).run()
-        self.fabric_state = context.fabric_state
-        self.fabric_state["last_scheduler_result"] = result.to_dict()
-        self.policy = context.policy
-        self.diagnosis = context.diagnosis
-        self.round_pipeline = context.pipeline()
+        self._record_reproduction_result(planned_round, evaluation, reproduction_stop, offspring_verification, reproduction_compaction, self)
         return bool(self.budget.stop_reason)
-
-    def _graph_for_scheduler_epoch(self, planned_round: int, *, fabric_config: Any | None = None) -> Any:
-        from cognitive_evolve_runtime.fabric.epoch_builder import build_round_parity_epoch_graph
-        from cognitive_evolve_runtime.fabric.task_graph import TaskGraph
-
-        raw_graph = self.fabric_state.get("graph")
-        if isinstance(raw_graph, dict):
-            try:
-                graph = TaskGraph.from_dict(raw_graph)
-                if not graph.is_drained():
-                    return graph
-            except Exception as exc:
-                diagnostics = self.fabric_state.setdefault("diagnostics", [])
-                if isinstance(diagnostics, list):
-                    diagnostics.append({"type": "fabric_graph_restore_failed", "message": f"{exc.__class__.__name__}: {exc}"})
-        include_preprocess = bool(
-            fabric_config is not None
-            and (fabric_config.preprocess.run_each_epoch or int(planned_round or 0) <= 1)
-        )
-        return build_round_parity_epoch_graph(round_index=planned_round, include_preprocess=include_preprocess)
-
-    def _record_scheduler_evaluation(self, current_round: int, evaluation: RoundEvaluation, context: Any) -> None:
-        self.policy = evaluation.policy
-        self.diagnosis = evaluation.diagnosis
-        self._record_evaluation(current_round, evaluation)
 
     def _record_evaluation(self, current_round: int, evaluation: RoundEvaluation) -> None:
         event = evaluation.progress_event
@@ -358,8 +327,6 @@ class EvolutionLoopController:
         ) if self.adaptive.enabled else {}
         self.adaptive.before_final_projection(candidates=self.population.candidates, final_certificate=final_certificate)
         if final_certificate:
-            final_certificate = apply_research_final_gate_directives(final_certificate, self.adaptive.final_gate_directives())
-        if final_certificate:
             synthesis.closure_certificate = apply_final_certificate_to_closure(synthesis.closure_certificate, final_certificate)
             self.adaptive.attach_final_certificate(final_certificate)
         latent_replay_audit = audit_latent_replay_bundle(
@@ -381,8 +348,6 @@ class EvolutionLoopController:
         synthesis.closure_certificate["graded_output"] = graded_output.to_dict()
         if isinstance(self.policy.metadata, dict):
             self.policy.metadata["minimal_core_ablation"] = run_core_ablation(self.population.candidates, archives=self.archives, policy=self.policy)
-            factors = resurrect_factor_trace(self.population.candidates, limit=16)
-            self.policy.metadata["factor_resurrection_summary"] = {"factor_count": len(factors), "factors": factors[:8], "policy": "advisory_final_population_factor_trace"}
         if graded_output.mode != "verified_result":
             synthesis.closure_certificate["graded_output_advisory"] = "verification_result_not_required_for_answer_first_completion"
         selected_for_display = _selected_final_candidate(self.population, synthesis=synthesis, final_certificate=final_certificate)

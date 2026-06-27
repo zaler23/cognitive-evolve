@@ -144,7 +144,7 @@ def eval_check(task_dir: Path, check: dict[str, Any]) -> dict[str, Any]:
 
     check_id = str(check.get("id") or "generic")
     if check_id in {"native_eval_output", "nexus_eval_output"}:
-        return {"id": check_id, "description": check.get("description", ""), "passed": True, "errors": []}
+        return {"id": check_id, "description": check.get("description", ""), "passed": task_dir.exists(), "errors": [] if task_dir.exists() else ["task_dir_missing"]}
     if check_id == "nexus_runtime_self_check":
         report = _load_optional_json(task_dir / "nexus-runtime" / "nexus-runtime-self-check.json")
         return {"id": check_id, "passed": report.get("status") == "pass", "errors": [] if report.get("status") == "pass" else ["nexus_self_check_not_pass"]}

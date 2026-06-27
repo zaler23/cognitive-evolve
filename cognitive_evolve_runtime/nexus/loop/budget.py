@@ -55,7 +55,6 @@ from cognitive_evolve_runtime.nexus.reproduction import (
     sync_repair_parent_attempts_to_dormant_archive,
     verify_offspring,
 )
-from cognitive_evolve_runtime.tools.verification_stack import NexusVerifierStack
 from cognitive_evolve_runtime.theory import TheoryConfig, TheoryLayer, build_population_representation
 from cognitive_evolve_runtime.nexus._shared import MODEL_BOUNDARY_ERRORS, positive_int
 from cognitive_evolve_runtime.llm.retry import provider_error_category
@@ -129,7 +128,6 @@ class EvolutionLoopResult:
             for key in (
                 "seed_coverage",
                 "target_perturb_seed_judgment",
-                "factor_resurrection_summary",
                 "minimal_core_ablation",
                 "seed_active_frontier",
                 "algorithm_efficiency",

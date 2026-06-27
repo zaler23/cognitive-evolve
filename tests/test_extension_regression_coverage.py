@@ -50,10 +50,9 @@ def test_search_space_fallback_is_objective_derived_not_domain_taxonomy() -> Non
     assert "duality_or_reduction" not in search_map["route_family"]
 
 
-def test_archive_evolution_and_verification_stack_paths() -> None:
+def test_archive_evolution_and_monitor_paths() -> None:
     from cognitive_evolve_runtime.archives.quality_diversity import QualityDiversityArchive
     from cognitive_evolve_runtime.evolution import DriftDetector, ProgressMonitor, StagnationDetector
-    from cognitive_evolve_runtime.tools.verification_stack import NexusVerifierStack
 
     candidate = CandidateGenome(
         id="C1",
@@ -70,18 +69,6 @@ def test_archive_evolution_and_verification_stack_paths() -> None:
     assert DriftDetector().detect(detector_candidates)["status"] == "ok"
     assert ProgressMonitor().summarize([{"new_verifier_result": True}])["round_count"] == 1
     assert StagnationDetector().detect([{}, {}])["status"] == "stagnation_detected"
-
-    seed = CandidateGenome(
-        id="Seed",
-        artifact="Direct Solver Seed: pursue the prompt",
-        concise_claim="seed",
-        core_mechanism="seed",
-        novelty_descriptors=["direct"],
-    )
-    seed.metadata["search_seed_not_final"] = True
-    result = NexusVerifierStack().verify(seed)
-    assert result.status == "warning"
-    assert "seed_not_final" in result.diagnostics
 
 
 def test_nexus_capability_selection_replaces_legacy_capability_runtime() -> None:

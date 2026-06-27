@@ -7,7 +7,6 @@ from cognitive_evolve_runtime.archives.manager import ArchiveManager
 from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome, CandidatePopulation
 from cognitive_evolve_runtime.candidates.mutation import _remove_scaffold_terms
 from cognitive_evolve_runtime.contracts.objective_contract import NexusObjectiveContract
-from cognitive_evolve_runtime.nexus.factor_resurrection import failure_factor_hints, resurrect_factor_trace
 from cognitive_evolve_runtime.nexus.live_store import LiveNexusStore
 from cognitive_evolve_runtime.nexus.minimal_core import (
     ABLATION_PROFILES,
@@ -77,18 +76,6 @@ def test_target_perturb_seed_judgment_recommends_only_after_stuck_round() -> Non
     assert late["judgment"] == "trigger_recommended"
     assert late["policy"] == "recommend_only_resume_from_latest_checkpoint"
     assert "suggested_prompt_delta" in late
-
-
-def test_loser_pool_factor_trace_enters_archive_prompt_view_without_failure_archive_records() -> None:
-    dormant = _candidate("D", "rare", fate=CandidateFate.DORMANT.value)
-    dormant.failure_lessons.append("near miss: rare branch factor should be combined with active proof search")
-    dormant.edge_knowledge_seeds.append("edge factor")
-
-    factors = resurrect_factor_trace([dormant])
-    view = archive_prompt_view(ArchiveManager(), population=[dormant])
-
-    assert factors and factors[0]["candidate_id"] == "D"
-    assert view["failure_factor_hints"][0]["candidate_id"] == "D"
 
 
 def test_resurrection_quota_scales_with_large_loser_pool_but_keeps_budget_floor() -> None:
@@ -227,17 +214,6 @@ def test_large_seed_pool_marks_small_active_frontier_without_deleting_candidates
     assert trace["dormant_count"] == 6
     assert len(candidates) == 10
     assert sum(1 for candidate in candidates if candidate.current_fate == CandidateFate.DORMANT.value) == 6
-
-
-def test_prompt_view_includes_factor_trace_and_strategy_comparison() -> None:
-    dormant = _candidate("D", "rare", fate=CandidateFate.DORMANT.value)
-    dormant.failure_lessons.append("useful failed ingredient")
-    policy = EvolutionPolicy(metadata={"strategy_comparison": {"open_hypotheses": ["compare A and B"]}})
-
-    view = build_prompt_view("nexus_plan_mutations", {"policy": policy, "candidates": [dormant], "archives": ArchiveManager()}).payload
-
-    assert view["archives"]["failure_factor_hints"][0]["candidate_id"] == "D"
-    assert view["policy"]["strategy_comparison"]["open_hypotheses"] == ["compare A and B"]
 
 
 def test_live_checkpoint_persists_monitor_search_kernel_and_runtime_options(tmp_path: Path) -> None:

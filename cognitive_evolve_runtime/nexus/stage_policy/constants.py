@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 from cognitive_evolve_runtime.candidates.genome import CandidateFate
-from cognitive_evolve_runtime.nexus.obligations import HARD_EVIDENCE_FAILURES, HARD_PROOF_FAILURES
 from cognitive_evolve_runtime.nexus.source_lineage import MATERIALIZATION_HARD_DIAGNOSTICS, MATERIALIZATION_REPAIR_DIAGNOSTICS
 
 EARLY_STAGE = "early"

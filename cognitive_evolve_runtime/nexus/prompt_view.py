@@ -17,7 +17,6 @@ from cognitive_evolve_runtime.candidates.genome import CandidateGenome, candidat
 from cognitive_evolve_runtime.candidates.project_candidate import ProjectCandidateGenome
 from cognitive_evolve_runtime.llm.env import LLM_MAX_PROMPT_CHARS_ENV
 from cognitive_evolve_runtime.nexus.activation import ACTIVATION_REQUESTS, activation_prompt_contract
-from cognitive_evolve_runtime.nexus.factor_resurrection import failure_factor_hints, resurrect_factor_trace
 from cognitive_evolve_runtime.nexus.search_space import build_search_space_map
 from cognitive_evolve_runtime.nexus.prompt_profiles import apply_prompt_profile
 from cognitive_evolve_runtime.nexus.nextgen import false_cull_monitor
@@ -190,9 +189,6 @@ def archive_prompt_view(archives: Any, *, population: list[CandidateGenome] | No
     failure_archive = getattr(archives, "failure_archive", None)
     records = getattr(failure_archive, "records", {}) if failure_archive is not None else {}
     view["failure_lessons"] = _failure_records_view(records, limit=8)
-    hints = failure_factor_hints(archives, population=population, limit=8)
-    if hints:
-        view["failure_factor_hints"] = hints
     return view
 
 
@@ -295,7 +291,7 @@ def policy_prompt_view(policy: Any) -> dict[str, Any]:
         view["search_space_plan_required"] = _clip(metadata.get("search_space_plan_required"), 500)
     if isinstance(metadata.get("strategy_comparison"), dict):
         view["strategy_comparison"] = _small_mapping(metadata.get("strategy_comparison"), max_items=8, string_chars=260)
-    for key in ("seed_coverage", "target_perturb_seed_judgment", "factor_resurrection_summary", "algorithm_efficiency", "model_parallel_efficiency", "minimal_core_ablation", "seed_active_frontier", "seed_reservoir_ref"):
+    for key in ("seed_coverage", "target_perturb_seed_judgment", "algorithm_efficiency", "model_parallel_efficiency", "minimal_core_ablation", "seed_active_frontier", "seed_reservoir_ref"):
         if key in metadata:
             view[key] = _small_mapping(metadata.get(key), max_items=10, string_chars=260)
     return view
@@ -372,9 +368,6 @@ def _compress_payload(request_type: str, payload: dict[str, Any]) -> dict[str, A
         compressed["candidate_population_stats"] = _population_stats(candidates)
     if parents:
         compressed["parents"] = [candidate_prompt_view(c, detail="summary") for c in parents[:16]]
-    factors = resurrect_factor_trace(population or candidates, limit=10)
-    if factors:
-        compressed["resurrected_factor_trace"] = factors
     strategy = strategy_comparison_context(payload.get("policy"), population or candidates)
     if strategy:
         compressed["strategy_comparison"] = strategy
@@ -537,7 +530,6 @@ def _synthesis_evidence_manifest(payload: dict[str, Any]) -> dict[str, Any]:
         "candidate_population_stats": _population_stats(candidates),
         "candidates": [candidate_prompt_view(c, detail="tiny", max_artifact_chars=240) for c in selected],
         "archives": archive_prompt_view(payload.get("archives"), population=candidates),
-        "resurrected_factor_trace": resurrect_factor_trace(candidates, limit=8),
         "strategy_comparison": strategy_comparison_context(payload.get("policy"), candidates),
         "synthesis_requirements": {
             "return_non_empty_json": True,

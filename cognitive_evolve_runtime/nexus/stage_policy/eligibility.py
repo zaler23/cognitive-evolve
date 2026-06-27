@@ -7,8 +7,7 @@ from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateG
 from cognitive_evolve_runtime.nexus._serde import coerce_dict
 
 from .constants import (
-    EARLY_STAGE, FINAL_STAGE, HARD_EVIDENCE_FAILURES, HARD_PROOF_FAILURES,
-    LATE_STAGE, MIDDLE_STAGE, REPAIRABLE_DIAGNOSTICS, TERMINAL_FATES,
+    EARLY_STAGE, FINAL_STAGE, LATE_STAGE, MIDDLE_STAGE, REPAIRABLE_DIAGNOSTICS, TERMINAL_FATES,
 )
 from .metadata import (
     _incubation_started_round, _max_incubation_age, _max_incubation_attempts,

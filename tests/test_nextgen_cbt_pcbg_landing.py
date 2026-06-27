@@ -633,8 +633,7 @@ def test_nextgen_soft_signals_do_not_appear_in_hard_gate_consumers() -> None:
         root / "cognitive_evolve_runtime/nexus/display_selection.py",
         root / "cognitive_evolve_runtime/nexus/final_projection.py",
         root / "cognitive_evolve_runtime/nexus/final_gate.py",
-        root / "cognitive_evolve_runtime/tools/verification_stack.py",
-    ]
+            ]
     forbidden = (
         "productive_child_observation",
         "must_not_block",
