@@ -918,9 +918,15 @@ def _project_world_view(mapping: dict[str, Any]) -> dict[str, Any]:
         "test_map": _small_mapping(world.get("test_map") or {}, max_items=30, string_chars=160),
         "config_map": _small_mapping(world.get("config_map") or {}, max_items=30, string_chars=160),
         "hotspot_map": _small_mapping(world.get("hotspot_map") or {}, max_items=30, string_chars=160),
-        "objective_relevance_map": _small_mapping(world.get("objective_relevance_map") or {}, max_items=30, string_chars=180),
+        "objective_relevance_map": _small_mapping(_ranked_score_map(world.get("objective_relevance_map") or {}), max_items=30, string_chars=180),
     }
 
+
+
+def _ranked_score_map(mapping: Any) -> dict[str, Any]:
+    if not isinstance(mapping, dict):
+        return {}
+    return {str(k): v for k, v in sorted(mapping.items(), key=lambda item: (-float(item[1] or 0.0), str(item[0])))}
 
 def _ranking_view(data: Any) -> dict[str, Any]:
     mapping = _to_mapping(data)

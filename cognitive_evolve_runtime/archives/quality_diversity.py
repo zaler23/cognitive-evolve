@@ -13,7 +13,7 @@ from typing import Any
 from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome
 from cognitive_evolve_runtime.nexus.adaptive_signals import in_top_band, score
 from cognitive_evolve_runtime.core.scalars import bounded_score
-from cognitive_evolve_runtime.nexus.search_kernel.descriptor_cells import descriptor_cell_key
+from cognitive_evolve_runtime.nexus.search_kernel.descriptor_cells import behavior_descriptor, descriptor_cell_key
 from cognitive_evolve_runtime.nexus.v23_theory_config import EntropyCompactionConfig, V23TheoryRuntimeConfig
 
 
@@ -65,16 +65,11 @@ def candidate_bin_key(candidate: CandidateGenome) -> str:
     evidence-bearing variants, and project/source-grounded candidates.
     """
 
-    primary = (
-        (candidate.niche_memberships[0] if candidate.niche_memberships else "")
-        or (candidate.novelty_descriptors[0] if candidate.novelty_descriptors else "")
-        or candidate.core_mechanism
-        or candidate.artifact_type
-        or "general"
-    )
+    descriptor = list(behavior_descriptor(candidate))
+    primary = descriptor[0] if descriptor else "general"
     evidence_shape = "evidence" if (candidate.evidence_delta or candidate.evidence_refs or candidate.source_bindings) else "proposal"
     rare_shape = "rare" if (candidate.edge_knowledge_seeds or score(candidate, "rarity") > 0 and score(candidate, "rarity") >= score(candidate, "novelty")) else "common"
-    return "|".join(_token(item) for item in (primary, evidence_shape, rare_shape) if item)
+    return "|".join(_token(item) for item in ([primary] + descriptor[1:4] + [evidence_shape, rare_shape]) if item)
 
 
 
@@ -367,6 +362,7 @@ def _descriptor_key(value: Any) -> str:
 
 def _candidate_descriptor_tokens(candidate: CandidateGenome) -> set[str]:
     values: list[str] = [candidate.id, candidate.core_mechanism, candidate.concise_claim]
+    values.extend(behavior_descriptor(candidate))
     values.extend(candidate.niche_memberships)
     values.extend(candidate.novelty_descriptors)
     out: set[str] = set()

@@ -3,10 +3,11 @@ from __future__ import annotations
 from cognitive_evolve_runtime.archives.manager import ArchiveManager
 from cognitive_evolve_runtime.archives.quality_diversity import QualityDiversityArchive
 from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome
+from cognitive_evolve_runtime.candidates.project_candidate import PatchOperation, ProjectCandidateGenome
 from cognitive_evolve_runtime.nexus.loop.seeding import _generate_model_seed_batches
 from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy
 from cognitive_evolve_runtime.nexus.search_kernel.harvesting import _unbounded_seed_handoff_exhausted
-from cognitive_evolve_runtime.nexus.search_kernel.descriptor_cells import descriptor_cell_key
+from cognitive_evolve_runtime.nexus.search_kernel.descriptor_cells import behavior_descriptor, descriptor_cell_key
 from cognitive_evolve_runtime.nexus.search_kernel.fingerprints import normalized_ast_signature
 from cognitive_evolve_runtime.ranking.parent_selection import ParentSelector
 
@@ -89,6 +90,26 @@ class _Contract:
 
     def to_dict(self):
         return {"objective": self.objective}
+
+
+
+def test_behavior_descriptor_uses_search_space_and_real_project_paths() -> None:
+    candidate = ProjectCandidateGenome(
+        id="P3D",
+        core_mechanism="fallback",
+        metadata={"search_space": {"family_id": "adapter repair"}, "target_files": ["tests/test_adapter.py"]},
+        source_bindings=[{"path": "cognitive_evolve_runtime/nexus/model_adapter.py"}],
+        patch_set=[PatchOperation(path="cognitive_evolve_runtime/nexus/model_adapter.py", operation="append", content="# x")],
+        patch_application_result={"status": "applied", "applied_files": ["cognitive_evolve_runtime/nexus/model_adapter.py"]},
+    )
+
+    descriptor = behavior_descriptor(candidate)
+
+    assert descriptor[0] == "adapter_repair"
+    assert any(item.startswith("src:") and "model_adapter" in item for item in descriptor)
+    assert any(item.startswith("patch:") and "model_adapter" in item for item in descriptor)
+    assert any(item.startswith("target:") and "test_adapter" in item for item in descriptor)
+    assert "applied" in descriptor
 
 
 def test_search_kernel_ast_signature_ignores_variable_rename() -> None:

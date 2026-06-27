@@ -23,3 +23,5 @@ def test_project_snapshot_hashes_files_and_detects_commands(tmp_path: Path) -> N
     assert "python -m pytest -q" in snapshot.detected_commands
     assert world.file_roles["tests/test_mod.py"] == "test"
     assert "add" in world.symbol_graph["pkg/mod.py"]
+    assert next(iter(world.objective_relevance_map)) == "pkg/mod.py"
+    assert world.objective_relevance_map["pkg/mod.py"] > world.objective_relevance_map["tests/test_mod.py"]

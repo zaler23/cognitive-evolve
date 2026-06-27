@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ast
+import re
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -40,19 +41,20 @@ class ProjectWorldModel:
             role = _role_for_path(rel)
             file_roles[rel] = role
             hotspot_map[rel] = _hotspot(item)
-            relevance[rel] = _relevance(rel, objective)
-            if role == "test":
-                test_map.setdefault(_probable_source_for_test(rel), []).append(rel)
-            elif role == "config":
-                config_map[rel] = Path(rel).name
-            elif role == "docs":
-                docs_map[rel] = Path(rel).name
+            symbols: list[str] = []
             if root and rel.endswith(".py"):
                 path = root / rel
                 if path.exists():
                     symbols, imports = _python_symbols_and_imports(path)
                     symbol_graph[rel] = symbols
                     dependency_graph[rel] = imports
+            relevance[rel] = _relevance(rel, objective, role=role, symbols=symbols)
+            if role == "test":
+                test_map.setdefault(_probable_source_for_test(rel), []).append(rel)
+            elif role == "config":
+                config_map[rel] = Path(rel).name
+            elif role == "docs":
+                docs_map[rel] = Path(rel).name
         return cls(
             snapshot_id=snapshot.snapshot_id,
             file_roles=file_roles,
@@ -63,7 +65,7 @@ class ProjectWorldModel:
             docs_map=docs_map,
             command_graph={"detected": list(snapshot.detected_commands)},
             hotspot_map=hotspot_map,
-            objective_relevance_map=relevance,
+            objective_relevance_map=_top_relevance(relevance),
             project_summary=f"{len(snapshot.file_manifest)} files; languages={snapshot.language_profile}; commands={snapshot.detected_commands}",
         )
 
@@ -107,12 +109,31 @@ def _hotspot(item: dict[str, Any]) -> float:
     return min(1.0, size / 20000.0)
 
 
-def _relevance(path: str, objective: str) -> float:
-    if not objective:
+def _relevance(path: str, objective: str, *, role: str = "", symbols: list[str] | None = None) -> float:
+    tokens = _tokens(objective)
+    if not tokens:
         return 0.0
-    tokens = {token.strip("._-/").lower() for token in objective.split() if len(token) > 2}
-    path_tokens = {token for chunk in path.replace("/", " ").replace("_", " ").replace("-", " ").split() for token in [chunk.lower()]}
-    return len(tokens & path_tokens) / max(1, len(tokens))
+    path_tokens = _tokens(path)
+    symbol_tokens = set().union(*(_tokens(symbol) for symbol in (symbols or []))) if symbols else set()
+    score = 0.0
+    score += 0.55 * (len(tokens & path_tokens) / max(1, len(tokens)))
+    score += 0.35 * (len(tokens & symbol_tokens) / max(1, len(tokens)))
+    if role == "implementation" and tokens & (path_tokens | symbol_tokens):
+        score += 0.10
+    elif role == "test" and ({"test", "pytest", "regression", "fix"} & tokens):
+        score += 0.08
+    elif role in {"config", "docs"} and tokens & path_tokens:
+        score += 0.04
+    return min(1.0, round(score, 6))
+
+
+def _tokens(text: str) -> set[str]:
+    return {token for token in re.split(r"[^A-Za-z0-9]+", str(text).lower()) if len(token) > 2}
+
+
+def _top_relevance(relevance: dict[str, float], *, limit: int = 80) -> dict[str, float]:
+    ranked = sorted(relevance.items(), key=lambda item: (-item[1], item[0]))[:limit]
+    return {path: score for path, score in ranked}
 
 
 def _probable_source_for_test(path: str) -> str:
