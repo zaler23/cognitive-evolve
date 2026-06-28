@@ -262,6 +262,8 @@ def contract_prompt_view(contract: Any) -> dict[str, Any]:
         search_space_plan = dac.get("search_space_plan") or dac.get("search_space")
     if isinstance(search_space_plan, dict):
         view["search_space_plan"] = _small_mapping(search_space_plan, max_items=10, string_chars=500)
+        if isinstance(search_space_plan.get("candidate_families"), list):
+            view["search_space_plan"]["candidate_families"] = [dict(item) for item in search_space_plan["candidate_families"][:12] if isinstance(item, dict)]
     return view
 
 
@@ -287,10 +289,14 @@ def policy_prompt_view(policy: Any) -> dict[str, Any]:
     search_space_plan = metadata.get("search_space_plan") or metadata.get("search_space_contract")
     if isinstance(search_space_plan, dict):
         view["search_space_plan"] = _small_mapping(search_space_plan, max_items=10, string_chars=500)
+        if isinstance(search_space_plan.get("candidate_families"), list):
+            view["search_space_plan"]["candidate_families"] = [dict(item) for item in search_space_plan["candidate_families"][:12] if isinstance(item, dict)]
     if metadata.get("search_space_plan_required"):
         view["search_space_plan_required"] = _clip(metadata.get("search_space_plan_required"), 500)
     if isinstance(metadata.get("strategy_comparison"), dict):
         view["strategy_comparison"] = _small_mapping(metadata.get("strategy_comparison"), max_items=8, string_chars=260)
+    if isinstance(metadata.get("theory"), dict):
+        view["theory"] = _small_mapping(metadata.get("theory"), max_items=8, string_chars=160)
     for key in ("seed_coverage", "target_perturb_seed_judgment", "algorithm_efficiency", "model_parallel_efficiency", "minimal_core_ablation", "seed_active_frontier", "seed_reservoir_ref"):
         if key in metadata:
             view[key] = _small_mapping(metadata.get(key), max_items=10, string_chars=260)
@@ -488,6 +494,17 @@ def _search_space_contract_from_views(
         "search_space_plan": plan,
     }
     search_map = build_search_space_map(assessment, requested_candidate_count=max(0, int(candidate_target_count or 0)))
+    theory = _to_mapping(policy_view.get("theory"))
+    producers = _to_mapping(theory.get("producers"))
+    theory_dimensions = [str(key) for key, enabled in producers.items() if enabled][:6]
+    if not theory_dimensions and theory.get("enabled"):
+        theory_dimensions = ["mdl", "boed", "geometry"]
+    world_structure = {
+        "kind": world_view.get("kind"),
+        "file_roles": list(_to_mapping(world_view.get("file_roles")).keys())[:8],
+        "hotspots": list(_to_mapping(world_view.get("hotspot_map")).keys())[:8],
+        "objective_relevant_files": list(_to_mapping(world_view.get("objective_relevance_map")).keys())[:8],
+    }
     return {
         "request_type": request_type,
         "source": search_map.get("source"),
@@ -496,6 +513,12 @@ def _search_space_contract_from_views(
         "candidate_families": search_map.get("candidate_families", [])[:12],
         "coverage_gate": search_map.get("coverage_gate", {}),
         "surface_bias_guard": search_map.get("surface_bias_guard", {}),
+        "theory_dimensions": {
+            "source": "supplemental_prompt_pressure",
+            "dimensions": theory_dimensions,
+            "rule": "Use these only to diversify exploration pressure; do not treat them as eligibility, stop, or correctness gates.",
+        },
+        "world_structure": {k: v for k, v in world_structure.items() if v},
         "anti_narrowing_instruction": (
             "If recent candidates cluster around one implementation/detail surface, generate the next candidates from different objective-level planes rather than another same-surface patch variant."
         ),
