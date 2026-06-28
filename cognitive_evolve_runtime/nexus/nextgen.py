@@ -17,7 +17,7 @@ from cognitive_evolve_runtime.nexus.search_kernel.fingerprints import base_mecha
 NEXTGEN_METADATA_KEY = "nextgen"
 INTENT_BINDING_KEY = "intent_binding"
 CANONICAL_FAMILY_VERSION = "bounded-mechanism-v1"
-CANONICAL_BUCKETS_PER_DECLARED_FAMILY = 6
+CANONICAL_BUCKETS_PER_DECLARED_FAMILY = 8
 _CANONICAL_TOKEN_NOISE = {
     "candidate",
     "mechanism",
