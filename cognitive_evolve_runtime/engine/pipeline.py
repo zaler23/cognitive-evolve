@@ -45,7 +45,7 @@ class EvolutionPipeline:
             PipelineStage("objective_contract", "NexusRuntime", "Create and freeze the task objective contract."),
             PipelineStage("evolution_policy", "NexusRuntime", "Create model-driven niches, axes, operators, and archive policy."),
             PipelineStage("candidate_population", "NexusRuntime", "Seed and mutate structured candidate genomes."),
-            PipelineStage("local_verification", "VerifierStack", "Run local tools and attach structured feedback."),
+            PipelineStage("local_verification", "NexusRuntime", "Run local tools and attach structured feedback."),
             PipelineStage("relative_ranking", "ranking", "Apply relative rating and multihead scoring."),
             PipelineStage("archives_and_diagnosis", "archives", "Update archives and diagnose stagnation/control actions."),
             PipelineStage("nexus_synthesis", "NexusRuntime", "Synthesize final answer, patch, report, and Nexus artifacts."),

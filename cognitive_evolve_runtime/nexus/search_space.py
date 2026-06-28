@@ -55,6 +55,10 @@ def build_search_space_map(assessment: dict[str, Any], requested_candidate_count
         "candidate_families": families,
         "route_family": [str(item.get("id")) for item in families],
         "coverage_gate": {
+            # Advisory breadth pressure, NOT an eligibility/stop/correctness gate. The
+            # "gate" name is legacy; this only nudges family coverage during search and
+            # never blocks final-answer eligibility or stop decisions.
+            "mode": "advisory_pressure_only",
             "min_family_count": required,
             "rule": "cover materially distinct model-defined planes before deepening a single local surface",
             "allow_budget_degraded_status": requested < required,

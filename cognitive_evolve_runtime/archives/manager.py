@@ -66,6 +66,10 @@ class ArchiveManager:
     history: list[dict[str, Any]] = field(default_factory=list)
     constraint_records: list[dict[str, Any]] = field(default_factory=list)
     terminal_tombstones: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Runtime-only: resolved project root used to ground source-binding resolution.
+    # Intentionally excluded from to_dict()/from_dict() so archive payloads never
+    # carry a local absolute path.
+    project_root: str = ""
 
     def update(
         self,

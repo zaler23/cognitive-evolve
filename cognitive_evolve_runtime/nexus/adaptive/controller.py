@@ -277,7 +277,10 @@ class AdaptiveRuntimeController:
             return
         for key, value in data.items():
             if isinstance(value, (int, float, str, bool)) or value is None:
-                self.state.metrics[f"canonical_family_{key}"] = value
+                # Strip a self-describing canonical_family_ prefix so the namespaced
+                # key never doubles up into canonical_family_canonical_family_*.
+                metric_key = key[len("canonical_family_"):] if key.startswith("canonical_family_") else key
+                self.state.metrics[f"canonical_family_{metric_key}"] = value
         self.state.record_event(adaptive_event("canonical_family_metrics", round=round_index, **data))
 
 

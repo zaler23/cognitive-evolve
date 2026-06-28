@@ -228,6 +228,9 @@ class NexusRuntime:
             _resolve_budget_width_from_policy(budget, policy)
             min_population_size = min_population_size if min_population_size is not None else budget.initial_candidate_count
             archives = ArchiveManager(policy.archive_schema)
+            # Ground source-binding resolution in the real project root (runtime-only;
+            # never serialized into the archive payload).
+            archives.project_root = snapshot.root_path
             initial_context_result = self.context_orchestrator.build_for_parents(
                 contract=contract,
                 snapshot=snapshot,
@@ -344,6 +347,8 @@ class NexusRuntime:
                 snapshot_data = _snapshot_payload_from_world(restored.get("world") or {})
                 if snapshot_data:
                     snapshot = ProjectSnapshot.from_dict(snapshot_data)
+                    # Re-ground source-binding resolution after resume (runtime-only).
+                    archives.project_root = snapshot.root_path
 
                     def verify_offspring(candidates: list[Any]) -> list[ProjectVerificationSummary]:
                         summaries = self._verify_project_population(snapshot, candidates, include_tests=option_bool(runtime_options, "verification.include_tests", default=False), contract=contract, applied_overlays=_applied_overlays(restored_artifact_policy_config, contract))

@@ -324,7 +324,7 @@ class EvolutionRound:
         self.critique_engine.apply(candidates=population.candidates, critiques=critiques)
         for candidate in population.candidates:
             try:
-                annotate_candidate_source_bindings(candidate)
+                annotate_candidate_source_bindings(candidate, project_root=getattr(archives, "project_root", None) or None)
             except Exception:
                 if isinstance(candidate.metadata, dict):
                     candidate.metadata.setdefault("source_binding_manifest", {"binding_class": "no_binding", "admission_route": "repair_only", "diagnostics": ["source_binding_annotation_failed"]})
@@ -966,7 +966,7 @@ def _canonical_family_metrics(candidates: list[CandidateGenome]) -> dict[str, An
         return {}
     family_counts: dict[str, int] = {}
     bin_keys: set[str] = set()
-    novelty_ratios: list[float] = []
+    novelty_term_counts: list[tuple[str, int]] = []
     migration_samples = 0
     migration_changed = 0
     for candidate in candidates:
@@ -975,7 +975,7 @@ def _canonical_family_metrics(candidates: list[CandidateGenome]) -> dict[str, An
         family_counts[family] = family_counts.get(family, 0) + 1
         bin_keys.add(candidate_bin_key(candidate))
         novelty_terms = {str(item) for item in [*candidate.novelty_descriptors, *candidate.niche_memberships] if str(item or "").strip()}
-        novelty_ratios.append(len(novelty_terms) / max(1, family_counts[family]))
+        novelty_term_counts.append((family, len(novelty_terms)))
         migration = meta.get("canonical_mechanism_migration") if isinstance(meta.get("canonical_mechanism_migration"), dict) else {}
         if migration:
             migration_samples += 1
@@ -985,7 +985,8 @@ def _canonical_family_metrics(candidates: list[CandidateGenome]) -> dict[str, An
     probabilities = [count / max(1, total) for count in family_counts.values()]
     entropy = -sum(p * math.log(p, 2) for p in probabilities if p > 0.0)
     top_count = max(family_counts.values()) if family_counts else 0
-    ratios = sorted(novelty_ratios)
+    # Divide by the final family size so the ratio does not depend on iteration order.
+    ratios = sorted(count / max(1, family_counts[family]) for family, count in novelty_term_counts)
     return {
         "population_count": total,
         "canonical_family_entropy": round(entropy, 6),

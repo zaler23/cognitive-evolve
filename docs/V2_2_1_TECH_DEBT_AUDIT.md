@@ -199,7 +199,7 @@ Scope: minimal runtime change to make the already configured verification concur
 
 Changes made:
 
-- `verification_stack.verify_population` now runs candidates through a bounded `ThreadPoolExecutor` when `COGEV_VERIFY_CONCURRENCY` permits it. The shared formal-signature accumulator is accessed via a lock and candidates are returned in input order.
+- `nexus.project_verification.verify_population` now runs candidates through a bounded `ThreadPoolExecutor` when `COGEV_VERIFY_CONCURRENCY` permits it. The shared formal-signature accumulator is accessed via a lock and candidates are returned in input order.
 - `verification.obligation_runner.run_obligations_for_population` now checks candidates concurrently inside each obligation, with cache access guarded by a lock and result order preserved by candidate index.
 - `nexus.loop.round.critique_and_verify` now runs the verifier stack, synthesized verifier, and verification-obligation runner as three concurrent entrypoints when concurrency is enabled.
 - At this verifier-only phase, `plan_mutations` and offspring generation stayed serial by design; the later TD-CONCUR-002 closure section adds model batch fan-out where safe.

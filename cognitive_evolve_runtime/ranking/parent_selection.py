@@ -9,7 +9,6 @@ from cognitive_evolve_runtime.nexus.adaptive_signals import mean_percentile, per
 from cognitive_evolve_runtime.nexus.obligations import candidate_has_obligation_or_evidence_delta
 from cognitive_evolve_runtime.core.serialization import coerce_dict
 from cognitive_evolve_runtime.nexus.population_vitality import repair_slot_count
-from cognitive_evolve_runtime.nexus.source_binding_resolver import annotate_candidate_source_bindings, candidate_admission_route, candidate_source_binding_class
 from cognitive_evolve_runtime.nexus.nextgen import (
     budget_eligible_candidates,
     cbt_soft_budget_adjustment,
@@ -85,8 +84,12 @@ def reproductive_value(
         value
         + _advisory_selection_adjustment(candidate, advisory_features)
         + _archive_directive_adjustment(candidate, archives)
-        + _source_binding_selection_adjustment(candidate)
-        + cbt_soft_budget_adjustment(candidate, context)
+        # cbt_soft (canonical search-diversity soft quota) and source-binding
+        # annotation are intentionally NOT applied here: this base reproductive
+        # value feeds the >=0 parent-eligibility floor in ParentSelector.select,
+        # and a soft search signal must never gate whether a candidate can parent.
+        # cbt_soft is applied as an ordering-only bonus in select(); source bindings
+        # are annotated by the round/registry with the real project root.
         - lineage_penalty
         - constraint_penalty
         - repeated_failure_penalty
@@ -96,18 +99,6 @@ def reproductive_value(
         - reserve_penalty
     )
 
-
-
-def _source_binding_selection_adjustment(candidate: CandidateGenome) -> float:
-    metadata = candidate.metadata if isinstance(candidate.metadata, dict) else {}
-    if "source_binding_manifest" not in metadata and getattr(candidate, "source_bindings", None):
-        try:
-            annotate_candidate_source_bindings(candidate)
-        except Exception:
-            return -0.05
-    binding_class = candidate_source_binding_class(candidate)
-    route = candidate_admission_route(candidate)
-    return 0.0
 
 def _archive_directive_adjustment(candidate: CandidateGenome, archives: object | None) -> float:
     qd = getattr(archives, "quality_diversity", None)
@@ -162,13 +153,22 @@ class ParentSelector:
         round_index = _int(coerce_dict(eligibility_policy).get("current_round"), default=0)
         selection_pressure = coerce_dict(coerce_dict(eligibility_policy).get("selection_pressure"))
         base_values = {candidate.id: reproductive_value(candidate, population, archives, budget_context=viable) + _selection_pressure_adjustment(candidate, selection_pressure) for candidate in viable}
+        # cbt_soft is a canonical search-diversity soft quota: it may reorder viable
+        # parents but must NEVER enter the >=0 base_values eligibility floor below.
+        # Compute it once per viable candidate -- it records a budget-decision side
+        # effect, so it must not be recomputed inside each quality_fn lambda.
+        cbt_ordering = {candidate.id: cbt_soft_budget_adjustment(candidate, viable) for candidate in viable}
+
+        def _order(candidate: CandidateGenome, *, floor: float) -> float:
+            return base_values.get(candidate.id, floor) + _advisory_selection_adjustment(candidate, advisory_features) + cbt_ordering.get(candidate.id, 0.0)
+
         resurrection_candidates = _resurrection_candidates(viable, target=target)
         for candidate in resurrection_candidates:
             base_values[candidate.id] = base_values.get(candidate.id, 0.0) + max(0.0, resurrection_score(candidate, viable)) * 0.25 + 0.20
         by_value = sorted(
             viable,
             key=lambda candidate: (
-                base_values.get(candidate.id, -1.0) + _advisory_selection_adjustment(candidate, advisory_features),
+                _order(candidate, floor=-1.0),
                 base_values.get(candidate.id, -1.0),
                 candidate.id,
             ),
@@ -201,7 +201,7 @@ class ParentSelector:
             selected, trace = select_diverse(
                 primary,
                 limit=max(0, target - repair_slots),
-                quality_fn=lambda candidate: base_values.get(candidate.id, 0.0) + _advisory_selection_adjustment(candidate, advisory_features),
+                quality_fn=lambda candidate: _order(candidate, floor=0.0),
                 archives=archives,
                 advisory_features=advisory_features,
                 eligibility_policy=eligibility_policy,
@@ -210,7 +210,7 @@ class ParentSelector:
                 repair_selected, repair_trace = select_diverse(
                     incubating,
                     limit=max(0, target - len(selected)),
-                    quality_fn=lambda candidate: base_values.get(candidate.id, 0.0) + _advisory_selection_adjustment(candidate, advisory_features),
+                    quality_fn=lambda candidate: _order(candidate, floor=0.0),
                     archives=archives,
                     advisory_features=advisory_features,
                     eligibility_policy=eligibility_policy,
@@ -227,7 +227,7 @@ class ParentSelector:
             selected, trace = select_diverse(
                 incubating,
                 limit=target,
-                quality_fn=lambda candidate: base_values.get(candidate.id, 0.0) + _advisory_selection_adjustment(candidate, advisory_features),
+                quality_fn=lambda candidate: _order(candidate, floor=0.0),
                 archives=archives,
                 advisory_features=advisory_features,
                 eligibility_policy=eligibility_policy,
@@ -252,7 +252,7 @@ class ParentSelector:
             selected, trace = select_diverse(
                 primary_floor,
                 limit=target,
-                quality_fn=lambda candidate: base_values.get(candidate.id, 0.0) + _advisory_selection_adjustment(candidate, advisory_features),
+                quality_fn=lambda candidate: _order(candidate, floor=0.0),
                 archives=archives,
                 advisory_features=advisory_features,
                 eligibility_policy=eligibility_policy,
@@ -273,7 +273,7 @@ class ParentSelector:
         selected, trace = select_diverse(
             repairable,
             limit=target,
-            quality_fn=lambda candidate: base_values.get(candidate.id, 0.0) + _advisory_selection_adjustment(candidate, advisory_features),
+            quality_fn=lambda candidate: _order(candidate, floor=0.0),
             archives=archives,
             advisory_features=advisory_features,
             eligibility_policy=eligibility_policy,

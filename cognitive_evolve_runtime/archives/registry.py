@@ -25,7 +25,7 @@ class ArchiveRegistry:
     def route_candidate(self, candidate: CandidateGenome, assignment: FateAssignment) -> None:
         fate = CandidateFate.normalize(assignment.fate)
         try:
-            annotate_candidate_source_bindings(candidate)
+            annotate_candidate_source_bindings(candidate, project_root=getattr(self.manager, "project_root", "") or None)
         except Exception:
             if isinstance(candidate.metadata, dict):
                 candidate.metadata.setdefault("source_binding_manifest", {"binding_class": "no_binding", "admission_route": "repair_only", "diagnostics": ["source_binding_annotation_failed"]})

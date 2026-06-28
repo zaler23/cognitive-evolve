@@ -75,6 +75,8 @@ Start with the hermetic fixture path before any real model provider:
 ```bash
 python3 scripts/cogev.py doctor --scope core
 python3 scripts/cogev.py config init --profile fixture --print
+export COGEV_LLM_PROVIDER=fixture
+export COGEV_LLM_FIXTURE="$PWD/tests/fixtures/llm_fixture.json"
 python3 scripts/cogev.py llm status
 python3 scripts/cogev.py run "find three bold candidate directions for a hard open problem"
 ```
@@ -82,13 +84,6 @@ python3 scripts/cogev.py run "find three bold candidate directions for a hard op
 Real provider runs are opt-in. Verification labels are advisory unless an
 external/user-owned verifier confirms the answer; CognitiveEvolve's default job
 is to explore high-ceiling candidate mechanisms.
-
-For deterministic tests and demos:
-
-```bash
-export COGEV_LLM_PROVIDER=fixture
-export COGEV_LLM_FIXTURE="$PWD/tests/fixtures/llm_fixture.json"
-```
 
 For real model use, configure a generic provider explicitly. Runtime code talks to `llm.provider_interface.LLMProviderInterface`; supported public modes are `litellm`, `direct_http` for OpenAI-compatible `/v1/chat/completions`, and deterministic `fixture` for tests. Tests default to hermetic mode and never read user-home `.env` files. The public project does not ship a private application model relay or provider-specific local integration.
 

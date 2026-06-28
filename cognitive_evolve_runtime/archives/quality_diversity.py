@@ -67,9 +67,12 @@ def candidate_bin_key(candidate: CandidateGenome) -> str:
 
     descriptor = list(behavior_descriptor(candidate))
     primary = descriptor[0] if descriptor else "general"
+    # Keep src/patch/target path buckets *and* the applied/not_applied behavior token
+    # (descriptor index 4) so applied state splits the QD bin instead of being dropped.
+    descriptor_shape = descriptor[1:5]
     evidence_shape = "evidence" if (candidate.evidence_delta or candidate.evidence_refs or candidate.source_bindings) else "proposal"
     rare_shape = "rare" if (candidate.edge_knowledge_seeds or score(candidate, "rarity") > 0 and score(candidate, "rarity") >= score(candidate, "novelty")) else "common"
-    return "|".join(_token(item) for item in ([primary] + descriptor[1:4] + [evidence_shape, rare_shape]) if item)
+    return "|".join(_token(item) for item in ([primary] + descriptor_shape + [evidence_shape, rare_shape]) if item)
 
 
 

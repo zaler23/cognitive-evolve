@@ -4,16 +4,16 @@ PYTHON ?= python3
 PYTHONPATH ?= .
 
 test:
-	PYTHONPATH=$(PYTHONPATH) $(PYTHON) -B -m pytest -q
+	PYTHONPATH=$(PYTHONPATH) $(PYTHON) -B -m pytest -q -p no:cacheprovider
 
 test-core:
-	PYTHONPATH=$(PYTHONPATH) $(PYTHON) -B -m pytest -q tests
+	PYTHONPATH=$(PYTHONPATH) $(PYTHON) -B -m pytest -q -p no:cacheprovider tests
 
 test-e2e:
-	PYTHONPATH=$(PYTHONPATH) $(PYTHON) -B -m pytest -q tests
+	PYTHONPATH=$(PYTHONPATH) $(PYTHON) -B -m pytest -q -p no:cacheprovider tests
 
 coverage:
-	PYTHONPATH=$(PYTHONPATH) $(PYTHON) -B -m pytest -q --cov=cognitive_evolve_runtime --cov-report=term-missing --cov-fail-under=80
+	PYTHONPATH=$(PYTHONPATH) $(PYTHON) -B -m pytest -q -p no:cacheprovider --cov=cognitive_evolve_runtime --cov-report=term-missing --cov-fail-under=80
 
 api-status:
 	$(PYTHON) scripts/cogev.py api status

@@ -108,6 +108,18 @@ def _bounded_payload(payload: dict[str, Any], *, max_chars: int) -> dict[str, An
     if len(json.dumps(bounded, ensure_ascii=False, sort_keys=True, default=str)) > limit:
         bounded["representatives"] = []
         bounded["clusters"] = []
+    if len(json.dumps(bounded, ensure_ascii=False, sort_keys=True, default=str)) > limit and isinstance(bounded.get("coverage_report"), dict):
+        # Even with representatives/clusters stripped, the per-cell descriptor
+        # distribution and cell-key lists can exceed the prompt bound when the
+        # population spreads across many behavior bins. Keep the scalar coverage
+        # summaries and drop the per-cell detail so the prompt bound always holds.
+        cov = dict(bounded["coverage_report"])
+        cov.pop("descriptor_cell_distribution", None)
+        for cell_list_key in ("sparse_cells", "overrepresented_cells", "missing_cells"):
+            if cell_list_key in cov:
+                cov[cell_list_key] = []
+        cov["coverage_detail_truncated"] = True
+        bounded["coverage_report"] = cov
     return bounded
 
 

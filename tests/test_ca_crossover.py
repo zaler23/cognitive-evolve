@@ -113,7 +113,7 @@ def test_adaptive_controller_records_canonical_family_metrics_event() -> None:
 
     controller.record_canonical_family_metrics({"canonical_family_entropy": 1.5, "population_count": 3}, round_index=2)
 
-    assert controller.state.metrics["canonical_family_canonical_family_entropy"] == 1.5
+    assert controller.state.metrics["canonical_family_entropy"] == 1.5
     assert controller.state.events[-1]["type"] == "canonical_family_metrics"
     assert controller.state.events[-1]["round"] == 2
 

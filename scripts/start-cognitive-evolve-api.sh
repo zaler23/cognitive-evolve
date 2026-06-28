@@ -95,6 +95,11 @@ else
   echo "No env file found at $ENV_FILE; continuing with current environment variables."
 fi
 
+# Align the port the runtime server binds (COGEV_SERVER_PORT) with the port this
+# launcher echoes and health-checks, so they can never silently diverge.
+SERVICE_PORT="${COGEV_SERVER_PORT:-$SERVICE_PORT}"
+export COGEV_SERVER_PORT="$SERVICE_PORT"
+
 if [[ "$SETUP_ONLY" == "true" ]]; then
   echo "Environment is ready."
   exit 0

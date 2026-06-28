@@ -66,6 +66,6 @@ Nexus now separates complete local state from model-facing prompt views. Full ge
 
 ## Legacy capability migration update
 
-The remaining v1 capability surfaces have been moved into Nexus-native modules rather than restored as compatibility shims. Semantic routing/intake/capability hints now live in `nexus.semantics`; request-local budget context lives in `nexus.request_context`; post-run validation/eval/prompt optimization lives in `nexus.evaluation`; broad search-space coverage lives in `nexus.search_space`; the old verifier stack is now `tools.verification_stack`; provider inflight diagnostics live in `llm.inflight`.
+The remaining v1 capability surfaces have been moved into Nexus-native modules rather than restored as compatibility shims. Semantic routing/intake/capability hints now live in `nexus.semantics`; request-local budget context lives in `nexus.request_context`; post-run validation/eval/prompt optimization lives in `nexus.evaluation`; broad search-space coverage lives in `nexus.search_space`; the old verifier stack is now `nexus.project_verification`; provider inflight diagnostics live in `llm.inflight`.
 
 The old top-level modules and subpackages are absent and tested as absent. See `docs/NEXUS_LEGACY_CAPABILITY_MIGRATION.md`.

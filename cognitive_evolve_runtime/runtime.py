@@ -6,6 +6,7 @@ canonical runtime state.
 """
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 from typing import Any
@@ -139,6 +140,9 @@ def _task_adaptive_config(task_dir: Path) -> dict[str, object]:
     try:
         data = parse_simple_yaml(task_yaml.read_text(encoding="utf-8"))
     except Exception:
+        logging.getLogger(__name__).warning(
+            "Failed to parse %s; falling back to empty adaptive config", task_yaml, exc_info=True
+        )
         return {}
     adaptive = data.get("adaptive")
     evaluator = data.get("evaluator")
