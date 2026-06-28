@@ -271,6 +271,16 @@ class AdaptiveRuntimeController:
         self.state.record_event(adaptive_event("cell_activation_map", round=round_index, cell_count=len(data)))
 
 
+    def record_canonical_family_metrics(self, metrics: dict[str, Any], *, round_index: int) -> None:
+        data = coerce_dict(metrics)
+        if not data:
+            return
+        for key, value in data.items():
+            if isinstance(value, (int, float, str, bool)) or value is None:
+                self.state.metrics[f"canonical_family_{key}"] = value
+        self.state.record_event(adaptive_event("canonical_family_metrics", round=round_index, **data))
+
+
     def attach_final_certificate(self, certificate: dict[str, Any]) -> None:
         if not self.enabled and not certificate:
             return
