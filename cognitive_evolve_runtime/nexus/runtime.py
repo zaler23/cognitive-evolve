@@ -216,6 +216,7 @@ class NexusRuntime:
                 artifact_policy_config=artifact_policy_config,
             )
             policy = self.policy_builder.build(contract=contract, world=world, model=self.model)
+            _enable_project_theory_advisory_pressure(policy)
             budget = budget or evolution_budget_from_params(
                 max_rounds=max_rounds,
                 branch_factor=branch_factor,
@@ -329,6 +330,8 @@ class NexusRuntime:
             archives = restored["archives"]
             policy = restored["policy"]
             contract = _contract_from_checkpoint(mode, restored.get("contract") or {})
+            if mode == "project":
+                _enable_project_theory_advisory_pressure(policy)
             restored_artifact_policy_config = _artifact_policy_config_from_adaptive_state(restored.get("adaptive_state") or {})
             if restored_artifact_policy_config:
                 apply_artifact_policy_to_contract(contract, restored_artifact_policy_config, source="adaptive_state.resume")
@@ -435,6 +438,22 @@ class NexusRuntime:
         return self.persistence_service.persist(run, result, contract=contract, world=world, budget_history=budget_history, budget=budget, runtime_options=runtime_options)
 
 
+
+
+def _enable_project_theory_advisory_pressure(policy: EvolutionPolicy) -> None:
+    metadata = policy.metadata if isinstance(policy.metadata, dict) else {}
+    theory = dict(metadata.get("theory") or {})
+    producers = dict(theory.get("producers") or {})
+    weights = dict(theory.get("weights") or {})
+    theory["enabled"] = True
+    for name in ("mdl", "boed", "geometry"):
+        producers[name] = True
+    for name, weight in {"mdl": 0.02, "boed": 0.015, "geometry": 0.015}.items():
+        weights.setdefault(name, weight)
+    theory["producers"] = producers
+    theory["weights"] = weights
+    metadata["theory"] = theory
+    policy.metadata = metadata
 
 
 def _resolve_budget_width_from_policy(budget: EvolutionBudget, policy: EvolutionPolicy) -> None:

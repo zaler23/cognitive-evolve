@@ -620,6 +620,7 @@ def _preserve_search_kernel_metadata(previous: EvolutionPolicy, updated: Evoluti
         "model_parallel_efficiency",
         "seed_reservoir_ref",
         "_seed_reservoir_sidecar_payload",
+        "theory",
     ):
         if key in previous_metadata and key not in metadata:
             metadata[key] = previous_metadata[key]
