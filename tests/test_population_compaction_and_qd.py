@@ -65,7 +65,11 @@ def test_quality_diversity_compacts_per_bin_without_fixed_global_cap() -> None:
     live_ids = {candidate.id for candidate in population.candidates}
     assert "a-rare" in live_ids
     assert result.compacted_clone_ids
-    assert len([candidate for candidate in population.candidates if candidate_bin_key(candidate).startswith("alpha|")]) <= 3
-    assert len([candidate for candidate in population.candidates if candidate_bin_key(candidate).startswith("beta|")]) <= 3
+    bin_counts: dict[str, int] = {}
+    for candidate in population.candidates:
+        key = candidate_bin_key(candidate)
+        bin_counts[key] = bin_counts.get(key, 0) + 1
+    assert max(count for key, count in bin_counts.items() if key.startswith("alpha")) <= 3
+    assert max(count for key, count in bin_counts.items() if key.startswith("beta")) <= 3
     assert len(population.candidates) > 2  # bins, not one fixed global cap
     assert set(result.compacted_clone_ids).issubset(set(archives.dormant_archive.candidates))

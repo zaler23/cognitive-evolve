@@ -105,11 +105,21 @@ def test_behavior_descriptor_uses_search_space_and_real_project_paths() -> None:
 
     descriptor = behavior_descriptor(candidate)
 
-    assert descriptor[0] == "adapter_repair"
+    assert descriptor[0].startswith("adapter_repair#m")
     assert any(item.startswith("src:") and "model_adapter" in item for item in descriptor)
     assert any(item.startswith("patch:") and "model_adapter" in item for item in descriptor)
     assert any(item.startswith("target:") and "test_adapter" in item for item in descriptor)
     assert "applied" in descriptor
+
+
+def test_behavior_descriptor_initializes_canonical_family_without_nextgen_metadata() -> None:
+    candidate = CandidateGenome(id="B1", core_mechanism="alpha clone", niche_memberships=["alpha"])
+
+    descriptor = behavior_descriptor(candidate)
+
+    assert descriptor[0].startswith("alpha#m")
+    assert not descriptor[0].startswith("b1")
+    assert candidate.metadata["nextgen"]["canonical_mechanism_family_id"] == descriptor[0]
 
 
 def test_search_kernel_ast_signature_ignores_variable_rename() -> None:

@@ -7,7 +7,8 @@ from typing import Any
 from cognitive_evolve_runtime.candidates.genome import CandidateGenome
 from cognitive_evolve_runtime.candidates.project_candidate import PatchOperation
 from cognitive_evolve_runtime.nexus._serde import coerce_dict
-from .fingerprints import normalize_token
+from cognitive_evolve_runtime.nexus.nextgen import ensure_nextgen_identity
+from .fingerprints import base_mechanism_family, normalize_token
 
 
 @dataclass(frozen=True)
@@ -59,22 +60,14 @@ def behavior_descriptor(candidate: CandidateGenome) -> tuple[str, ...]:
 
     metadata = coerce_dict(candidate.metadata)
     patch_result = coerce_dict(getattr(candidate, "patch_application_result", {}) or metadata.get("patch_result"))
-    search_space = coerce_dict(getattr(candidate, "search_space", None) or metadata.get("search_space"))
-    family = _first_non_empty(
-        search_space.get("family_id"),
-        search_space.get("plane_id"),
-        candidate.niche_memberships[0] if candidate.niche_memberships else "",
-        candidate.novelty_descriptors[0] if candidate.novelty_descriptors else "",
-        candidate.core_mechanism,
-        candidate.artifact_type,
-        "general",
-    )
+    nextgen = ensure_nextgen_identity(candidate)
+    family = _first_non_empty(nextgen.get("canonical_mechanism_family_id"), base_mechanism_family(candidate), "general")
     paths = _candidate_paths(candidate, patch_result=patch_result, metadata=metadata)
     applied = coerce_dict(patch_result).get("status") == "applied"
     return tuple(
         item
         for item in (
-            normalize_token(family)[:40] or "general",
+            _family_descriptor_token(family),
             _path_bucket(paths.get("source", []), prefix="src"),
             _path_bucket(paths.get("patch", []), prefix="patch"),
             _path_bucket(paths.get("target", []), prefix="target"),
@@ -82,6 +75,13 @@ def behavior_descriptor(candidate: CandidateGenome) -> tuple[str, ...]:
         )
         if item
     )
+
+
+def _family_descriptor_token(value: Any) -> str:
+    text = str(value or "").strip()
+    if "#m" in text:
+        return text[:80]
+    return normalize_token(text)[:40] or "general"
 
 
 def _candidate_paths(candidate: CandidateGenome, *, patch_result: dict[str, Any], metadata: dict[str, Any]) -> dict[str, list[str]]:
