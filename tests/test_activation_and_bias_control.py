@@ -52,6 +52,8 @@ def test_activation_contract_is_model_driven_and_domain_neutral() -> None:
     assert "discussion alone" in activation["anti_empty_talk_rule"]
     assert view.payload["search_space_contract"]["model_driven"] is True
     assert "grounding surfaces" in view.payload["artifact_generation_contract"]["search_space_rule"]
+    assert "artifact.patch_set" in view.payload["artifact_generation_contract"]["project_patch_output_rule"]
+    assert "never emit bare @@" in view.payload["artifact_generation_contract"]["project_patch_output_rule"]
 
 
 def test_relative_rater_runs_reversed_ab_pass_and_merges_by_candidate_id() -> None:

@@ -197,3 +197,5 @@ def test_fallback_events_are_captured_and_persisted(tmp_path: Path) -> None:
     assert ("/" + "Users/") not in json.dumps(persisted_event)
     assert "API_KEY" not in json.dumps(persisted_event)
     assert any(json.loads(line)["type"] == "nexus_fallback" for line in events_jsonl)
+    assert (tmp_path / "candidates.md").exists()
+    assert run_result["artifacts"]["candidates"].endswith("candidates.md")

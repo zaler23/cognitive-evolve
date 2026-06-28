@@ -144,6 +144,7 @@ class NexusPersistenceService:
             "events": str(event_path),
             "checkpoint": str(checkpoint_path),
             "final_answer": str(self.output_dir / "final-answer.md"),
+            "candidates": str(self.output_dir / "candidates.md"),
             "run_result": str(run_result_path),
             "snapshot_transaction": str(self.output_dir / "snapshot-transaction.json"),
         }
@@ -164,6 +165,7 @@ class NexusPersistenceService:
             SnapshotWrite("archives.json", "json", result.archives.to_dict()),
             SnapshotWrite("checkpoint.json", "json", checkpoint.to_dict()),
             SnapshotWrite("final-answer.md", "text", final_answer_artifact_text(result) + "\n", sort_keys=False),
+            SnapshotWrite("candidates.md", "text", candidates_markdown(result) + "\n", sort_keys=False),
             SnapshotWrite("run-result.json", "json", run.to_dict()),
         ]
         if adaptive_state:
@@ -227,7 +229,7 @@ def final_answer_artifact_text(result: EvolutionLoopResult) -> str:
     graded_output = _graded_output_from_result(result)
     if population is not None and (final_certificate or has_evidence or graded_output.mode == "verified_result"):
         projection = build_final_projection(population=population, synthesis=result.synthesis, graded_output=graded_output, final_certificate=final_certificate)
-        return "\n".join(header) + projection.to_markdown()
+        return "\n".join(header) + projection.to_markdown() + _candidate_table_section(result)
     header.extend(
         [
             "> The displayed answer is candidate material. Correctness must be judged by a human reviewer or an external verifier; the project does not self-certify it as correct.",
@@ -240,7 +242,83 @@ def final_answer_artifact_text(result: EvolutionLoopResult) -> str:
         for key, value in best_current.items():
             header.append(f"- {key}: `{value}`")
         header.append("")
-    return "\n".join(header) + str(result.synthesis.final_answer or "")
+    return "\n".join(header) + str(result.synthesis.final_answer or "") + _candidate_table_section(result)
+
+
+def candidates_markdown(result: EvolutionLoopResult) -> str:
+    rows = _candidate_rows(result, limit=100)
+    lines = ["# CognitiveEvolve candidates", "", "| rank | candidate | direction | rank score | target files | patch status |", "|---:|---|---|---:|---|---|"]
+    lines.extend(_candidate_row_markdown(row) for row in rows)
+    if not rows:
+        lines.append("|  |  | no candidates recorded |  |  |  |")
+    return "\n".join(lines)
+
+
+def _candidate_table_section(result: EvolutionLoopResult) -> str:
+    rows = _candidate_rows(result, limit=12)
+    if not rows:
+        return ""
+    lines = ["", "", "## Candidate summary", "", "| rank | direction | rank score | target files | patch status |", "|---:|---|---:|---|---|"]
+    lines.extend(f"| {row['rank']} | {row['direction']} | {row['score']:.3f} | {row['target_files']} | {row['patch_status']} |" for row in rows)
+    return "\n".join(lines)
+
+
+def _candidate_rows(result: EvolutionLoopResult, *, limit: int) -> list[dict[str, Any]]:
+    population = getattr(result, "population", None)
+    candidates = list(getattr(population, "candidates", []) or [])
+    ranked = sorted(candidates, key=lambda candidate: (_rank_score(candidate), str(getattr(candidate, "id", ""))), reverse=True)[:limit]
+    return [
+        {
+            "rank": idx,
+            "id": str(getattr(candidate, "id", "")),
+            "direction": _clip_md(str(getattr(candidate, "concise_claim", "") or getattr(candidate, "core_mechanism", "") or getattr(candidate, "artifact_type", "candidate")), 80),
+            "score": _rank_score(candidate),
+            "target_files": _clip_md(", ".join(_candidate_target_files(candidate)[:5]), 120),
+            "patch_status": _patch_status(candidate),
+        }
+        for idx, candidate in enumerate(ranked, start=1)
+    ]
+
+
+def _candidate_row_markdown(row: dict[str, Any]) -> str:
+    return f"| {row['rank']} | `{row['id']}` | {row['direction']} | {row['score']:.3f} | {row['target_files']} | {row['patch_status']} |"
+
+
+def _rank_score(candidate: Any) -> float:
+    scores = getattr(candidate, "multihead_scores", {}) if isinstance(getattr(candidate, "multihead_scores", {}), dict) else {}
+    for key in ("rank_score", "frontier_score", "objective_alignment", "answer_likelihood"):
+        if key not in scores:
+            continue
+        try:
+            return float(scores.get(key) or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+    return 0.0
+
+
+def _candidate_target_files(candidate: Any) -> list[str]:
+    files: list[str] = []
+    for value in getattr(candidate, "touched_files", []) or []:
+        if value:
+            files.append(str(value))
+    patch_result = getattr(candidate, "patch_application_result", {})
+    if isinstance(patch_result, dict):
+        files.extend(str(value) for value in patch_result.get("applied_files") or [] if value)
+    metadata = getattr(candidate, "metadata", {}) if isinstance(getattr(candidate, "metadata", {}), dict) else {}
+    files.extend(str(value) for value in metadata.get("target_files") or [] if value)
+    return list(dict.fromkeys(files))
+
+
+def _patch_status(candidate: Any) -> str:
+    patch_result = getattr(candidate, "patch_application_result", {})
+    if isinstance(patch_result, dict) and patch_result.get("status"):
+        return str(patch_result.get("status"))
+    return "not_run"
+
+
+def _clip_md(text: str, limit: int) -> str:
+    clean = str(text or "").replace("|", "\\|").replace("\n", " ").strip()
+    return clean if len(clean) <= limit else clean[: max(0, limit - 1)] + "…"
 
 
 def _graded_output_from_result(result: EvolutionLoopResult) -> GradedOutput:

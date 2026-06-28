@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import sys
 from pathlib import Path
@@ -119,6 +120,32 @@ def llm_smoke() -> int:
     return 0
 
 
+def quickstart(prompt: str) -> int:
+    env_path = Path.cwd() / ".env"
+    if not env_path.exists():
+        provider = input("LLM provider [direct_http]: ").strip() or "direct_http"
+        model = input("Model [provider/model-id]: ").strip() or "provider/model-id"
+        api_key = getpass.getpass("API key: ").strip()
+        concurrency = input("Concurrency [1]: ").strip() or "1"
+        rounds = input("Rounds [2]: ").strip() or "2"
+        env_path.write_text(
+            "\n".join(
+                [
+                    f"COGEV_LLM_PROVIDER={provider}",
+                    f"COGEV_LLM_MODEL={model}",
+                    f"COGEV_LLM_API_KEY={api_key}",
+                    f"COGEV_LLM_MAX_CONCURRENT={concurrency}",
+                    f"COGEV_NEXUS_MAX_ROUNDS={rounds}",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        print(f"Wrote {env_path}")
+    load_service_env()
+    return run_standalone(prompt)
+
+
 def run_standalone(prompt: str, dry_run: bool = False, *, offline: bool = False) -> int:
     classifier_model = _optional_classifier_model(offline=offline)
     route = _classify_prompt(prompt, classifier_model)
@@ -180,6 +207,9 @@ def main() -> int:
     p_cap_show.add_argument("capability_id")
     p_cap_select = cap_sub.add_parser("select")
     p_cap_select.add_argument("prompt", nargs=argparse.REMAINDER)
+
+    p_quickstart = sub.add_parser("quickstart")
+    p_quickstart.add_argument("prompt", nargs=argparse.REMAINDER)
 
     p_runtime = sub.add_parser("runtime")
     runtime_sub = p_runtime.add_subparsers(dest="runtime_cmd", required=True)
@@ -261,6 +291,12 @@ def main() -> int:
                 print("Missing prompt", file=sys.stderr)
                 return 2
             return select_capabilities(prompt)
+    if args.cmd == "quickstart":
+        prompt = " ".join(args.prompt).strip()
+        if not prompt:
+            print("Missing prompt", file=sys.stderr)
+            return 2
+        return quickstart(prompt)
     if args.cmd == "runtime":
         if args.runtime_cmd == "run":
             return runtime_run(args.path, args.prompt, activate_all=args.activate_all, rounds=args.rounds, offline=args.offline)
@@ -314,6 +350,7 @@ __all__ = [
     "main",
     "native_eval_run",
     "native_optimize_run",
+    "quickstart",
     "route_prompt",
     "run_standalone",
     "runtime_run",

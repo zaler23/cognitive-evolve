@@ -449,6 +449,7 @@ def _artifact_generation_contract_from_view(view: dict[str, Any], *, request_typ
         "search_space_rule": "Before deepening one surface, allocate candidates across materially different model-defined planes from the user objective; local files/tools/evidence are grounding surfaces, not the objective itself.",
         "surface_bias_guard": "Do not let an easy-to-patch or easy-to-verify local surface monopolize seed, mutation, or offspring generation when the user objective asks for higher-level mechanism, lifecycle, policy, materialization, or final-answer design.",
         "required_search_space_metadata": "Each candidate should include metadata.search_space.family_id or search_space.plane_id chosen from the model-authored search space; if none exists, author one from the objective first.",
+        "project_patch_output_rule": "For project/code patch candidates, prefer artifact.patch_set with PatchOperation objects ({path, operation, content, old_text, new_text}) for simple write/append/replace/delete edits. If you use artifact.unified_diff instead, every hunk header must be standard unified diff syntax with line ranges like @@ -start,count +start,count @@; never emit bare @@ headers.",
         "examples_are_not_domain_limits": True,
         "valid_evolution_shapes": [
             "existing artifact refinement",

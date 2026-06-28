@@ -64,6 +64,7 @@ def test_command_router_branches(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     monkeypatch.setattr(commands, "api_status_cli", mark("api-status"))
     monkeypatch.setattr(commands, "api_serve", mark("api-serve"))
     monkeypatch.setattr(commands, "run_standalone", mark("run"))
+    monkeypatch.setattr(commands, "quickstart", mark("quickstart"))
 
     cases = [
         ["new", "--type", "general", "--slug", "hello"],
@@ -86,6 +87,7 @@ def test_command_router_branches(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
         ["api", "status"],
         ["api", "serve"],
         ["run", "--dry-run", "do", "work"],
+        ["quickstart", "do", "work"],
     ]
     for argv in cases:
         assert _run_cli(monkeypatch, argv) == 0
@@ -93,8 +95,27 @@ def test_command_router_branches(monkeypatch: pytest.MonkeyPatch, tmp_path: Path
     assert _run_cli(monkeypatch, ["capability", "select"]) == 2
     assert _run_cli(monkeypatch, ["route"]) == 2
     assert _run_cli(monkeypatch, ["run"]) == 2
+    assert _run_cli(monkeypatch, ["quickstart"]) == 2
     stderr = capsys.readouterr().err
     assert "Missing prompt" in stderr
     called_names = [name for name, _ in calls]
     assert "config" in called_names
     assert "runtime-run" in called_names and "api-serve" in called_names and "llm" in called_names
+    assert "quickstart" in called_names
+
+
+def test_quickstart_writes_minimal_env_when_missing(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.chdir(tmp_path)
+    answers = iter(["direct_http", "openai/test", "2", "3"])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(answers))
+    monkeypatch.setattr(commands.getpass, "getpass", lambda _prompt="": "secret-key")
+    monkeypatch.setattr(commands, "load_service_env", lambda: tmp_path / ".env")
+    monkeypatch.setattr(commands, "run_standalone", lambda prompt: 0 if prompt == "do work" else 1)
+
+    assert commands.quickstart("do work") == 0
+    env_text = (tmp_path / ".env").read_text(encoding="utf-8")
+    assert "COGEV_LLM_PROVIDER=direct_http" in env_text
+    assert "COGEV_LLM_MODEL=openai/test" in env_text
+    assert "COGEV_LLM_API_KEY=secret-key" in env_text
+    assert "COGEV_LLM_MAX_CONCURRENT=2" in env_text
+    assert "COGEV_NEXUS_MAX_ROUNDS=3" in env_text
