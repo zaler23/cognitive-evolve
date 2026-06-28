@@ -130,7 +130,7 @@ def test_diversity_collapse_pressure_uses_open_family_distribution_not_fixed_pla
     assert diagnosis.stagnation_detected is True
     assert diagnosis.stagnation_type == "SemanticLooping"
     assert "cold_path_family" in pressure["under_explored_families"]
-    assert "dominant_lineage" in pressure["over_explored_families"]
+    assert "dominant-lineage" in pressure["over_explored_families"]
     assert not {"rarity", "dormant", "crossover"}.intersection(set(pressure["under_explored_families"]))
 
     selected = ParentSelector().select(

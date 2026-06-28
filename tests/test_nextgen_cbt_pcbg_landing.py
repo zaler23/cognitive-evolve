@@ -6,7 +6,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from cognitive_evolve_runtime.archives.manager import ArchiveManager
-from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome, CandidatePopulation
+from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome, CandidatePopulation, candidate_from_dict
 from cognitive_evolve_runtime.contracts.objective_contract import NexusObjectiveContract
 from cognitive_evolve_runtime.llm.call_identity import identity_from_status
 from cognitive_evolve_runtime.llm.model_spec import LLMModelSpec
@@ -27,6 +27,7 @@ from cognitive_evolve_runtime.nexus.nextgen import (
 )
 from cognitive_evolve_runtime.nexus.prompt_view import build_prompt_view
 from cognitive_evolve_runtime.nexus.reproduction import dedupe_offspring_against_population, verify_offspring
+from cognitive_evolve_runtime.nexus.search_kernel.fingerprints import base_mechanism_family
 from cognitive_evolve_runtime.nexus.search_kernel.harvesting import CandidateHarvester, HarvestPolicy
 from cognitive_evolve_runtime.nexus.search_space import build_search_space_map, classify_candidate
 from cognitive_evolve_runtime.nexus.model_routes import SeedModelEnsembleAdapter
@@ -46,6 +47,40 @@ class _FinalTextModel:
 
     def synthesize_result(self, **_: object) -> dict[str, object]:
         return {"status": "model_synthesized", "final_answer": self.final_answer}
+
+
+def test_nextgen_canonical_family_uses_bounded_base_and_versioned_recompute() -> None:
+    candidate = CandidateGenome(
+        id="A1",
+        concise_claim="same template",
+        core_mechanism="alpha clone repair",
+        niche_memberships=["alpha"],
+        metadata={"nextgen": {"mechanism_family_id": "A1", "canonical_mechanism_family_id": "A1", "canonical_mechanism_family_version": "old"}},
+    )
+
+    meta = nextgen.ensure_nextgen_identity(candidate)
+
+    assert base_mechanism_family(candidate) == "alpha"
+    assert meta["mechanism_family_id"] == "alpha"
+    assert meta["canonical_mechanism_family_id"].startswith("alpha#m")
+    assert meta["canonical_mechanism_family_version"] == nextgen.CANONICAL_FAMILY_VERSION
+    assert meta["canonical_mechanism_migration"]["from_canonical_mechanism_family_id"] == "A1"
+
+
+def test_nextgen_canonical_family_preserves_declared_prefix_and_roundtrips() -> None:
+    candidate = CandidateGenome(
+        id="P1",
+        concise_claim="adapter repair candidate",
+        core_mechanism="fallback repair",
+        metadata={"search_space": {"family_id": "adapter repair"}},
+    )
+
+    meta = nextgen.ensure_nextgen_identity(candidate)
+    restored = candidate_from_dict(candidate.to_dict())
+
+    assert meta["mechanism_family_id"] == "adapter repair"
+    assert meta["canonical_mechanism_family_id"].startswith("adapter_repair#m")
+    assert restored.metadata["nextgen"] == candidate.metadata["nextgen"]
 
 
 def test_final_best_current_direction_survives_failed_source_free_candidate() -> None:

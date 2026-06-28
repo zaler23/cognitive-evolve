@@ -12,9 +12,32 @@ from typing import Any, Iterable
 
 from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome
 from cognitive_evolve_runtime.nexus._serde import coerce_dict, stable_hash, utc_now
+from cognitive_evolve_runtime.nexus.search_kernel.fingerprints import base_mechanism_family, normalize_token
 
 NEXTGEN_METADATA_KEY = "nextgen"
 INTENT_BINDING_KEY = "intent_binding"
+CANONICAL_FAMILY_VERSION = "bounded-mechanism-v1"
+CANONICAL_BUCKETS_PER_DECLARED_FAMILY = 6
+_CANONICAL_TOKEN_NOISE = {
+    "candidate",
+    "mechanism",
+    "artifact",
+    "patch",
+    "test",
+    "tests",
+    "file",
+    "files",
+    "code",
+    "runtime",
+    "nexus",
+    "cognitive",
+    "evolve",
+    "evolution",
+    "with",
+    "from",
+    "that",
+    "this",
+}
 
 
 def candidate_answer_text(candidate: CandidateGenome | None) -> str:
@@ -276,10 +299,24 @@ def ensure_nextgen_identity(
     model_profile_id: str | None = None,
 ) -> dict[str, Any]:
     payload = nextgen_metadata(candidate)
-    family_id = str(payload.get("mechanism_family_id") or _declared_family(candidate) or _lineage_family(candidate) or candidate.id)
-    canonical = str(payload.get("canonical_mechanism_family_id") or family_id)
-    payload.setdefault("mechanism_family_id", family_id)
-    payload.setdefault("canonical_mechanism_family_id", canonical)
+    family_id = str(_declared_family(candidate) or base_mechanism_family(candidate))
+    canonical = _canonical_mechanism_family_id(candidate)
+    old_version = str(payload.get("canonical_mechanism_family_version") or "")
+    old_canonical = str(payload.get("canonical_mechanism_family_id") or "")
+    if old_version != CANONICAL_FAMILY_VERSION:
+        payload["mechanism_family_id"] = family_id
+        if old_canonical and old_canonical != canonical:
+            payload["canonical_mechanism_migration"] = {
+                "from_version": old_version,
+                "from_canonical_mechanism_family_id": old_canonical,
+                "to_version": CANONICAL_FAMILY_VERSION,
+                "to_canonical_mechanism_family_id": canonical,
+            }
+        payload["canonical_mechanism_family_id"] = canonical
+        payload["canonical_mechanism_family_version"] = CANONICAL_FAMILY_VERSION
+    else:
+        payload.setdefault("mechanism_family_id", family_id)
+        payload.setdefault("canonical_mechanism_family_id", canonical)
     payload.setdefault("family_signature", family_signature(candidate))
     payload.setdefault("transition_signature", transition_signature(candidate))
     if origin_model:
@@ -287,6 +324,20 @@ def ensure_nextgen_identity(
     if model_profile_id:
         payload.setdefault("model_profile_id", model_profile_id)
     return payload
+
+
+def _canonical_mechanism_family_id(candidate: CandidateGenome) -> str:
+    base = base_mechanism_family(candidate)
+    tokens = sorted(
+        {
+            token
+            for token in (normalize_token(item) for item in _tokens(_text(candidate)[:1200]))
+            if token and len(token) >= 3 and token not in _CANONICAL_TOKEN_NOISE and not any(char.isdigit() for char in token)
+        }
+    )[:48]
+    coarse_sig = {"niche": list(candidate.niche_memberships[:2]), "tokens": tokens}
+    bucket = int(stable_hash(coarse_sig)[:12], 16) % CANONICAL_BUCKETS_PER_DECLARED_FAMILY
+    return f"{base}#m{bucket}"
 
 
 def family_signature(candidate: CandidateGenome) -> str:
@@ -680,6 +731,8 @@ def _bounded(value: Any) -> float:
 
 
 __all__ = [
+    "CANONICAL_BUCKETS_PER_DECLARED_FAMILY",
+    "CANONICAL_FAMILY_VERSION",
     "NEXTGEN_METADATA_KEY",
     "ProductiveChildObservation",
     "select_best_current_direction",
