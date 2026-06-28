@@ -20,6 +20,7 @@ from cognitive_evolve_runtime.outcomes import (
     ingest_latent_feedback,
     materialize_contract_latent_posterior,
 )
+from cognitive_evolve_runtime.nexus.runtime import _enable_project_latent_exploration
 
 
 def _state() -> LatentProblemState:
@@ -84,6 +85,14 @@ def test_exploration_action_reaches_mutation_plan_metadata() -> None:
     assert plans[0].metadata["latent_exploration_action"]["action_id"] == "probe_impact"
     assert "Latent exploration directive probe_impact" in plans[0].instruction
     assert plans[0].metadata["latent_decision_trace"]["latent_posterior_snapshot_hash"]
+
+
+def test_project_runtime_marks_latent_objective_enabled_without_completion_gate() -> None:
+    contract = NexusObjectiveContract(original_user_goal="patch project", normalized_goal="patch project")
+
+    _enable_project_latent_exploration(contract)
+
+    assert contract.metadata["latent_objective_enabled"] is True
 
 
 def test_trial_observations_freeze_and_attach_improvement_certificate() -> None:

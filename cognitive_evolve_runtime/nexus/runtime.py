@@ -215,6 +215,7 @@ class NexusRuntime:
                 model=self.model,
                 artifact_policy_config=artifact_policy_config,
             )
+            _enable_project_latent_exploration(contract)
             policy = self.policy_builder.build(contract=contract, world=world, model=self.model)
             _enable_project_theory_advisory_pressure(policy)
             budget = budget or evolution_budget_from_params(
@@ -331,6 +332,7 @@ class NexusRuntime:
             policy = restored["policy"]
             contract = _contract_from_checkpoint(mode, restored.get("contract") or {})
             if mode == "project":
+                _enable_project_latent_exploration(contract)
                 _enable_project_theory_advisory_pressure(policy)
             restored_artifact_policy_config = _artifact_policy_config_from_adaptive_state(restored.get("adaptive_state") or {})
             if restored_artifact_policy_config:
@@ -454,6 +456,12 @@ def _enable_project_theory_advisory_pressure(policy: EvolutionPolicy) -> None:
     theory["weights"] = weights
     metadata["theory"] = theory
     policy.metadata = metadata
+
+
+def _enable_project_latent_exploration(contract: NexusObjectiveContract) -> None:
+    metadata = contract.metadata if isinstance(contract.metadata, dict) else {}
+    metadata["latent_objective_enabled"] = True
+    contract.metadata = metadata
 
 
 def _resolve_budget_width_from_policy(budget: EvolutionBudget, policy: EvolutionPolicy) -> None:
