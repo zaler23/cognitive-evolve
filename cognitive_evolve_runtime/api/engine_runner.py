@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from ..artifacts.store import _write_json
+from ..core.redaction import redact
 from .config import get_service_config
 from .jobs import _task_dir_for_request
 from .profiles import _temporary_model_runtime
@@ -18,7 +19,7 @@ def _run_engine(
 ) -> tuple[str, dict[str, Any]]:
     config = get_service_config()
     task_dir = _task_dir_for_request(config.api_task_root, request_id)
-    _write_json(task_dir / "api-request.json", {"request_id": request_id, "model": model, "request": raw_request})
+    _write_json(task_dir / "api-request.json", redact({"request_id": request_id, "model": model, "request": raw_request}))
     from ..engine.orchestrator import EngineOrchestrator
     from ..llm import LLMSession, llm_session
 

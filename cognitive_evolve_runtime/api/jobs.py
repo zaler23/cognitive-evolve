@@ -174,7 +174,7 @@ def _set_job(job_id: str, **updates: Any) -> dict[str, Any]:
         try:
             _write_json(Path(str(root_raw)) / "job-status.json", _job_public(snapshot))
         except Exception:
-            pass
+            logger.warning("job_registry.persist_failed id=%s", job_id, exc_info=True)
     return snapshot
 
 
