@@ -70,7 +70,7 @@ def _selected_body_files(root: Path, patterns: tuple[str, ...]) -> list[Path]:
 
 
 def _compose_goal(preamble: Path, body_files: list[Path]) -> str:
-    parts = [preamble.read_text(encoding="utf-8").strip(), "\n\n---\n\n# 输入包正文\n"]
+    parts = [preamble.read_text(encoding="utf-8").strip(), "\n\n---\n\n# Input package body\n"]
     for path in body_files:
         parts.append(f"\n\n## {path.name}\n\n")
         parts.append(path.read_text(encoding="utf-8", errors="replace").strip())

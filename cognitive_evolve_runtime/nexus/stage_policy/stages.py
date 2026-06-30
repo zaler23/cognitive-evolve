@@ -1,4 +1,4 @@
-"""Stage classification helpers for candidate maturation."""
+"""Stage classification helpers; Chinese final tokens support multilingual inputs."""
 from __future__ import annotations
 
 from typing import Any

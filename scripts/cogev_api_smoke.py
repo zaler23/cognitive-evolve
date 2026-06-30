@@ -49,7 +49,7 @@ def main() -> int:
             {
                 "model": model,
                 "messages": [
-                    {"role": "user", "content": "用 CognitiveEvolve 的 one-shot 流程输出一个 v1.0 发布前检查清单。"}
+                    {"role": "user", "content": "Use CognitiveEvolve's one-shot flow to output a pre-v1.0 release checklist."}
                 ],
             },
         )

@@ -52,9 +52,9 @@ def _core_project_validation() -> list[tuple[bool, str]]:
     for rel in CORE_REQUIRED_FILES:
         checks.append(((ROOT / rel).is_file(), f"file exists: {rel}"))
     checks.append((os.access(ROOT / "scripts/cogev.py", os.X_OK), "script executable: scripts/cogev.py"))
-    route = classify("我要对当前agent系统范式进行演化调优")
+    route = classify("evolve and tune the current agent-system paradigm")
     checks.append((route.level == "L4_evolutionary", "agent-system evolution prompt routes to L4_evolutionary"))
-    checks.append(("cognitive_search" in select_capability_ids("架构 演化 调优"), "Nexus capability selection covers cognitive search"))
+    checks.append(("cognitive_search" in select_capability_ids("architecture evolution tuning"), "Nexus capability selection covers cognitive search"))
     graph_template = ROOT / ".cogev" / "templates" / "cognitive-search-graph.json"
     try:
         json.loads(graph_template.read_text(encoding="utf-8"))

@@ -1,4 +1,4 @@
-"""Advisory final-answer telemetry for project/source-grounded candidates.
+"""Advisory final-answer telemetry; Chinese project tokens support multilingual candidates.
 
 The final gate is advisory telemetry; it no longer blocks final answers on source bindings, evidence, or
 patch materialization.  In answer-first exploration mode those checks remain

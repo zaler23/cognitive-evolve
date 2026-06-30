@@ -306,10 +306,10 @@ def test_require_llm_config_rejects_non_required_real_model(monkeypatch: pytest.
     monkeypatch.setenv("COGEV_LLM_PROVIDER", "litellm")
     monkeypatch.setenv("COGEV_LLM_MODEL", "openai/gpt-x")
     monkeypatch.setenv("COGEV_LLM_API_KEY", "real-upstream-key")
-    monkeypatch.setenv("COGEV_LLM_REQUIRED_MODEL", "codex/gpt-5.5-high")
+    monkeypatch.setenv("COGEV_LLM_REQUIRED_MODEL", "provider/high-capability-model")
 
     with pytest.raises(LLMConfigurationError, match="COGEV_LLM_REQUIRED_MODEL"):
         require_llm_config()
 
-    monkeypatch.setenv("COGEV_LLM_REQUIRED_MODEL", "codex/gpt-5.5-high, openai/gpt-x")
+    monkeypatch.setenv("COGEV_LLM_REQUIRED_MODEL", "provider/high-capability-model, openai/gpt-x")
     assert require_llm_config()["model"] == "openai/gpt-x"

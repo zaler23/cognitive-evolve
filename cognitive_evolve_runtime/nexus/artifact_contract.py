@@ -4,7 +4,7 @@ Artifact contracts are now descriptive telemetry for open-ended exploration.
 They may tell the model what kind of answer would be useful, but they are not a
 runtime proof/source/final gate.  Missing work-product fields, missing final
 gates, absent source bindings, or missing proof objects must not demote a bold
-answer candidate; validation is intentionally user-owned after the run.
+answer candidate; validation is user-owned after the run. Chinese guard terms support multilingual inputs.
 """
 from __future__ import annotations
 
