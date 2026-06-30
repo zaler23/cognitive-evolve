@@ -15,6 +15,7 @@ from cognitive_evolve_runtime.inputs.project_snapshot import ProjectSnapshot
 from cognitive_evolve_runtime.nexus.consistency import assert_runtime_consistency
 from cognitive_evolve_runtime.nexus.loop import EvolutionBudget, EvolutionLoopResult
 from cognitive_evolve_runtime.nexus.final_projection import build_final_projection
+from cognitive_evolve_runtime.nexus.nextgen import user_facing_verification_status
 from cognitive_evolve_runtime.nexus.project_verification import ProjectCandidateVerifier, ProjectVerificationSummary
 from cognitive_evolve_runtime.persistence.checkpoint import build_checkpoint_state
 from cognitive_evolve_runtime.nexus.seed_coverage import SEED_RESERVOIR_SIDECAR_PAYLOAD_KEY, persist_seed_reservoir_sidecar
@@ -258,23 +259,40 @@ def _candidate_table_section(result: EvolutionLoopResult) -> str:
     rows = _candidate_rows(result, limit=12)
     if not rows:
         return ""
-    lines = ["", "", "## Candidate summary", "", "| rank | direction | rank score | target files | patch status |", "|---:|---|---:|---|---|"]
-    lines.extend(f"| {row['rank']} | {row['direction']} | {row['score']:.3f} | {row['target_files']} | {row['patch_status']} |" for row in rows)
-    return "\n".join(lines)
+    show_uncertainty = any(row["uncertainty"] for row in rows)
+    lines = ["", "", "## Candidate portfolio summary", ""]
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        groups.setdefault(row["family_id"], []).append(row)
+    for family_id, family_rows in groups.items():
+        lines.extend([f"### Mechanism family: {_clip_md(family_id, 120)}", ""])
+        if show_uncertainty:
+            lines.extend(["| rank | direction | verification status | uncertainty |", "|---:|---|---|---|"])
+            lines.extend(f"| {row['rank']} | {row['direction']} | {row['verification_status']} | {row['uncertainty'] or 'not recorded'} |" for row in family_rows)
+        else:
+            lines.extend(["| rank | direction | verification status |", "|---:|---|---|"])
+            lines.extend(f"| {row['rank']} | {row['direction']} | {row['verification_status']} |" for row in family_rows)
+        lines.append("")
+    return "\n".join(lines[:-1])
 
 
 def _candidate_rows(result: EvolutionLoopResult, *, limit: int) -> list[dict[str, Any]]:
     population = getattr(result, "population", None)
     candidates = list(getattr(population, "candidates", []) or [])
     ranked = sorted(candidates, key=lambda candidate: (_rank_score(candidate), str(getattr(candidate, "id", ""))), reverse=True)[:limit]
+    graded_output = _graded_output_from_result(result)
+    final_certificate = dict((getattr(getattr(result, "synthesis", None), "closure_certificate", {}) or {}).get("final_certificate") or {})
     return [
         {
             "rank": idx,
             "id": str(getattr(candidate, "id", "")),
+            "family_id": _candidate_family_id(candidate),
             "direction": _clip_md(str(getattr(candidate, "concise_claim", "") or getattr(candidate, "core_mechanism", "") or getattr(candidate, "artifact_type", "candidate")), 80),
             "score": _rank_score(candidate),
             "target_files": _clip_md(", ".join(_candidate_target_files(candidate)[:5]), 120),
             "patch_status": _patch_status(candidate),
+            "verification_status": _clip_md(user_facing_verification_status(candidate, final_certificate=final_certificate, graded_output=graded_output), 60),
+            "uncertainty": _candidate_uncertainty(candidate),
         }
         for idx, candidate in enumerate(ranked, start=1)
     ]
@@ -282,6 +300,23 @@ def _candidate_rows(result: EvolutionLoopResult, *, limit: int) -> list[dict[str
 
 def _candidate_row_markdown(row: dict[str, Any]) -> str:
     return f"| {row['rank']} | `{row['id']}` | {row['direction']} | {row['score']:.3f} | {row['target_files']} | {row['patch_status']} |"
+
+
+def _candidate_family_id(candidate: Any) -> str:
+    metadata = getattr(candidate, "metadata", {})
+    nextgen = metadata.get("nextgen") if isinstance(metadata, dict) and isinstance(metadata.get("nextgen"), dict) else {}
+    return str(nextgen.get("canonical_mechanism_family_id") or "unrecorded")
+
+
+def _candidate_uncertainty(candidate: Any) -> str:
+    parts: list[str] = []
+    missing = [str(value) for value in (getattr(candidate, "missing_parts", []) or [])[:1] if value]
+    notes = [str(value) for value in (getattr(candidate, "uncertainty_notes", []) or [])[:1] if value]
+    if missing:
+        parts.append(f"missing: {missing}")
+    if notes:
+        parts.append(f"notes: {notes}")
+    return _clip_md("; ".join(parts), 120)
 
 
 def _rank_score(candidate: Any) -> float:

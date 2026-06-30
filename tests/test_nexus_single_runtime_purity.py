@@ -232,9 +232,99 @@ def test_final_answer_artifact_includes_human_candidate_table() -> None:
     text = final_answer_artifact_text(result)
     candidates = candidates_markdown(result)
 
-    assert "## Candidate summary" in text
-    assert "pkg/parser.py" in text
+    assert "## Candidate portfolio summary" in text
+    assert "update parser" in text
+    assert "| rank | candidate | direction | rank score | target files | patch status |" in candidates
+    assert "pkg/parser.py" in candidates
     assert "| 1 | `C1` | update parser" in candidates
+    assert "Mechanism family" not in candidates
+
+
+def test_final_answer_candidate_portfolio_groups_by_canonical_family() -> None:
+    from cognitive_evolve_runtime.candidates.genome import CandidateGenome, CandidatePopulation
+    from cognitive_evolve_runtime.nexus.runtime_services import final_answer_artifact_text
+
+    alpha = CandidateGenome(
+        id="A1",
+        concise_claim="alpha direction",
+        missing_parts=["alpha gap", "second gap"],
+        uncertainty_notes=["alpha uncertainty", "second note"],
+        metadata={"nextgen": {"canonical_mechanism_family_id": "alpha#m1"}},
+        multihead_scores={"rank_score": 0.9},
+    )
+    beta = CandidateGenome(
+        id="B1",
+        concise_claim="beta direction",
+        metadata={"nextgen": {"canonical_mechanism_family_id": "beta#m2"}},
+        multihead_scores={"rank_score": 0.8},
+    )
+    result = SimpleNamespace(
+        completion_status="completed",
+        stop_reason="max_rounds",
+        synthesis=SimpleNamespace(best_candidate_id="A1", final_answer="\nAnswer body", closure_certificate={}),
+        population=CandidatePopulation([alpha, beta]),
+        graded_output={},
+    )
+
+    text = final_answer_artifact_text(result)
+
+    assert "### Mechanism family: alpha#m1" in text
+    assert "### Mechanism family: beta#m2" in text
+    assert "| rank | direction | verification status | uncertainty |" in text
+    assert "missing: ['alpha gap']; notes: ['alpha uncertainty']" in text
+    assert "second gap" not in text
+
+
+def test_final_answer_candidate_portfolio_missing_canonical_uses_unrecorded() -> None:
+    from cognitive_evolve_runtime.candidates.genome import CandidateGenome, CandidatePopulation
+    from cognitive_evolve_runtime.nexus.runtime_services import final_answer_artifact_text
+
+    result = SimpleNamespace(
+        completion_status="completed",
+        stop_reason="max_rounds",
+        synthesis=SimpleNamespace(best_candidate_id="C1", final_answer="\nAnswer body", closure_certificate={}),
+        population=CandidatePopulation(
+            [
+                CandidateGenome(id="C1", concise_claim="first", multihead_scores={"rank_score": 0.9}),
+                CandidateGenome(id="C2", concise_claim="second", multihead_scores={"rank_score": 0.8}),
+            ]
+        ),
+        graded_output={},
+    )
+
+    text = final_answer_artifact_text(result)
+
+    assert text.count("### Mechanism family: unrecorded") == 1
+    assert "### Mechanism family: C1" not in text
+    assert "### Mechanism family: C2" not in text
+
+
+def test_final_answer_candidate_status_is_answer_first_not_local_verified() -> None:
+    from cognitive_evolve_runtime.candidates.genome import CandidateGenome, CandidatePopulation
+    from cognitive_evolve_runtime.nexus.runtime_services import final_answer_artifact_text
+
+    result = SimpleNamespace(
+        completion_status="completed",
+        stop_reason="max_rounds",
+        synthesis=SimpleNamespace(best_candidate_id="C1", final_answer="\nAnswer body", closure_certificate={}),
+        population=CandidatePopulation(
+            [
+                CandidateGenome(
+                    id="C1",
+                    concise_claim="local verified only",
+                    verification_result={"passed": True},
+                    multihead_scores={"rank_score": 0.9},
+                )
+            ]
+        ),
+        graded_output={},
+    )
+
+    text = final_answer_artifact_text(result)
+
+    assert "correctness_verdict: external_validation_required" in text
+    assert "project_correctness_claim: not_claimed" in text
+    assert "| 1 | local verified only | advisory |" in text
 
 
 def test_final_answer_artifact_defers_correctness_to_external_review() -> None:
