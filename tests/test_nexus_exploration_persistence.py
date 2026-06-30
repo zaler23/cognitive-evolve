@@ -4,10 +4,13 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
+
 from cognitive_evolve_runtime.candidates.genome import CandidateGenome
 from cognitive_evolve_runtime.engine.orchestrator import EngineOrchestrator
 from cognitive_evolve_runtime.llm.env import LLMResponseError
 from cognitive_evolve_runtime.nexus.runtime import NexusRuntime
+from cognitive_evolve_runtime.persistence.checkpoint import CheckpointStore
 
 
 class NarrowSeedModel:
@@ -72,6 +75,37 @@ class DiagnoseInterruptsSecondRoundModel(NarrowSeedModel):
         if self.diagnose_calls >= 2:
             raise LLMResponseError("provider 5xx during nexus_diagnose_search_state")
         return super().diagnose_search_state(**_)
+
+
+def test_post_seeding_checkpoint_survives_verification_synthesizer_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    def fail_synthesize(self: object, *_args: Any, **_kwargs: Any) -> object:
+        raise LLMResponseError("verification synthesize failed after seed")
+
+    monkeypatch.setattr("cognitive_evolve_runtime.nexus.runtime.VerificationSynthesizer.synthesize", fail_synthesize)
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "mod.py").write_text("def value():\n    return 1\n", encoding="utf-8")
+
+    cases = [
+        ("text", tmp_path / "text", lambda out: NexusRuntime(model=NarrowSeedModel(), output_dir=out).run_text("seed then fail", max_rounds=4, min_population_size=3)),
+        ("project", tmp_path / "project", lambda out: NexusRuntime(output_dir=out).run_project(repo, user_goal="seed then fail", max_rounds=4, min_population_size=3)),
+    ]
+    for mode, out, run in cases:
+        with pytest.raises(LLMResponseError, match="verification synthesize failed after seed"):
+            run(out)
+
+        checkpoint_path = out / "checkpoint.json"
+        checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+        restored = CheckpointStore(checkpoint_path).restore_state()
+        assert restored is not None
+        assert checkpoint["mode"] == mode
+        assert checkpoint["round"] == 0
+        assert checkpoint["progress_event"]["phase"] == "post_seeding"
+        assert checkpoint["budget"]["current_round"] == 0
+        assert checkpoint["policy"]["policy_id"] == "nexus-evolution-policy"
+        assert checkpoint["archives"]["archive_schema"]
+        assert len(checkpoint["population"]["candidates"]) >= 3
+        assert len(restored["population"].candidates) >= 3
 
 
 def test_nexus_amplifies_narrow_model_seed_pool_and_marks_search_seeds(tmp_path: Path) -> None:
