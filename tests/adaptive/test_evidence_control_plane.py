@@ -229,6 +229,27 @@ def test_challenge_memory_dedupes_tracks_pressure_and_resolution() -> None:
     assert memory.targeted_resolution_rate() == 1.0
 
 
+def test_challenge_overlap_telemetry_does_not_enter_selection_advisory() -> None:
+    case = challenge_from_diagnostic(candidate_id="P1", source="unit", diagnostic="cache eviction schema missing", round_index=1)
+    controller = AdaptiveRuntimeController(config=AdaptiveConfig.from_sources(explicit={"enabled": True}))
+    controller.challenge_memory.ingest(
+        EvidenceRecord(candidate_id="P1", source="unit", emitted_challenge_ids=[case["id"]], metadata={"challenge_items": [case]}),
+        round_index=1,
+    )
+    parent = CandidateGenome(id="P1", concise_claim="cache eviction schema repair")
+    distractor = CandidateGenome(id="P2", concise_claim="unrelated latency route")
+
+    pressure = controller.compile_search_pressure(parent_id="P1", scope="candidate", parent=parent, candidates=[parent, distractor])
+
+    assert pressure is not None
+    assert pressure.selection_advisory == {}
+    assert controller.selection_advisory_features(candidates=[parent, distractor]) == {}
+    overlap = pressure.metadata["challenge_candidate_overlap"]
+    assert overlap["advisory_only"] is True
+    scores = {item["candidate_id"]: item["overlap_score"] for item in overlap["matches"]}
+    assert scores["P1"] > scores["P2"]
+
+
 def test_schema_challenge_classification_and_auto_resolution() -> None:
     assert classify_diagnostic("candidate artifact_type must be cache_policy") == "artifact_type_mismatch"
     assert classify_diagnostic("missing required cache policy sections: eviction") == "missing_required_field"
