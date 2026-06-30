@@ -2,7 +2,11 @@ from __future__ import annotations
 
 from cognitive_evolve_runtime.archives.manager import ArchiveManager
 from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome
+from cognitive_evolve_runtime.candidates.mutation import MutationEngine, MutationPlanner
+from cognitive_evolve_runtime.contracts.objective_contract import NexusObjectiveContract
 from cognitive_evolve_runtime.nexus.diagnosis import PolicyUpdater, SearchDiagnosis, SearchStateDiagnoser
+from cognitive_evolve_runtime.nexus.exploration import action_palette_for_round
+from cognitive_evolve_runtime.nexus.loop.offspring import _generate_offspring, _plan_mutations
 from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy
 from cognitive_evolve_runtime.ranking.parent_selection import ParentSelector
 
@@ -141,3 +145,61 @@ def test_diversity_collapse_pressure_uses_open_family_distribution_not_fixed_pla
     )
 
     assert rare.id in [candidate.id for candidate in selected]
+
+
+def test_semantic_looping_replays_under_explored_family_into_reproduction_plan_and_offspring() -> None:
+    dominant = [
+        CandidateGenome(
+            id=f"dom-{index}",
+            lineage=["dominant-lineage", f"dom-{index}"],
+            core_mechanism="dominant basin",
+            concise_claim=f"dominant variant {index}",
+            niche_memberships=["dominant-basin"],
+            multihead_scores={"objective_alignment": 0.9, "answer_likelihood": 0.8},
+        )
+        for index in range(4)
+    ]
+    rare = CandidateGenome(
+        id="rare",
+        lineage=["rare-lineage", "rare"],
+        core_mechanism="cold path",
+        concise_claim="low sample cold path",
+        niche_memberships=["cold-path-family"],
+        edge_knowledge_seeds=["cold edge"],
+        multihead_scores={"objective_alignment": 0.65, "answer_likelihood": 0.55, "novelty": 0.9, "rarity": 0.9},
+    )
+    archives = ArchiveManager()
+    population = [*dominant, rare]
+
+    diagnosis = SearchStateDiagnoser().diagnose(population=population, archives=archives, policy=EvolutionPolicy())
+    updated = PolicyUpdater().update(EvolutionPolicy(), diagnosis)
+    selected = ParentSelector().select(
+        population,
+        archives,
+        limit=2,
+        eligibility_policy=updated.metadata["eligibility_policy"],
+    )
+    plans = _plan_mutations(
+        model=None,
+        mutation_planner=MutationPlanner(),
+        parents=selected,
+        actions=action_palette_for_round(3, diagnosis.recommended_actions),
+        archives=archives,
+        diagnosis=diagnosis,
+        policy=updated,
+    )
+    offspring = _generate_offspring(
+        model=None,
+        mutation_engine=MutationEngine(),
+        parents=selected,
+        plans=plans,
+        world={},
+        contract=NexusObjectiveContract(original_user_goal="x", normalized_goal="x"),
+        policy=updated,
+    )
+
+    assert diagnosis.stagnation_type == "SemanticLooping"
+    assert "cold_path_family" in updated.metadata["selection_pressure"]["under_explored_families"]
+    assert rare.id in [candidate.id for candidate in selected]
+    assert any(rare.id in plan.parent_ids for plan in plans)
+    assert any(child.parent_ids == [rare.id] for child in offspring)
