@@ -310,7 +310,36 @@ def test_final_projection_binds_synthesis_answer_to_best_current_candidate_id() 
 
     assert projection.candidate_id == "chosen"
     assert projection.best_current_direction["candidate_id"] == "chosen"
+    assert projection.best_current_direction["blocked_from_verified_claim_reason"] != "answer_unbound_to_candidate_artifact"
     assert "answer_unbound_to_candidate_artifact" not in projection.advisory_issues
+
+
+def test_final_projection_keeps_unbound_model_answer_unbound() -> None:
+    candidates = [
+        CandidateGenome(id="candidate-a", artifact={"mechanism": "archive fallback"}, concise_claim="Archive fallback"),
+        CandidateGenome(id="candidate-b", artifact={"mechanism": "rank fallback"}, concise_claim="Rank fallback"),
+    ]
+    synthesis = SynthesizedResult(
+        status="model_synthesized",
+        final_answer="A free-text model answer that intentionally has no candidate binding.",
+        warnings=["model_final_answer_unbound_to_candidate_artifact"],
+        best_current_direction={"candidate_id": "", "route": "best_current"},
+    )
+
+    projection = build_final_projection(
+        population=CandidatePopulation(candidates),
+        synthesis=synthesis,
+        graded_output=_graded_portfolio(),
+    )
+
+    assert projection.status == "completed"
+    assert projection.candidate_id == ""
+    assert projection.artifact == synthesis.final_answer
+    assert projection.best_current_direction["candidate_id"] == ""
+    assert projection.best_current_direction["candidate_id"] not in {candidate.id for candidate in candidates}
+    assert projection.best_current_direction["verification_status"] == "unverified"
+    assert projection.best_current_direction["blocked_from_verified_claim_reason"] == "answer_unbound_to_candidate_artifact"
+    assert "answer_unbound_to_candidate_artifact" in projection.advisory_issues
 
 
 def test_final_projection_unwraps_best_current_direction_carrier_to_real_direction() -> None:
