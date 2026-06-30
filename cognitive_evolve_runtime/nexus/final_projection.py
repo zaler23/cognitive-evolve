@@ -100,9 +100,10 @@ def build_final_projection(*, population: CandidatePopulation, synthesis: Any, g
         certificate.setdefault("blocking_reasons", [])
         if isinstance(certificate["blocking_reasons"], list) and selection.blocked_reason:
             certificate["blocking_reasons"].append(selection.blocked_reason)
-    best = _best_answer_candidate(population.candidates, contract=contract) or select_best_current_direction(population.candidates, contract=contract)
-    if best is not None:
-        return _projection_for_candidate(best, status="completed", objective_solved=False, certificate=certificate, answer_text="", contract=contract, graded_output=graded_output)
+    if not (answer_text and candidate is None):
+        best = _best_answer_candidate(population.candidates, contract=contract) or select_best_current_direction(population.candidates, contract=contract)
+        if best is not None:
+            return _projection_for_candidate(best, status="completed", objective_solved=False, certificate=certificate, answer_text="", contract=contract, graded_output=graded_output)
     if answer_text and candidate is None:
         return _projection_for_candidate(None, status="completed", objective_solved=False, certificate=certificate, answer_text=answer_text, contract=contract, graded_output=graded_output)
     return FinalProjection(

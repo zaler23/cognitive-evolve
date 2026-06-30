@@ -35,6 +35,7 @@ from cognitive_evolve_runtime.nexus.fallbacks import capture_fallback_events, re
 from cognitive_evolve_runtime.nexus.runtime_options import option_bool, resolve_runtime_options, restore_runtime_options
 from cognitive_evolve_runtime.nexus.runtime_services import NexusPersistenceService, NexusProjectVerificationService
 from cognitive_evolve_runtime.nexus._shared import MODEL_BOUNDARY_ERRORS, positive_int
+from cognitive_evolve_runtime.nexus.stop_reasons import normalize_external_review_stop_reason
 from cognitive_evolve_runtime.persistence.checkpoint import CheckpointStore, contract_payload_for_persistence
 
 
@@ -152,9 +153,11 @@ class NexusRuntime:
             min_population_size = min_population_size if min_population_size is not None else budget.initial_candidate_count
             population = seed_population(contract=contract, world=world, policy=policy, model=self.model_routes.model_for(NexusModelRole.SEED), min_population_size=min_population_size)
             archives = ArchiveManager(policy.archive_schema)
-            verification_plan = VerificationSynthesizer(model=self.model).synthesize({"goal": goal, "contract": contract.to_dict()})
             world_payload = _world_to_dict_with_latent_metadata(world, contract)
             observer = self._live_observer(mode="text", contract=contract, world=world_payload, max_rounds=budget.max_rounds, budget=budget.to_dict())
+            if observer is not None:
+                observer({"phase": "post_seeding", "round": 0, "population": population, "archives": archives, "policy": policy, "progress_event": {"type": "nexus_post_seeding_checkpoint", "round": 0, "phase": "post_seeding", "max_rounds": budget.max_rounds}, "runtime_options": runtime_options})
+            verification_plan = VerificationSynthesizer(model=self.model).synthesize({"goal": goal, "contract": contract.to_dict()})
             result = evolve_once(
                 population=population,
                 archives=archives,
@@ -248,6 +251,10 @@ class NexusRuntime:
                 min_population_size=min_population_size,
                 provided_context=initial_context_result.to_source_context(),
             )
+            project_world_payload = _world_to_dict_with_latent_metadata({"snapshot": snapshot.to_dict(), "project_world_model": world.to_dict()}, contract)
+            observer = self._live_observer(mode="project", contract=contract, world=project_world_payload, max_rounds=budget.max_rounds, budget=budget.to_dict())
+            if observer is not None:
+                observer({"phase": "post_seeding", "round": 0, "population": population, "archives": archives, "policy": policy, "progress_event": {"type": "nexus_post_seeding_checkpoint", "round": 0, "phase": "post_seeding", "max_rounds": budget.max_rounds}, "runtime_options": runtime_options})
             verification_plan = VerificationSynthesizer(model=self.model).synthesize({"goal": user_goal, "contract": contract.to_dict(), "mode": "project"})
             context_result = self.context_orchestrator.build_for_parents(
                 contract=contract,
@@ -278,8 +285,6 @@ class NexusRuntime:
                 verification_summaries.extend(summaries)
                 return summaries
 
-            project_world_payload = _world_to_dict_with_latent_metadata({"snapshot": snapshot.to_dict(), "project_world_model": world.to_dict()}, contract)
-            observer = self._live_observer(mode="project", contract=contract, world=project_world_payload, max_rounds=budget.max_rounds, budget=budget.to_dict())
             result = evolve_once(
                 population=population,
                 archives=archives,
@@ -377,6 +382,14 @@ class NexusRuntime:
             else:
                 provided_context = dict(restored.get("provided_context") or {})
             budget_data = dict(getattr(checkpoint, "budget", {}) or {})
+            terminal_stop = normalize_external_review_stop_reason(budget_data.get("stop_reason"))
+            resume_does_not_extend = max_rounds is None or int(max_rounds) <= int(checkpoint.max_rounds or 0)
+            if terminal_stop and resume_does_not_extend:
+                run_result_path = self.output_dir / "run-result.json"
+                if not run_result_path.exists():
+                    raise FileNotFoundError(f"terminal checkpoint resume requires persisted run-result.json: {run_result_path}")
+                payload = json.loads(run_result_path.read_text(encoding="utf-8"))
+                return NexusRunResult(**payload)
             adaptive_resume = bool(budget_data.get("adaptive"))
             if max_rounds is not None:
                 target_rounds = max(int(max_rounds), int(checkpoint.round or 0) + 1)

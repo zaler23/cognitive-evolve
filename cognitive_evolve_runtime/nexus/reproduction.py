@@ -80,8 +80,7 @@ def dedupe_offspring_against_population(offspring: list[CandidateGenome], popula
             unique.append(candidate)
         else:
             candidate.metadata["duplicate_offspring_reason"] = "duplicate_semantic_signature"
-            record_candidate_budget_decision(candidate, source="dedupe_offspring_against_population", reason="duplicate_semantic_signature", action="soft_retain")
-            unique.append(candidate)
+            record_candidate_budget_decision(candidate, source="dedupe_offspring_against_population", reason="duplicate_semantic_signature", action="hard_exclude")
     return unique
 
 
