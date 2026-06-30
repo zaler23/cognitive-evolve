@@ -66,6 +66,31 @@ def test_ca_crossover_uses_configured_global_donor_when_no_shared_descriptor() -
     assert partner is high_final
 
 
+def test_ca_crossover_lowest_similarity_global_policy_selects_most_distant_donor() -> None:
+    pivot = _candidate("P", "alpha beta", niche="shared", search=0.1)
+    high_search = _candidate("S", "alpha beta bridge", niche="shared", search=0.9)
+    distant = _candidate("D", "omega", niche="far", search=0.2)
+
+    default_partner = neighborhood_crossover_partner(
+        pivot,
+        [pivot, high_search, distant],
+        CACrossoverConfig(min_shared_descriptor_tokens=99),
+    )
+    negative_assortative_partner = neighborhood_crossover_partner(
+        pivot,
+        [pivot, high_search, distant],
+        CACrossoverConfig(min_shared_descriptor_tokens=99, global_donor_policy="lowest_similarity"),
+    )
+
+    assert jaccard_similarity(descriptor_tokens(pivot), descriptor_tokens(distant)) < jaccard_similarity(
+        descriptor_tokens(pivot),
+        descriptor_tokens(high_search),
+    )
+    assert default_partner is high_search
+    assert negative_assortative_partner is distant
+    assert negative_assortative_partner is not default_partner
+
+
 def test_crossover_plan_deterministic_fallback_generates_two_parent_child() -> None:
     parent = _candidate("P", "ca wave", niche="math")
     partner = _candidate("Q", "ca wave proof", niche="math")
