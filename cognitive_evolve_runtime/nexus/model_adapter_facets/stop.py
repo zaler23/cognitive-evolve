@@ -38,10 +38,10 @@ class StopFacet:
                 "population": population,
                 "instruction": (
                     "Return stop=true only for one of these terminal choices: "
-                    "candidate_ready_for_external_review, diminishing_returns_checkpoint, or objective_solved. "
-                    "Use candidate_ready_for_external_review when the candidate is worth human/external review but not project-certified. "
+                    "diminishing_returns_checkpoint or objective_solved. "
+                    "Use candidate_ready_for_external_review when the run has a clear direct answer; use objective_solved only when an external/user-owned solved claim is explicitly warranted. "
                     "Use diminishing_returns_checkpoint when more rounds have low expected marginal value. "
-                    "Safety checkpoints are not completion, and solved=true requires objective_solved."
+                    "Safety checkpoints are not completion, and solved=true means answer produced, not externally verified."
                 ),
             },
             schema,

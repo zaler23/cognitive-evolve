@@ -7,7 +7,7 @@ from dataclasses import asdict, dataclass, field
 from enum import Enum
 from typing import Any, TypedDict
 
-from cognitive_evolve_runtime.nexus._serde import coerce_dict, coerce_str_list, stable_hash, utc_now
+from cognitive_evolve_runtime.core.serialization import coerce_dict, coerce_str_list, stable_hash, utc_now
 from cognitive_evolve_runtime.core.scalars import bounded_score_or_none as _bounded_score_or_none
 
 
@@ -74,6 +74,10 @@ class CandidateMetadata(TypedDict, total=False):
     generation_plan_source: str
     generation_plan_round: int
     generation_plan_fate: str
+    nextgen: dict[str, Any]
+    candidate_budget_decision: dict[str, Any]
+    candidate_budget_decisions: list[dict[str, Any]]
+    seed_reservoir: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -336,7 +340,9 @@ def candidate_from_dict(data: dict[str, Any]) -> CandidateGenome:
     while ensuring project patch candidates reload with their full patch genome.
     """
 
-    if isinstance(data, dict) and (data.get("artifact_type") in {"project_patch", "patch"} or data.get("patch_set")):
+    artifact = data.get("artifact") if isinstance(data, dict) else None
+    artifact_patch_set = isinstance(artifact, dict) and isinstance(artifact.get("patch_set"), list)
+    if isinstance(data, dict) and (data.get("artifact_type") in {"project_patch", "patch"} or data.get("patch_set") or artifact_patch_set):
         from cognitive_evolve_runtime.candidates.project_candidate import ProjectCandidateGenome
 
         return ProjectCandidateGenome.from_dict(data)

@@ -107,11 +107,8 @@ class CritiqueEngine:
         missing: list[str] = []
         proposed: list[str] = []
         if candidate.metadata.get("search_seed_not_final"):
-            flaws.append("initial search seed has not yet been converted into an answer mechanism")
+            flaws.append("initial search seed should be sharpened into a direct answer")
             proposed.append("deepen")
-        if not candidate.tool_results and not candidate.verification_trace:
-            missing.append("no local/tool/model verification trace yet")
-            proposed.append("tool_ground")
         if candidate.edge_knowledge_seeds:
             proposed.append("rare_inject")
         if candidate.multihead_scores.get("auxiliary_value", 0.0) > candidate.multihead_scores.get("answer_likelihood", 0.0):

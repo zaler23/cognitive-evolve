@@ -66,8 +66,8 @@ def test_no_latent_state_keeps_critique_payload_shape_unchanged() -> None:
 
     assert critique.metadata == {}
     assert "metadata" not in critique.to_dict()
-    assert critique.proposed_mutations == ["tool_ground"]
-    assert critique.missing_evidence == ["no local/tool/model verification trace yet"]
+    assert critique.proposed_mutations == ["deepen"]
+    assert critique.missing_evidence == []
 
 
 class _ModelCritique:

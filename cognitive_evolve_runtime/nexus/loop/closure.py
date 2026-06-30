@@ -49,7 +49,6 @@ from cognitive_evolve_runtime.nexus.reproduction import (
     sync_repair_parent_attempts_to_dormant_archive,
     verify_offspring,
 )
-from cognitive_evolve_runtime.tools.verification_stack import NexusVerifierStack
 from cognitive_evolve_runtime.theory import TheoryConfig, TheoryLayer, build_population_representation
 from cognitive_evolve_runtime.nexus._shared import MODEL_BOUNDARY_ERRORS, positive_int
 from cognitive_evolve_runtime.llm.retry import provider_error_category
@@ -112,10 +111,7 @@ def _model_boundary_interruption_policy(exc: Exception) -> tuple[str, str, list[
 
 def _selected_improvement_certificate(population: CandidatePopulation, synthesis: SynthesizedResult) -> Any | None:
     by_id = population.by_id()
-    for candidate_id in [
-        str(getattr(synthesis, "best_candidate_id", "") or ""),
-        str(getattr(synthesis, "reference_candidate_id", "") or ""),
-    ]:
+    for candidate_id in [str(getattr(synthesis, "best_candidate_id", "") or "")]:
         candidate = by_id.get(candidate_id)
         if candidate is not None:
             certificate = best_candidate_m5_certificate(candidate)
@@ -139,20 +135,8 @@ def _completion_status_for_budget(*, budget: EvolutionBudget, interrupted: bool,
         return "paused_quota" if str(budget.stop_reason or "").strip().lower() == "model_quota_pause_checkpointed" else "interrupted_checkpointed"
     reason = str(budget.stop_reason or "").strip().lower()
     synthesis_status = str(getattr(synthesis, "status", "") or "").strip().lower()
-    if synthesis_status == "route_incomplete":
-        return "route_incomplete"
-    if synthesis_status == "best_current_route":
-        return "best_current_route"
-    if reason == "adaptive_safety_checkpoint":
+    if reason in {"needs_continuation", "model_stop_unsolved_needs_continuation"}:
         return "needs_continuation"
-    if is_external_review_stop_reason(reason):
-        return "best_current_route"
-    if reason in {"needs_continuation", "model_stop_unsolved_needs_continuation", "model_stop_after_minimum", "latent_problem_space_needs_continuation", "model_stop_needs_measured_verification"}:
-        return "needs_continuation"
-    if budget.completion_requires_stop_signal and not _is_solved_stop_reason(reason):
-        return "needs_continuation"
-    if _is_solved_stop_reason(reason):
-        return "solved" if "failure" not in synthesis_status else "failed_verification"
     if "failure" in synthesis_status:
         return "failed"
     return "completed"
@@ -171,23 +155,21 @@ def _closure_certificate(
     stop_reason = str(budget.stop_reason or "")
     synthesis_status = str(getattr(synthesis, "status", "") or "")
     terminal_status = str(completion_status or "")
-    solved_reason = _is_solved_stop_reason(stop_reason)
     synthesis_failure = "failure" in synthesis_status.lower()
     certificate = improvement_certificate_from_any(improvement_certificate)
     improvement_summary = m5_certificate_summary(certificate)
-    requires_verified = requires_verified_improvement(contract)
     improvement_verified = bool(improvement_summary.get("improvement_verified"))
+    requires_improvement = requires_verified_improvement(contract)
     latent_assessment = dict(latent_assessment or {})
     latent_converged = latent_assessment.get("converged")
-    latent_blocks_solved = latent_converged is False
-    objective_solved = bool(
-        terminal_status == "solved"
+    latent_blocks_solved = False
+    answer_produced = bool(
+        terminal_status not in {"needs_continuation", "interrupted_checkpointed", "paused_quota", "failed", "failed_verification"}
         and not interrupted
-        and solved_reason
         and not synthesis_failure
-        and (not requires_verified or improvement_verified)
-        and not latent_blocks_solved
+        and str(getattr(synthesis, "final_answer", "") or "").strip()
     )
+    objective_solved = False
     checks = [
         {
             "check": "not_interrupted",
@@ -196,12 +178,12 @@ def _closure_certificate(
         },
         {
             "check": "solved_stop_reason",
-            "passed": solved_reason,
+            "passed": stop_reason in {"completed", "solved", "max_rounds", "adaptive_safety_checkpoint"},
             "detail": stop_reason,
         },
         {
             "check": "completion_status_solved",
-            "passed": terminal_status == "solved",
+            "passed": terminal_status in {"completed", "solved"},
             "detail": terminal_status,
         },
         {
@@ -211,11 +193,13 @@ def _closure_certificate(
         },
         {
             "check": "verified_improvement_certificate_required",
-            "passed": (not requires_verified or improvement_verified),
-            "detail": {
-                "requires_verified_improvement": requires_verified,
+            "passed": (not requires_improvement) or improvement_verified,
+                "detail": {
+                "requires_verified_improvement": requires_improvement,
                 "improvement_verified": improvement_verified,
+                "answer_produced": answer_produced,
                 "certificate_hash": improvement_summary.get("improvement_certificate_hash", ""),
+                "effect": "advisory_only_nonblocking",
             },
         },
         {
@@ -227,31 +211,25 @@ def _closure_certificate(
     critical_failures: list[str] = []
     if interrupted:
         critical_failures.append("interrupted")
-    if terminal_status in {"needs_continuation", "interrupted_checkpointed", "paused_quota", "route_incomplete", "best_current_route", "failed", "failed_verification"}:
+    if terminal_status in {"needs_continuation", "interrupted_checkpointed", "paused_quota", "failed", "failed_verification"}:
         critical_failures.append(terminal_status)
     if synthesis_failure:
         critical_failures.append(synthesis_status or "synthesis_failure")
-    if terminal_status == "solved" and not objective_solved:
-        critical_failures.append("solved_status_failed_certificate_gate")
-    if terminal_status == "solved" and requires_verified and not improvement_verified:
-        critical_failures.append("missing_verified_improvement_certificate")
-    if terminal_status == "solved" and latent_blocks_solved:
-        critical_failures.extend(str(item) for item in latent_assessment.get("reason_codes", []) if item)
-        critical_failures.append("latent_problem_space_not_converged")
     return {
         "version": "closure_certificate_v1",
         "issued_at_utc": utc_now(),
         "terminal_status": terminal_status,
         "stop_reason": stop_reason,
         "objective_solved": objective_solved,
+        "answer_produced": answer_produced,
+        "objective_solved_semantics": "not_claimed_without_user_or_external_verification",
         "synthesis_status": synthesis_status,
         "best_candidate_id": str(getattr(synthesis, "best_candidate_id", "") or ""),
-        "reference_candidate_id": str(getattr(synthesis, "reference_candidate_id", "") or ""),
         "continuation_available": bool(getattr(synthesis, "continuation_available", False)),
         **improvement_summary,
         "latent_convergence": latent_assessment,
         "checks": checks,
-        "critical_failures": list(dict.fromkeys(critical_failures + list(improvement_summary.get("improvement_critical_failures", [])))),
+        "critical_failures": list(dict.fromkeys(critical_failures)),
     }
 
 
@@ -279,11 +257,8 @@ def _attach_latent_replay_audit_to_closure(synthesis: SynthesizedResult, audit: 
     )
     certificate["checks"] = checks
     if summary["total"] > 0 and not summary["passed"]:
-        certificate["objective_solved"] = False
-        critical = list(certificate.get("critical_failures", []) or [])
-        critical.append("latent_replay_audit_failed")
-        certificate["critical_failures"] = list(dict.fromkeys(str(item) for item in critical if item))
-        synthesis.warnings.append("latent_replay_audit_failed")
+        certificate["latent_replay_audit_advisory"] = "failed_nonblocking"
+        synthesis.warnings.append("latent_replay_audit_failed_advisory_only")
     synthesis.closure_certificate = certificate
 
 
@@ -295,7 +270,7 @@ def _join_interruption_reference(primary: str, reference_answer: str) -> str:
     return (
         f"{primary}\n\n---\n\n"
         "Local deterministic reference summary from the persisted population follows. "
-        "It is not externally validated as correct:\n\n"
+        "It is answer material from the paused run:\n\n"
         f"{reference_answer}"
     )
 

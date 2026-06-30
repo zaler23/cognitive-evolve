@@ -8,6 +8,7 @@ from typing import Any
 from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome
 from cognitive_evolve_runtime.candidates.project_candidate import PatchApplicationResult, ProjectCandidateGenome
 from cognitive_evolve_runtime.nexus.failure_classifier import classify_recovery_eligibility
+from cognitive_evolve_runtime.nexus.nextgen import record_candidate_budget_decision, structurally_blocked
 from cognitive_evolve_runtime.tools.adapters import LocalToolSuite
 from cognitive_evolve_runtime.tools.feedback import ToolFeedback
 from cognitive_evolve_runtime.tools.patch_sandbox import PatchSandbox, _looks_like_unified_patch_text
@@ -18,6 +19,7 @@ class ProjectVerificationSummary:
     candidate_id: str
     patch_result: dict[str, Any]
     tool_feedback: list[dict[str, Any]] = field(default_factory=list)
+    verification_context: dict[str, Any] = field(default_factory=dict)
 
     @property
     def passed(self) -> bool:
@@ -26,16 +28,21 @@ class ProjectVerificationSummary:
         return patch_ok and tools_ok
 
     def to_dict(self) -> dict[str, Any]:
-        return {"candidate_id": self.candidate_id, "patch_result": self.patch_result, "tool_feedback": self.tool_feedback, "passed": self.passed}
+        payload = {"candidate_id": self.candidate_id, "patch_result": self.patch_result, "tool_feedback": self.tool_feedback, "passed": self.passed}
+        if self.verification_context:
+            payload.update(dict(self.verification_context))
+        return payload
 
 
 class ProjectCandidateVerifier:
-    def __init__(self, *, source_root: str | Path, sandbox_root: str | Path, tool_suite: LocalToolSuite | None = None, include_tests: bool = False, timeout_seconds: float = 60.0) -> None:
+    def __init__(self, *, source_root: str | Path, sandbox_root: str | Path, tool_suite: LocalToolSuite | None = None, include_tests: bool = False, timeout_seconds: float = 60.0, verification_context: dict[str, Any] | None = None, allowed_patch_scope: list[str] | None = None) -> None:
         self.source_root = Path(source_root)
         self.sandbox_root = Path(sandbox_root)
         self.tool_suite = tool_suite or LocalToolSuite()
         self.include_tests = include_tests
         self.timeout_seconds = timeout_seconds
+        self.verification_context = dict(verification_context or {})
+        self.allowed_patch_scope = [str(item) for item in allowed_patch_scope or [] if str(item).strip()]
 
     def verify_population(self, candidates: list[CandidateGenome]) -> list[ProjectVerificationSummary]:
         summaries: list[ProjectVerificationSummary] = []
@@ -45,7 +52,7 @@ class ProjectCandidateVerifier:
         return summaries
 
     def verify(self, candidate: CandidateGenome) -> ProjectVerificationSummary:
-        sandbox = PatchSandbox(self.source_root, self.sandbox_root)
+        sandbox = PatchSandbox(self.source_root, self.sandbox_root, allowed_patch_scope=self.allowed_patch_scope)
         patch_result = sandbox.apply(candidate)
         feedback: list[ToolFeedback] = []
         if patch_result.passed:
@@ -68,7 +75,9 @@ class ProjectCandidateVerifier:
             candidate.add_tool_feedback(fail_feedback)
             candidate.add_verification_feedback(fail_feedback)
             feedback = [fail_feedback]
-        summary = ProjectVerificationSummary(candidate_id=candidate.id, patch_result=patch_result.to_dict(), tool_feedback=[item.to_dict() for item in feedback])
+        context = dict(self.verification_context)
+        context.setdefault("candidate_contract_hash", str(getattr(candidate, "contract_hash", "") or ""))
+        summary = ProjectVerificationSummary(candidate_id=candidate.id, patch_result=patch_result.to_dict(), tool_feedback=[item.to_dict() for item in feedback], verification_context=context)
         setattr(candidate, "patch_application_result", patch_result.to_dict())
         candidate.verification_result = summary.to_dict()
         _update_scores_from_verification(candidate, patch_result, feedback)
@@ -119,13 +128,28 @@ def _route_failed_project_candidate(candidate: CandidateGenome, payload: dict[st
     self-evolution genes.  Treat those like failed offspring: block them from
     final synthesis, but keep them as Incubating repair parents.  Terminal
     failures such as docs-only, seed-note-only, missing targets, and source-free
-    narrative claims still become Failed.
+    narrative claims now remain exploratory unless they expose structural/safety
+    damage; they are blocked only from verified/final claims.
     """
 
     verdict = classify_recovery_eligibility(candidate, payload, project_root=payload.get("source_root"))
     candidate.metadata["failure_classification"] = _verdict_with_candidate_id(verdict.to_dict(), candidate.id)
     if not verdict.repairable:
-        candidate.mark_fate(CandidateFate.FAILED.value)
+        candidate.metadata["final_answer_advisory"] = {
+            "final_eligible": False,
+            "claim_eligible": False,
+            "reason": verdict.category,
+        }
+        record_candidate_budget_decision(candidate, source="project_verification", reason=verdict.category, action="soft_retain")
+        if structurally_blocked(candidate):
+            candidate.mark_fate(CandidateFate.FAILED.value)
+        else:
+            candidate.mark_fate(CandidateFate.INCUBATING.value)
+            candidate.metadata["bootstrap_entry_survival"] = {
+                "reason": "non_structural_project_failure_kept_for_answer_first_exploration",
+                "category": verdict.category,
+                "final_answer_blocked": True,
+            }
         return
     candidate.mark_fate(CandidateFate.INCUBATING.value)
     candidate.metadata["final_answer_blocked_until_repaired"] = True

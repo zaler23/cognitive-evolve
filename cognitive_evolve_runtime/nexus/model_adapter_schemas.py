@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from cognitive_evolve_runtime.nexus.diagnosis import STAGNATION_TYPES
+
 def _objective_contract_schema(*, project: bool) -> dict[str, Any]:
     properties: dict[str, Any] = {
         "original_user_goal": {"type": "string"},
@@ -254,6 +256,8 @@ def _synthesis_schema() -> dict[str, Any]:
             "final_answer": {"type": "string"},
             "best_candidate_id": {"type": "string"},
             "best_auxiliary_candidate_id": {"type": "string"},
+            "intent_alignment_rationale": {"type": "string"},
+            "intent_directness": {"type": "number"},
             "warnings": _string_array(),
             "failure_analysis": {"type": "string"},
         },
@@ -273,6 +277,10 @@ def _candidate_item_schema(required: tuple[str, ...] | None = None) -> dict[str,
             "assumptions": _string_array(),
             "missing_parts": _string_array(),
             "uncertainty_notes": _string_array(),
+            "edge_knowledge_seeds": _string_array(),
+            "inherited_genes": _string_array(),
+            "novelty_descriptors": _string_array(),
+            "niche_memberships": _string_array(),
             "verification_trace": {"type": "array", "items": {"type": "object"}},
             "formal_artifacts": {
                 "type": "array",
@@ -357,7 +365,7 @@ def _search_diagnosis_schema() -> dict[str, Any]:
         "type": "object",
         "properties": {
             "stagnation_detected": {"type": "boolean"},
-            "stagnation_type": {"type": "string"},
+            "stagnation_type": {"type": "string", "enum": STAGNATION_TYPES},
             "over_explored_families": _string_array(),
             "under_explored_families": _string_array(),
             "prematurely_culled_genes": _string_array(),

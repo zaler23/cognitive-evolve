@@ -55,7 +55,7 @@ FATE_SEMANTICS: dict[str, FateSemantics] = {
         may_reactivate=False,
         terminal=False,
         final_answer_candidate=True,
-        notes="Best current material; still subject to the strict final gate before being treated as solved or merge-ready.",
+        notes="Current answer material; project verification remains advisory and user-owned after the run.",
     ),
     CandidateFate.AUXILIARY.value: FateSemantics(
         fate=CandidateFate.AUXILIARY.value,

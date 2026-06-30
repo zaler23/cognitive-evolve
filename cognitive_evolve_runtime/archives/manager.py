@@ -7,9 +7,10 @@ from typing import Any
 
 from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome, candidate_from_dict
 from cognitive_evolve_runtime.evaluators.evidence import evidence_final_blocked, evidence_parent_blocked, evidence_terminal_reject, has_repair_value, latest_evidence_record
-from cognitive_evolve_runtime.nexus._serde import coerce_dict, coerce_str_list, utc_now
+from cognitive_evolve_runtime.core.serialization import coerce_dict, coerce_str_list, utc_now
 from cognitive_evolve_runtime.nexus.adaptive_signals import in_bottom_band, in_top_band, observed_frontier_signal, score
-from cognitive_evolve_runtime.nexus.obligations import HARD_EVIDENCE_FAILURES, HARD_PROOF_FAILURES, candidate_has_obligation_or_evidence_delta
+from cognitive_evolve_runtime.nexus.obligations import candidate_has_obligation_or_evidence_delta
+from cognitive_evolve_runtime.nexus.nextgen import record_candidate_budget_decision, structurally_blocked
 from cognitive_evolve_runtime.nexus.population_vitality import (
     classify_dormant_kind,
     reactivation_condition_for_kind,
@@ -22,7 +23,6 @@ from .constraints import (
     candidate_verification_blocks_final as _candidate_verification_blocks_final,
     constraint_id as _constraint_id,
     constraint_target as _constraint_target,
-    verification_diagnostics as _verification_diagnostics,
     verification_failure_signature as _verification_failure_signature,
 )
 from .dormant import DormantArchive
@@ -66,6 +66,10 @@ class ArchiveManager:
     history: list[dict[str, Any]] = field(default_factory=list)
     constraint_records: list[dict[str, Any]] = field(default_factory=list)
     terminal_tombstones: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # Runtime-only: resolved project root used to ground source-binding resolution.
+    # Intentionally excluded from to_dict()/from_dict() so archive payloads never
+    # carry a local absolute path.
+    project_root: str = ""
 
     def update(
         self,
@@ -141,16 +145,17 @@ class ArchiveManager:
             evidence_blocks_final = evidence_final_blocked(candidate)
             evidence_blocks_parent = evidence_parent_blocked(candidate)
             evidence_repairable = has_repair_value(candidate)
-            if current_fate in TERMINAL_FAILURE_FATES:
+            if current_fate in TERMINAL_FAILURE_FATES and structurally_blocked(candidate):
                 fate = current_fate
             elif evidence_terminal_reject(candidate) and not evidence_repairable:
-                fate = CandidateFate.FAILED.value
+                record_candidate_budget_decision(candidate, source="archive_assign_by_policy", reason="evidence_terminal_reject_nonstructural", action="soft_retain")
+                fate = CandidateFate.INCUBATING.value
             elif _candidate_verification_blocks_final(candidate) or evidence_blocks_final:
                 if evidence is not None and evidence_repairable and not evidence_blocks_parent:
                     fate = CandidateFate.INCUBATING.value if decision is None or decision.incubating else CandidateFate.DORMANT.value
                 else:
                     fate = CandidateFate.INCUBATING.value if decision is not None and decision.incubating else CandidateFate.DORMANT.value
-            elif candidate.id == best_answer or (score(candidate, "answer_likelihood") > 0 and in_top_band(candidate, candidates, "answer_likelihood") and not candidate.metadata.get("search_seed_not_final")):
+            elif candidate.id == best_answer or (score(candidate, "answer_likelihood") > 0 and in_top_band(candidate, candidates, "answer_likelihood")):
                 fate = CandidateFate.ELITE.value
             elif candidate.id in auxiliary_ids or candidate.multihead_scores.get("auxiliary_value", 0.0) > max(candidate.multihead_scores.get("answer_likelihood", 0.0), candidate.multihead_scores.get("objective_alignment", 0.0)):
                 fate = CandidateFate.AUXILIARY.value
@@ -159,14 +164,15 @@ class ArchiveManager:
             elif candidate.id in edge_ids or observed_frontier_signal(candidate, candidates):
                 fate = CandidateFate.DORMANT.value
             elif candidate.failure_lessons or (in_bottom_band(candidate, candidates, "objective_alignment") and not candidate_has_obligation_or_evidence_delta(candidate)):
-                fate = CandidateFate.INCUBATING.value if evidence_repairable else CandidateFate.CULLED.value
+                record_candidate_budget_decision(candidate, source="archive_assign_by_policy", reason="failure_or_bottom_band_kept_explorable", action="soft_retain")
+                fate = CandidateFate.INCUBATING.value if evidence_repairable or candidate.failure_lessons else CandidateFate.DORMANT.value
             else:
                 fate = CandidateFate.ACTIVE.value
             assignment = FateAssignment(candidate.id, fate)
             if _candidate_verification_blocks_final(candidate) or evidence_blocks_final:
                 assignment.failure_signature = _verification_failure_signature(candidate) if _candidate_verification_blocks_final(candidate) else _evidence_failure_signature(candidate)
                 assignment.future_reactivation_condition = (
-                    (decision.reactivation_condition or "repair_lane_requires_concrete_formal_artifact_obligation_delta_or_verified_evidence")
+                    (decision.reactivation_condition or "answer_first_reactivation_uses_mechanism_value")
                     if fate == CandidateFate.INCUBATING.value and decision is not None
                     else (decision.reactivation_condition if decision is not None else "")
                     or "reactivate_only_with_concrete_formal_artifact_and_obligation_delta"
@@ -351,24 +357,14 @@ class ArchiveManager:
         ArchiveRegistry(self).route_candidate(candidate, assignment)
 
     def _record_constraints(self, candidate: CandidateGenome, assignment: FateAssignment) -> None:
-        diagnostics = _verification_diagnostics(candidate)
-        hard = diagnostics.intersection(HARD_PROOF_FAILURES | HARD_EVIDENCE_FAILURES)
         records: list[ArchiveConstraintRecord] = []
-        if hard:
-            target = _constraint_target(candidate)
-            records.append(
-                ArchiveConstraintRecord(
-                    id=_constraint_id("verification_constraint", target, sorted(hard), candidate.id),
-                    kind="verification_constraint",
-                    rule="do_not_rank_or_reactivate_without_named_obligation_delta_and_verified_evidence",
-                    target=target,
-                    source_candidate_id=candidate.id,
-                    severity="error" if assignment.fate in {CandidateFate.DORMANT.value, CandidateFate.CULLED.value, CandidateFate.FAILED.value} else "warning",
-                    evidence={"diagnostics": sorted(hard), "fate": assignment.fate},
-                )
-            )
-        has_failure_context = bool(hard or assignment.failure_signature or candidate.failure_lessons)
-        if has_failure_context and assignment.fate in {CandidateFate.DORMANT.value, CandidateFate.CULLED.value, CandidateFate.FAILED.value} and not candidate_has_obligation_or_evidence_delta(candidate):
+        has_failure_context = bool(assignment.failure_signature or candidate.failure_lessons)
+        if (
+            has_failure_context
+            and structurally_blocked(candidate)
+            and assignment.fate in {CandidateFate.CULLED.value, CandidateFate.FAILED.value}
+            and not candidate_has_obligation_or_evidence_delta(candidate)
+        ):
             target = _constraint_target(candidate)
             records.append(
                 ArchiveConstraintRecord(
@@ -419,6 +415,8 @@ class ArchiveManager:
             and str(item.get("kind") or "") in {"lineage_freeze", "verification_constraint"}
             and str(item.get("target") or "") == target
         ]
+        if blocked and not structurally_blocked(candidate):
+            return True
         if not blocked:
             return True
         return candidate_has_obligation_or_evidence_delta(candidate)
@@ -466,9 +464,8 @@ def _apply_stage_adaptive_active_floor(
         # and synthesis gates.  Archive routing should not let any pre-synthesis
         # search phase collapse to zero Active parents merely because all useful
         # candidates still need contract/evidence/final-gate repair.
-        if decision.hard_reject_reason or decision.repair_exhausted:
-            continue
-        if not (decision.exploration_eligible and decision.parent_eligible):
+        if decision.hard_reject_reason or decision.repair_exhausted or not (decision.exploration_eligible and decision.parent_eligible):
+            record_candidate_budget_decision(candidate, source="stage_adaptive_active_floor", reason="legacy_stage_gate_defanged", action="soft_floor_skip")
             continue
         viable.append((assignment, candidate, decision))
     if len(viable) < 2:

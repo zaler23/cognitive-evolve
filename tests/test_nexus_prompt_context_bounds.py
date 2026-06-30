@@ -106,6 +106,26 @@ def test_build_prompt_view_fits_configured_budget(monkeypatch) -> None:
     assert view.payload["candidate_population_stats"]["count"] == 50
 
 
+def test_source_context_preserves_raw_code_in_prompt_view() -> None:
+    code = "def target():\n    return 'real source'\n" + "# keep\n" * 900
+    view = build_prompt_view(
+        "nexus_generate_offspring",
+        {
+            "source_context": {
+                "selected_files": ["pkg/mod.py"],
+                "budget_policy": "top_1_files_capped_6000chars_from_context_packets",
+                "slices": [{"path": "pkg/mod.py", "hash": "abc", "start": 1, "end": 901, "text": code}],
+            }
+        },
+    )
+
+    source_context = view.payload["source_context"]
+    assert source_context["budget_policy"] == "top_1_files_capped_6000chars_from_context_packets"
+    assert source_context["slices"][0]["path"] == "pkg/mod.py"
+    assert source_context["slices"][0]["text"] == code
+    assert "type" not in source_context
+
+
 def test_transport_applies_prompt_bound_before_provider(monkeypatch) -> None:
     monkeypatch.setenv("COGEV_LLM_PROVIDER", "litellm")
     monkeypatch.setenv("COGEV_LLM_MODEL", "unit-test-model")

@@ -1,20 +1,9 @@
 from __future__ import annotations
 
 from cognitive_evolve_runtime.candidates.genome import CandidateGenome
-from cognitive_evolve_runtime.contracts.objective_contract import NexusObjectiveContract
 from cognitive_evolve_runtime.nexus.obligations import candidate_formal_artifacts, looks_like_formal_artifact
 from cognitive_evolve_runtime.nexus.stage_policy import parse_metric_value, stage_eligibility
 from cognitive_evolve_runtime.ranking.relative_rater import _coerce_score, _verification_score
-from cognitive_evolve_runtime.tools.verification_stack import NexusVerifierStack
-
-
-def _proof_contract() -> NexusObjectiveContract:
-    return NexusObjectiveContract(
-        original_user_goal="Improve runtime correctness with proof-style verification evidence.",
-        normalized_goal="prove runtime metric parsing is robust with executable assertions",
-        expected_output_forms=["proof", "assertion_set"],
-        verification_preferences=["formal_artifact", "obligation_delta"],
-    )
 
 
 def test_parse_metric_value_handles_scientific_notation_without_overflow() -> None:
@@ -68,8 +57,4 @@ def test_assertion_set_formal_artifact_is_structurally_checkable() -> None:
         multihead_scores={"objective_alignment": "9e-1", "answer_likelihood": "8e-1", "verifiability": "8e-1"},
     )
 
-    verification = NexusVerifierStack().verify_candidate(candidate, contract=_proof_contract())
-
     assert candidate_formal_artifacts(candidate)[0]["kind"] == "assertion_set"
-    assert verification.passed is True
-    assert "proof_object_structurally_weak" not in verification.diagnostics

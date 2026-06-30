@@ -15,9 +15,9 @@ from cognitive_evolve_runtime.inputs.project_snapshot import ProjectSnapshot
 from cognitive_evolve_runtime.nexus.consistency import assert_runtime_consistency
 from cognitive_evolve_runtime.nexus.loop import EvolutionBudget, EvolutionLoopResult
 from cognitive_evolve_runtime.nexus.final_projection import build_final_projection
-from cognitive_evolve_runtime.nexus.adaptive.research.persistence import safe_research_payload
 from cognitive_evolve_runtime.nexus.project_verification import ProjectCandidateVerifier, ProjectVerificationSummary
 from cognitive_evolve_runtime.persistence.checkpoint import build_checkpoint_state
+from cognitive_evolve_runtime.nexus.seed_coverage import SEED_RESERVOIR_SIDECAR_PAYLOAD_KEY, persist_seed_reservoir_sidecar
 from cognitive_evolve_runtime.persistence.event_store import EventStore
 from cognitive_evolve_runtime.persistence.transactional_snapshot import NexusSnapshotTransaction, SnapshotWrite
 from cognitive_evolve_runtime.verification.types import GradedOutput
@@ -35,10 +35,12 @@ class NexusProjectVerificationService:
         candidates: list[Any],
         *,
         include_tests: bool = False,
+        verification_context: dict[str, Any] | None = None,
+        allowed_patch_scope: list[str] | None = None,
     ) -> list[ProjectVerificationSummary]:
         source_root = Path(snapshot.root_path)
         sandbox_root = (self.output_dir / "patch-sandboxes") if self.output_dir is not None else Path(tempfile.mkdtemp(prefix="cogev-nexus-sandboxes-"))
-        verifier = ProjectCandidateVerifier(source_root=source_root, sandbox_root=sandbox_root, include_tests=include_tests)
+        verifier = ProjectCandidateVerifier(source_root=source_root, sandbox_root=sandbox_root, include_tests=include_tests, verification_context=verification_context, allowed_patch_scope=allowed_patch_scope)
         patch_candidates = [candidate for candidate in candidates if has_concrete_patch_payload(candidate)]
         return verifier.verify_population(patch_candidates)
 
@@ -58,6 +60,7 @@ class NexusPersistenceService:
         world: Any,
         budget_history: list[dict[str, Any]],
         budget: EvolutionBudget | None = None,
+        runtime_options: dict[str, Any] | None = None,
     ) -> dict[str, str]:
         _sync_budget_width_metadata(run.evolution, budget)
         if self.output_dir is None:
@@ -77,6 +80,18 @@ class NexusPersistenceService:
         adaptive_state = dict(getattr(result, "adaptive_state", {}) or {})
         adaptive_events = [dict(event) for event in adaptive_state.get("events", []) if isinstance(event, dict)]
         events_to_write = list(result.pipeline_events) + list(result.progress_events) + fallback_events + adaptive_events
+        policy_metadata = dict(getattr(result.policy, "metadata", {}) or {})
+        sidecar_ref = persist_seed_reservoir_sidecar(self.output_dir, policy_metadata.get(SEED_RESERVOIR_SIDECAR_PAYLOAD_KEY))
+        if sidecar_ref and isinstance(getattr(result.policy, "metadata", None), dict):
+            result.policy.metadata.pop(SEED_RESERVOIR_SIDECAR_PAYLOAD_KEY, None)
+            result.policy.metadata["seed_reservoir_ref"] = sidecar_ref
+            policy_metadata.pop(SEED_RESERVOIR_SIDECAR_PAYLOAD_KEY, None)
+            policy_metadata["seed_reservoir_ref"] = sidecar_ref
+        search_kernel_state = {
+            key: policy_metadata[key]
+            for key in ("seed_coverage", "target_perturb_seed_judgment", "algorithm_efficiency", "model_parallel_efficiency", "minimal_core_ablation", "seed_active_frontier", "seed_reservoir_ref")
+            if key in policy_metadata
+        }
         if result.interrupted and progress_event and not any(
             isinstance(event, dict) and event.get("type") == "evolution_progress" and int(event.get("round") or 0) == int(progress_event.get("round") or 0)
             for event in events_to_write
@@ -100,13 +115,15 @@ class NexusPersistenceService:
             budget_history=budget_history or [],
             budget=_checkpoint_budget_payload(budget, checkpoint_round=checkpoint_round),
             adaptive_state=adaptive_state,
-            trace_state={"entries": list((adaptive_state.get("research_extensions") or {}).get("trace_entries") or [])},
-            tension_map=dict((adaptive_state.get("research_extensions") or {}).get("tension_map") or {}),
-            cost_ledger=dict((adaptive_state.get("research_extensions") or {}).get("cost_ledger") or {}),
-            concept_snapshots=dict((adaptive_state.get("research_extensions") or {}).get("extensions") or {}),
-            verification_plan=dict((adaptive_state.get("research_extensions") or {}).get("verification_plan") or {}),
+            trace_state={},
+            tension_map={},
+            cost_ledger={},
+            concept_snapshots={},
+            verification_plan=dict(adaptive_state.get("verification_plan") or {}),
             graded_output=dict(getattr(result, "graded_output", {}) or {}),
+            search_kernel=search_kernel_state,
             fabric=dict(getattr(result, "fabric_state", {}) or {}),
+            runtime_options=runtime_options or dict((getattr(run, "evolution", {}) or {}).get("runtime_options") or {}),
             allow_progress_round_repair=bool(result.interrupted),
         )
         adaptive_dir = self.output_dir / "adaptive"
@@ -127,11 +144,11 @@ class NexusPersistenceService:
             "events": str(event_path),
             "checkpoint": str(checkpoint_path),
             "final_answer": str(self.output_dir / "final-answer.md"),
+            "candidates": str(self.output_dir / "candidates.md"),
             "run_result": str(run_result_path),
             "snapshot_transaction": str(self.output_dir / "snapshot-transaction.json"),
         }
         if adaptive_state:
-            research_dir = self.output_dir / "research"
             artifacts.update(
                 {
                     "adaptive_state": str(adaptive_dir / "adaptive-state.json"),
@@ -140,12 +157,6 @@ class NexusPersistenceService:
                     "final_projection": str(adaptive_dir / "final-projection.json"),
                     "challenge_memory": str(self.output_dir / "challenge-memory.json"),
                     "challenge_events": str(self.output_dir / "challenge-events.jsonl"),
-                    "research_state": str(research_dir / "research-state.json"),
-                    "research_events": str(research_dir / "research-events.jsonl"),
-                    "research_metrics": str(research_dir / "research-metrics.json"),
-                    "campaign_trace": str(research_dir / "campaign_trace.jsonl"),
-                    "concept_effect_report": str(research_dir / "concept-effect-report.json"),
-                    "contract_delta_proposals": str(research_dir / "contract-delta-proposals.json"),
                 }
             )
         run.artifacts = dict(artifacts)
@@ -154,6 +165,7 @@ class NexusPersistenceService:
             SnapshotWrite("archives.json", "json", result.archives.to_dict()),
             SnapshotWrite("checkpoint.json", "json", checkpoint.to_dict()),
             SnapshotWrite("final-answer.md", "text", final_answer_artifact_text(result) + "\n", sort_keys=False),
+            SnapshotWrite("candidates.md", "text", candidates_markdown(result) + "\n", sort_keys=False),
             SnapshotWrite("run-result.json", "json", run.to_dict()),
         ]
         if adaptive_state:
@@ -200,7 +212,6 @@ def checkpoint_progress_event_for_interruption(progress_event: dict[str, Any], c
 
 def final_answer_artifact_text(result: EvolutionLoopResult) -> str:
     status = str(result.completion_status or result.stop_reason or "completed")
-    reference_candidate_id = str(getattr(result.synthesis, "reference_candidate_id", "") or "")
     header = [
         f"# CognitiveEvolve result: {status}",
         "",
@@ -209,7 +220,6 @@ def final_answer_artifact_text(result: EvolutionLoopResult) -> str:
         "- correctness_verdict: external_validation_required",
         f"- continuation_available: {str(result.completion_status in {'needs_continuation', 'interrupted_checkpointed', 'paused_quota'}).lower()}",
         "- project_correctness_claim: not_claimed",
-        f"- reference_candidate_id: {reference_candidate_id or 'none'}",
         "",
     ]
     final_certificate = dict((getattr(result.synthesis, "closure_certificate", {}) or {}).get("final_certificate") or {})
@@ -219,15 +229,96 @@ def final_answer_artifact_text(result: EvolutionLoopResult) -> str:
     graded_output = _graded_output_from_result(result)
     if population is not None and (final_certificate or has_evidence or graded_output.mode == "verified_result"):
         projection = build_final_projection(population=population, synthesis=result.synthesis, graded_output=graded_output, final_certificate=final_certificate)
-        return "\n".join(header) + projection.to_markdown()
-    if reference_candidate_id and result.completion_status != "solved":
-        header.extend(
-            [
-                "> The displayed candidate is the runtime's final candidate output. Correctness must be judged by a human reviewer or an external verifier; the project does not self-certify it as correct.",
-                "",
-            ]
-        )
-    return "\n".join(header) + str(result.synthesis.final_answer or "")
+        return "\n".join(header) + projection.to_markdown() + _candidate_table_section(result)
+    header.extend(
+        [
+            "> The displayed answer is candidate material. Correctness must be judged by a human reviewer or an external verifier; the project does not self-certify it as correct.",
+            "",
+        ]
+    )
+    best_current = getattr(result.synthesis, "best_current_direction", {}) or {}
+    if isinstance(best_current, dict) and best_current:
+        header.extend(["## Best current direction", ""])
+        for key, value in best_current.items():
+            header.append(f"- {key}: `{value}`")
+        header.append("")
+    return "\n".join(header) + str(result.synthesis.final_answer or "") + _candidate_table_section(result)
+
+
+def candidates_markdown(result: EvolutionLoopResult) -> str:
+    rows = _candidate_rows(result, limit=100)
+    lines = ["# CognitiveEvolve candidates", "", "| rank | candidate | direction | rank score | target files | patch status |", "|---:|---|---|---:|---|---|"]
+    lines.extend(_candidate_row_markdown(row) for row in rows)
+    if not rows:
+        lines.append("|  |  | no candidates recorded |  |  |  |")
+    return "\n".join(lines)
+
+
+def _candidate_table_section(result: EvolutionLoopResult) -> str:
+    rows = _candidate_rows(result, limit=12)
+    if not rows:
+        return ""
+    lines = ["", "", "## Candidate summary", "", "| rank | direction | rank score | target files | patch status |", "|---:|---|---:|---|---|"]
+    lines.extend(f"| {row['rank']} | {row['direction']} | {row['score']:.3f} | {row['target_files']} | {row['patch_status']} |" for row in rows)
+    return "\n".join(lines)
+
+
+def _candidate_rows(result: EvolutionLoopResult, *, limit: int) -> list[dict[str, Any]]:
+    population = getattr(result, "population", None)
+    candidates = list(getattr(population, "candidates", []) or [])
+    ranked = sorted(candidates, key=lambda candidate: (_rank_score(candidate), str(getattr(candidate, "id", ""))), reverse=True)[:limit]
+    return [
+        {
+            "rank": idx,
+            "id": str(getattr(candidate, "id", "")),
+            "direction": _clip_md(str(getattr(candidate, "concise_claim", "") or getattr(candidate, "core_mechanism", "") or getattr(candidate, "artifact_type", "candidate")), 80),
+            "score": _rank_score(candidate),
+            "target_files": _clip_md(", ".join(_candidate_target_files(candidate)[:5]), 120),
+            "patch_status": _patch_status(candidate),
+        }
+        for idx, candidate in enumerate(ranked, start=1)
+    ]
+
+
+def _candidate_row_markdown(row: dict[str, Any]) -> str:
+    return f"| {row['rank']} | `{row['id']}` | {row['direction']} | {row['score']:.3f} | {row['target_files']} | {row['patch_status']} |"
+
+
+def _rank_score(candidate: Any) -> float:
+    scores = getattr(candidate, "multihead_scores", {}) if isinstance(getattr(candidate, "multihead_scores", {}), dict) else {}
+    for key in ("rank_score", "frontier_score", "objective_alignment", "answer_likelihood"):
+        if key not in scores:
+            continue
+        try:
+            return float(scores.get(key) or 0.0)
+        except (TypeError, ValueError):
+            return 0.0
+    return 0.0
+
+
+def _candidate_target_files(candidate: Any) -> list[str]:
+    files: list[str] = []
+    for value in getattr(candidate, "touched_files", []) or []:
+        if value:
+            files.append(str(value))
+    patch_result = getattr(candidate, "patch_application_result", {})
+    if isinstance(patch_result, dict):
+        files.extend(str(value) for value in patch_result.get("applied_files") or [] if value)
+    metadata = getattr(candidate, "metadata", {}) if isinstance(getattr(candidate, "metadata", {}), dict) else {}
+    files.extend(str(value) for value in metadata.get("target_files") or [] if value)
+    return list(dict.fromkeys(files))
+
+
+def _patch_status(candidate: Any) -> str:
+    patch_result = getattr(candidate, "patch_application_result", {})
+    if isinstance(patch_result, dict) and patch_result.get("status"):
+        return str(patch_result.get("status"))
+    return "not_run"
+
+
+def _clip_md(text: str, limit: int) -> str:
+    clean = str(text or "").replace("|", "\\|").replace("\n", " ").strip()
+    return clean if len(clean) <= limit else clean[: max(0, limit - 1)] + "…"
 
 
 def _graded_output_from_result(result: EvolutionLoopResult) -> GradedOutput:
@@ -280,16 +371,6 @@ def _adaptive_snapshot_writes(adaptive_state: dict[str, Any], final_certificate:
     evaluator = dict(adaptive_state.get("evaluator") or {})
     if evaluator:
         writes.append(SnapshotWrite("adaptive/evaluator-results.jsonl", "text", json.dumps(evaluator, ensure_ascii=False, sort_keys=True, default=str) + "\n", sort_keys=False))
-    research = safe_research_payload(dict(adaptive_state.get("research_extensions") or {}))
-    if research:
-        writes.append(SnapshotWrite("research/research-state.json", "json", research))
-        events = [safe_research_payload(dict(item), max_bytes=8192) for item in research.get("events", []) if isinstance(item, dict)]
-        writes.append(SnapshotWrite("research/research-events.jsonl", "text", "".join(json.dumps(event, ensure_ascii=False, sort_keys=True, default=str) + "\n" for event in events), sort_keys=False))
-        writes.append(SnapshotWrite("research/research-metrics.json", "json", dict(research.get("metrics") or adaptive_state.get("research_metrics") or {})))
-        trace_entries = [dict(item) for item in research.get("trace_entries", []) if isinstance(item, dict)]
-        writes.append(SnapshotWrite("research/campaign_trace.jsonl", "text", "".join(json.dumps(item, ensure_ascii=False, sort_keys=True, default=str) + "\n" for item in trace_entries), sort_keys=False))
-        writes.append(SnapshotWrite("research/concept-effect-report.json", "json", dict(research.get("concept_effect_report") or {})))
-        writes.append(SnapshotWrite("research/contract-delta-proposals.json", "json", {"proposals": [dict(item) for item in research.get("contract_delta_proposals", []) if isinstance(item, dict)]}))
     return writes
 
 

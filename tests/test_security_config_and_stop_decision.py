@@ -49,7 +49,7 @@ def test_model_stop_true_solved_false_is_needs_continuation_not_solved() -> None
     assert _is_solved_stop_reason("model_stop_after_minimum") is False
 
 
-def test_legacy_bool_stop_signal_is_continuation_not_completed() -> None:
+def test_legacy_bool_stop_signal_completes_answer_without_measured_gate() -> None:
     budget = EvolutionBudget(max_rounds=3, stop_policy="llm_after_minimum", min_rounds_before_stop=1)
     reason = StopDecisionEngine().stop_reason_after_round(
         budget=budget,
@@ -61,12 +61,12 @@ def test_legacy_bool_stop_signal_is_continuation_not_completed() -> None:
     )
     budget.stop_reason = reason
 
-    assert reason == "model_stop_needs_measured_verification"
+    assert reason == "model_stop_after_minimum"
     assert _completion_status_for_budget(
         budget=budget,
         interrupted=False,
         synthesis=SynthesizedResult(status="completed", final_answer="ambiguous legacy stop"),
-    ) == "needs_continuation"
+    ) == "completed"
 
 
 def test_model_stop_true_solved_true_uses_exact_solved_reason() -> None:
@@ -84,7 +84,7 @@ def test_model_stop_true_solved_true_uses_exact_solved_reason() -> None:
     assert _is_solved_stop_reason(reason) is True
 
 
-def test_model_stop_solved_requires_measured_strength_gate() -> None:
+def test_model_stop_solved_does_not_require_measured_strength_gate() -> None:
     budget = EvolutionBudget(max_rounds=3, stop_policy="llm_after_minimum", min_rounds_before_stop=1)
     reason = StopDecisionEngine().stop_reason_after_round(
         budget=budget,
@@ -95,8 +95,8 @@ def test_model_stop_solved_requires_measured_strength_gate() -> None:
         model=SolvedStopModel(),
     )
 
-    assert reason == "model_stop_needs_measured_verification"
-    assert _is_solved_stop_reason(reason) is False
+    assert reason == "objective_solved"
+    assert _is_solved_stop_reason(reason) is True
 
 
 def _candidate_with_measured_formal(candidate_id: str) -> CandidateGenome:
@@ -126,7 +126,7 @@ def _candidate_with_measured_formal(candidate_id: str) -> CandidateGenome:
     return candidate
 
 
-def test_closure_certificate_records_legacy_solved_signal_but_is_not_v2_authority() -> None:
+def test_closure_certificate_records_answer_produced_without_solved_claim() -> None:
     budget = EvolutionBudget(max_rounds=3)
     budget.stop_reason = "objective_solved"
     solved_synthesis = SynthesizedResult(status="completed", final_answer="answer", best_candidate_id="C1")
@@ -139,12 +139,11 @@ def test_closure_certificate_records_legacy_solved_signal_but_is_not_v2_authorit
         completion_status=completion_status,
     )
 
-    assert completion_status == "solved"
+    assert completion_status == "completed"
     assert certificate["version"] == "closure_certificate_v1"
-    # This remains a legacy closure signal. Public/API solved authority is
-    # GradedOutput, covered by test_api_verification_passed_requires_v2_graded_verified_result.
-    assert certificate["objective_solved"] is True
-    assert certificate["terminal_status"] == "solved"
+    assert certificate["answer_produced"] is True
+    assert certificate["objective_solved"] is False
+    assert certificate["terminal_status"] == "completed"
     assert not certificate["critical_failures"]
 
 
@@ -168,7 +167,7 @@ def test_closure_certificate_blocks_unsolved_or_interrupted_completion_claims() 
     assert "needs_continuation" in certificate["critical_failures"]
 
 
-def test_closure_certificate_rejects_adversarial_solved_status_without_solved_reason() -> None:
+def test_closure_certificate_does_not_self_certify_solved_status() -> None:
     budget = EvolutionBudget(max_rounds=3)
     budget.stop_reason = "completed"
     certificate = _closure_certificate(
@@ -179,7 +178,8 @@ def test_closure_certificate_rejects_adversarial_solved_status_without_solved_re
     )
 
     assert certificate["objective_solved"] is False
-    assert "solved_status_failed_certificate_gate" in certificate["critical_failures"]
+    assert certificate["answer_produced"] is True
+    assert certificate["critical_failures"] == []
 
 
 def test_closure_certificate_rejects_interrupted_or_failed_solved_claims() -> None:
@@ -229,7 +229,7 @@ def test_candidate_ready_for_external_review_stops_without_self_certifying_solut
         model=ExternalReviewStopModel(),
     )
     budget.stop_reason = reason
-    synthesis = SynthesizedResult(status="model_synthesized", final_answer="review this", reference_candidate_id="C-review")
+    synthesis = SynthesizedResult(status="model_synthesized", final_answer="review this", best_candidate_id="C-review")
     completion_status = _completion_status_for_budget(budget=budget, interrupted=False, synthesis=synthesis)
     certificate = _closure_certificate(
         budget=budget,
@@ -239,10 +239,10 @@ def test_candidate_ready_for_external_review_stops_without_self_certifying_solut
     )
 
     assert reason == "candidate_ready_for_external_review"
-    assert completion_status == "best_current_route"
+    assert completion_status == "completed"
     assert certificate["objective_solved"] is False
-    assert certificate["terminal_status"] == "best_current_route"
-    assert "best_current_route" in certificate["critical_failures"]
+    assert certificate["terminal_status"] == "completed"
+    assert certificate["critical_failures"] == []
 
 
 def test_diminishing_returns_checkpoint_stops_as_external_review_boundary() -> None:
@@ -262,7 +262,7 @@ def test_diminishing_returns_checkpoint_stops_as_external_review_boundary() -> N
         budget=budget,
         interrupted=False,
         synthesis=SynthesizedResult(status="model_synthesized", final_answer="review candidate"),
-    ) == "best_current_route"
+    ) == "completed"
 
 def test_public_bind_rejects_default_or_weak_service_api_key(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.setenv("COGEV_HERMETIC_TEST", "1")
@@ -299,3 +299,17 @@ def test_require_llm_config_rejects_placeholder_upstream_key(monkeypatch: pytest
 
     with pytest.raises(LLMConfigurationError, match="placeholder"):
         require_llm_config()
+
+
+def test_require_llm_config_rejects_non_required_real_model(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("COGEV_HERMETIC_TEST", "1")
+    monkeypatch.setenv("COGEV_LLM_PROVIDER", "litellm")
+    monkeypatch.setenv("COGEV_LLM_MODEL", "openai/gpt-x")
+    monkeypatch.setenv("COGEV_LLM_API_KEY", "real-upstream-key")
+    monkeypatch.setenv("COGEV_LLM_REQUIRED_MODEL", "codex/gpt-5.5-high")
+
+    with pytest.raises(LLMConfigurationError, match="COGEV_LLM_REQUIRED_MODEL"):
+        require_llm_config()
+
+    monkeypatch.setenv("COGEV_LLM_REQUIRED_MODEL", "codex/gpt-5.5-high, openai/gpt-x")
+    assert require_llm_config()["model"] == "openai/gpt-x"

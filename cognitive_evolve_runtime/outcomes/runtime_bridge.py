@@ -11,7 +11,7 @@ from typing import Any
 
 from cognitive_evolve_runtime.candidates.mutation import MutationPlan
 from cognitive_evolve_runtime.candidates.genome import CandidateGenome
-from cognitive_evolve_runtime.nexus._serde import coerce_dict, stable_hash
+from cognitive_evolve_runtime.core.serialization import coerce_dict, stable_hash
 from cognitive_evolve_runtime.outcomes.improvement import ImprovementCertificate, OutcomeContract, TrialObservation, certificate_from_dict, compare_outcomes
 from cognitive_evolve_runtime.outcomes.evidence_feedback import adapt_latent_feedback
 from cognitive_evolve_runtime.outcomes.latent import (
@@ -832,7 +832,7 @@ def m5_certificate_summary(certificate: ImprovementCertificate | None) -> dict[s
 
 def requires_verified_improvement(contract: Any | None) -> bool:
     policy = coerce_dict(getattr(contract, "outcome_policy", {}) if contract is not None else {})
-    return bool(policy.get("requires_verified_solution") or policy.get("requires_verified_improvement_certificate"))
+    return bool(policy.get("requires_verified_improvement_certificate_advisory"))
 
 
 def latent_completion_override(
@@ -854,11 +854,13 @@ def latent_completion_override(
     assessment = assess_convergence(state, improvement_certificate=certificate)
     status = str(completion_status or "")
     if status == "solved" and not assessment.converged:
+        assessment_payload = _assessment_with_trace(assessment.to_dict(), snapshot, decision_type="stop_or_completion")
+        assessment_payload["answer_first_advisory"] = "latent convergence did not override completion"
         return {
-            "completion_status": "needs_continuation",
-            "assessment": _assessment_with_trace(assessment.to_dict(), snapshot, decision_type="stop_or_completion"),
-            "overridden": True,
-            "reason": "latent_problem_space_not_converged",
+            "completion_status": completion_status,
+            "assessment": assessment_payload,
+            "overridden": False,
+            "reason": "latent_problem_space_not_converged_advisory",
         }
     return {
         "completion_status": completion_status,
@@ -868,12 +870,7 @@ def latent_completion_override(
 
 
 def latent_stop_allows_solved(*, contract: Any | None, synthesis_certificate: Any | None = None) -> bool:
-    snapshot = materialize_contract_latent_posterior(contract)
-    state = snapshot.state if snapshot is not None else latent_state_from_contract(contract)
-    if state is None:
-        return True
-    assessment = assess_convergence(state, improvement_certificate=improvement_certificate_from_any(synthesis_certificate))
-    return assessment.converged
+    return True
 
 
 def _should_initialize_latent_state(contract: Any, world: Any | None) -> bool:
@@ -885,7 +882,7 @@ def _should_initialize_latent_state(contract: Any, world: Any | None) -> bool:
         return True
     if metadata.get("latent_objective_enabled") is True or policy.get("latent_objective_enabled") is True:
         return True
-    if bool(policy.get("requires_strict_optimum")) or bool(policy.get("requires_verified_solution")):
+    if bool(policy.get("requires_strict_optimum")):
         return True
     goal = str(getattr(contract, "normalized_goal", "") or getattr(contract, "original_user_goal", "") or "").strip().lower()
     ambiguous_markers = (

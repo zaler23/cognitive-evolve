@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome
-from cognitive_evolve_runtime.nexus._serde import coerce_dict, coerce_str_list, utc_now
+from cognitive_evolve_runtime.core.serialization import coerce_dict, coerce_str_list, utc_now
 
 TERMINAL_FAILURE_FATES = {CandidateFate.CULLED.value, CandidateFate.FAILED.value}
 

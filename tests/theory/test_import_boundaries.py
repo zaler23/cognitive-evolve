@@ -49,3 +49,26 @@ def test_m5_m6_gate_modules_do_not_import_theory() -> None:
             if module.startswith("cognitive_evolve_runtime.theory"):
                 offenders.append(f"{path.relative_to(ROOT)}:{module}")
     assert offenders == []
+
+
+def _package_import_offenders(package: str, forbidden_prefixes: tuple[str, ...]) -> list[str]:
+    base = ROOT / "cognitive_evolve_runtime" / package
+    offenders: list[str] = []
+    for path in base.rglob("*.py"):
+        for module in _imports(path):
+            if any(module.startswith(prefix) for prefix in forbidden_prefixes):
+                offenders.append(f"{path.relative_to(ROOT)}:{module}")
+    return offenders
+
+
+def test_outcomes_and_llm_do_not_import_nexus_internals() -> None:
+    forbidden = ("cognitive_evolve_runtime.nexus",)
+    assert _package_import_offenders("outcomes", forbidden) == []
+    assert _package_import_offenders("llm", forbidden) == []
+
+
+def test_non_nexus_low_level_packages_do_not_import_nexus_serde() -> None:
+    forbidden = ("cognitive_evolve_runtime.nexus._serde",)
+    assert _package_import_offenders("inputs", forbidden) == []
+    assert _package_import_offenders("fabric", forbidden) == []
+    assert _package_import_offenders("persistence", forbidden) == []

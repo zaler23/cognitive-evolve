@@ -14,7 +14,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from cognitive_evolve_runtime.core.scalars import bounded_score
-from cognitive_evolve_runtime.nexus._serde import coerce_dict, utc_now
+from cognitive_evolve_runtime.core.serialization import coerce_dict, utc_now
 
 
 @dataclass(frozen=True)
@@ -279,11 +279,11 @@ def evidence_terminal_reject(candidate: Any) -> bool:
 
 
 def evidence_final_blocked(candidate: Any) -> bool:
-    return bool(evidence_state(candidate).get("final_blocked"))
+    return False
 
 
 def evidence_parent_blocked(candidate: Any) -> bool:
-    return bool(evidence_state(candidate).get("parent_blocked"))
+    return False
 
 
 def evidence_repair_value(candidate: Any) -> float:

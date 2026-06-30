@@ -29,6 +29,12 @@ from cognitive_evolve_runtime.nexus.synthesis import SynthesizedResult, synthesi
 from cognitive_evolve_runtime.nexus.stop_decision import StopDecisionEngine
 from cognitive_evolve_runtime.nexus.semantic_dedupe import CandidateDeduper
 from cognitive_evolve_runtime.outcomes.latent_audit import audit_latent_replay_bundle
+from cognitive_evolve_runtime.persistence.checkpoint_profile import (
+    apply_checkpoint_profile_to_archives,
+    apply_checkpoint_profile_to_history,
+    apply_checkpoint_profile_to_population,
+    checkpoint_profile_from_env,
+)
 from cognitive_evolve_runtime.outcomes.runtime_bridge import (
     annotate_candidates_with_latent_signals,
     apply_latent_exploration_to_mutation_plans,
@@ -49,7 +55,6 @@ from cognitive_evolve_runtime.nexus.reproduction import (
     sync_repair_parent_attempts_to_dormant_archive,
     verify_offspring,
 )
-from cognitive_evolve_runtime.tools.verification_stack import NexusVerifierStack
 from cognitive_evolve_runtime.theory import TheoryConfig, TheoryLayer, build_population_representation
 from cognitive_evolve_runtime.nexus._shared import MODEL_BOUNDARY_ERRORS, positive_int
 from cognitive_evolve_runtime.llm.retry import provider_error_category
@@ -113,15 +118,33 @@ class EvolutionLoopResult:
     fabric_state: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
+        profile = checkpoint_profile_from_env()
+        population_payload = apply_checkpoint_profile_to_population(self.population.to_dict(), profile)
+        archive_payload = apply_checkpoint_profile_to_archives(self.archives.to_dict(), population_payload, profile)
+        budget_history_payload = apply_checkpoint_profile_to_history(self.budget_history, profile)
+        policy_metadata = self.policy.metadata if isinstance(getattr(self.policy, "metadata", None), dict) else {}
+        search_kernel_summary = {
+            key: policy_metadata[key]
+            for key in (
+                "seed_coverage",
+                "target_perturb_seed_judgment",
+                "minimal_core_ablation",
+                "seed_active_frontier",
+                "algorithm_efficiency",
+                "model_parallel_efficiency",
+                "seed_reservoir_ref",
+            )
+            if key in policy_metadata
+        }
         return {
-            "population": self.population.to_dict(),
-            "archives": self.archives.to_dict(),
+            "population": population_payload,
+            "archives": archive_payload,
             "policy": self.policy.to_dict(),
             "diagnosis": self.diagnosis.to_dict(),
             "synthesis": self.synthesis.to_dict(),
             "progress_events": self.progress_events,
             "pipeline_events": self.pipeline_events,
-            "budget_history": self.budget_history,
+            "budget_history": budget_history_payload,
             "elo": self.elo,
             "latent_replay_audit": self.latent_replay_audit,
             "interrupted": self.interrupted,
@@ -133,6 +156,7 @@ class EvolutionLoopResult:
             "adaptive_state": self.adaptive_state,
             "graded_output": self.graded_output,
             "fabric_state": self.fabric_state,
+            "search_kernel_summary": search_kernel_summary,
         }
 
 

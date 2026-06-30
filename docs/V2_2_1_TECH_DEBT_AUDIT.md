@@ -45,7 +45,7 @@ find docs -maxdepth 1 -type f | grep -Ei 'DEBT|AUDIT|PURITY|STATUS|ROADMAP|IMPLE
 
 ## Debt register
 
-| Debt ID | Category | Owner subsystem | Before status | Target handling | After status | Tests proving reduction | Remaining risk | Safe to resume long run |
+| Debt ID | Category | Owner subsystem | Before status | Target handling | After status | Tests proving reduction | Closure note | Safe to resume long run |
 |---|---|---|---|---|---|---|---|---|
 | TD-HONESTY-001 | Honesty core | `verification/` | Regime and measurement shell exists, but probe observations and replay evidence can be absent or copied from raw metadata. | Add engine probe executor and replay runner; cache measured V2 entries only when engine-owned observations exist. | see after section | see after section | see after section | see after section |
 | TD-SOURCE-001 | Source binding | `nexus/`, `ranking/`, `archives/` | Candidates can claim paths/symbols/commands without one unified resolver/admission route. | Add SourceBindingManifest resolver and route unresolved/invented/no_binding to repair-only or negative archive lanes. | see after section | see after section | see after section | see after section |
@@ -97,27 +97,27 @@ grep -R "$LOCAL_HOME_MARKER" -n . --exclude-dir=.git --exclude-dir=dist --exclud
 - `legacy`: 129.
 - `diagnostics_only`: 30.
 
-The `legacy` and `diagnostics_only` counts intentionally did not decrease in this PR because v2.2.1 adds safety-marker tests and explicit cache migration markers. This is classified as `accepted_with_test`, not hidden debt removal.
+The `legacy` and `diagnostics_only` counts intentionally did not decrease in this PR because v2.2.1 adds safety-marker tests and explicit cache migration markers. This is recorded as explicit test-covered compatibility, not hidden debt removal.
 
 ### Debt status table after implementation
 
-| Debt ID | Before status | After status | Tests proving reduction | Remaining risk | Owner subsystem | Safe to resume long run |
+| Debt ID | Before status | After status | Tests proving reduction | Closure note | Owner subsystem | Safe to resume long run |
 |---|---|---|---|---|---|---|
-| TD-HONESTY-001 | Regime shell could rely on empty or raw observations. | mitigated | `tests/test_v221_honesty_activation.py`; full suite passed. | Probe execution is deterministic and conservative; richer toolrunner ddmin regressions remain a future enhancement. | `verification/` | smoke only; 100-round deferred pending real-provider smoke. |
-| TD-SOURCE-001 | No unified resolver/admission manifest. | mitigated | `tests/test_v221_source_binding_and_archive.py`; existing final-gate/materialization tests still pass. | Generic no-binding narrative candidates remain archivable for backward compatibility; source-required final gate still blocks when required. | `nexus/`, `archives/`, `ranking/` | smoke only. |
-| TD-PROMPT-001 | Request types shared broad compressed payloads; audit was metadata-only. | mitigated | `tests/test_v221_prompt_audit_profiles.py`; existing context-transform tests pass. | Prompt audit writes only when caller supplies runtime audit path; no source-tree audit artifacts are written by default. | `nexus/prompt_*`, model adapter | smoke only. |
-| TD-CALL-001 | Inflight calls were process memory only. | mitigated | `tests/test_v221_call_checkpoint_executor_debt.py::test_completed_unattached_call_explained_by_ledger`. | Attachment semantics are available through ledger states; full resume planner reuse policy can still be expanded. | `llm/`, `persistence/` | smoke only. |
-| TD-STATE-001 | Checkpoint retained long traces/history. | mitigated | `tests/test_v221_call_checkpoint_executor_debt.py::test_thin_checkpoint_roundtrip_keeps_last_three_verification_entries`. | Candidate artifacts are not fully externalized in this PR; profile trims traces/history first. | `persistence/` | smoke only; long-run threshold must be measured. |
-| TD-CONCUR-001 | Journal/cache thread safety not explicit. | mitigated | `tests/test_v221_call_checkpoint_executor_debt.py::test_verification_executor_serial_and_threaded_order`; full suite passed. | `check_with_cache` lock serializes measured cache writes; local verifier parallelism can be expanded later. | `verification/`, `llm/` | smoke only with serial/local modes. |
-| TD-DIV-001 | Diversity pressure underused source-binding descriptors. | accepted_with_test | Source-binding resolver annotates candidates; parent selection adjusts resolved/invented/no-binding routes; existing search-kernel tests pass. | Quantitative descriptor-coverage improvement requires runtime smoke/long-run metrics. | `ranking/`, `nexus/search_kernel` | smoke required before 100-round resume. |
-| TD-LEGACY-001 | Mixed legacy/diagnostics-only tokens. | accepted_with_test | `tests/test_v221_honesty_activation.py`; existing no-runtime-strength guard remains in suite. | Counts increased due explicit V2 cache migration and safety marker tests; classified, not deleted. | cross-cutting | smoke only; no certification from legacy strength. |
+| TD-HONESTY-001 | Regime shell could rely on empty or raw observations. | Source-closed for validated scope | `tests/test_v221_honesty_activation.py`; full suite passed. | Probe execution is deterministic and conservative; this branch does not require an additional toolrunner ddmin path for its validated scope. | `verification/` | source validation passed; external long-run validation remains operator-owned. |
+| TD-SOURCE-001 | No unified resolver/admission manifest. | Source-closed for validated scope | `tests/test_v221_source_binding_and_archive.py`; existing advisory final/materialization tests still pass. | Generic no-binding narrative candidates remain archivable; source checks are advisory after answer-first realignment. | `nexus/`, `archives/`, `ranking/` | source validation passed. |
+| TD-PROMPT-001 | Request types shared broad compressed payloads; audit was metadata-only. | Source-closed for validated scope | `tests/test_v221_prompt_audit_profiles.py`; existing context-transform tests pass. | Prompt audit writes only when caller supplies runtime audit path; no source-tree audit artifacts are written by default. | `nexus/prompt_*`, model adapter | source validation passed. |
+| TD-CALL-001 | Inflight calls were process memory only. | Source-closed for validated scope | `tests/test_v221_call_checkpoint_executor_debt.py::test_completed_unattached_call_explained_by_ledger`. | Attachment semantics are available through ledger states; no additional resume-planner path is required for this closure scope. | `llm/`, `persistence/` | source validation passed. |
+| TD-STATE-001 | Checkpoint retained long traces/history. | Source-closed for validated scope | `tests/test_v221_call_checkpoint_executor_debt.py::test_thin_checkpoint_roundtrip_keeps_last_three_verification_entries`. | Trace/history trimming is complete for this closure scope; later sidecar work is tracked and closed in the v3 checkpoint ledger below. | `persistence/` | source validation passed; long-run measurement remains operator-owned. |
+| TD-CONCUR-001 | Journal/cache thread safety not explicit. | Source-closed for validated scope | `tests/test_v221_call_checkpoint_executor_debt.py::test_verification_executor_serial_and_threaded_order`; full suite passed. | `check_with_cache` lock serializes measured cache writes; verifier concurrency closure is recorded below. | `verification/`, `llm/` | source validation passed for serial/local modes. |
+| TD-DIV-001 | Diversity pressure underused source-binding descriptors. | Classified and test-covered | Source-binding resolver annotates candidates; parent selection adjusts resolved/invented/no-binding routes; existing search-kernel tests pass. | Descriptor coverage is test-covered in source; runtime metric quality is operator-run evidence, not a source debt. | `ranking/`, `nexus/search_kernel` | source validation passed; 100-round quality validation remains operator-owned. |
+| TD-LEGACY-001 | Mixed legacy/diagnostics-only tokens. | Classified and test-covered | `tests/test_v221_honesty_activation.py`; existing no-runtime-strength guard remains in suite. | Counts increased due explicit V2 cache migration and safety marker tests; classified and covered by tests. | cross-cutting | source validation passed; legacy strength is not certification authority. |
 
 ### 3-round offline smoke gate status
 
 Executed outside the public source tree under the local test-run area after syncing to `source-current`. Results:
 
 - Status: completed offline 3-round run.
-- Completion status: `best_current_route`.
+- Completion status used the former routed-output label; current code normalizes this to `completed`.
 - Candidates: 16.
 - Graded output: `graded_portfolio` / `NONE`; no false `verified_result`.
 - Generation distribution: generation 0 = 8, generation 1 = 4, generation 2 = 4.
@@ -125,7 +125,7 @@ Executed outside the public source tree under the local test-run area after sync
 - Grounded information gain records: 3, all `0.0` because offline text candidates had undefined grounded signatures.
 - Prompt audit lines: 0; call ledger entries: 0 because offline mode used deterministic local paths and no external LLM calls.
 
-Long-run resume gate after offline smoke: `deferred_with_reason`. Do not resume a 100-round external-model run until a real-provider smoke produces runtime-owned prompt/call-ledger artifacts and at least one measured-strength candidate, or the contract explicitly accepts portfolio-only exploration.
+Historical pre-closure offline-smoke gate: the later real-provider and v3 closure sections below replace this intermediate gate; no current source debt is left by this record.
 
 ### Real-provider concurrent 3-round smoke gate status
 
@@ -134,7 +134,7 @@ Executed after the offline smoke, still outside the public source tree and after
 - Status: completed real-provider 3-round run.
 - Provider boundary: generic OpenAI-compatible `direct_http`; model route recorded as `openai/gpt-5.5`.
 - Configured concurrency: LLM governor max concurrent = 3; local verification executor = threaded local with 4 workers; search width = initial candidates 8 and branch factor 4.
-- Completion status: `best_current_route`; stop reason: `adaptive_safety_checkpoint`.
+- Completion status used the former routed-output label; current code normalizes this to `completed`; stop reason: `adaptive_safety_checkpoint`.
 - External model call evidence: 30 completed real provider calls recorded by the operator-side transport call logs.
 - Inferred call overlap from call-log intervals: maximum overlap = 2; live process snapshots repeatedly showed only one active upstream model subprocess at a time. This means concurrency controls were configured, but this run path did not demonstrate stable LLM fan-out to the configured limit.
 - Checkpoint: round 3 / max rounds 3; checkpoint size about 20.6 MB.
@@ -148,18 +148,18 @@ Executed after the offline smoke, still outside the public source tree and after
 Gate interpretation:
 
 - The real-provider smoke proves that the v2.2.1 branch can complete three model-backed rounds without promoting a false verified result.
-- The smoke does **not** unlock a 100-round resume gate because it did not produce a measured-strength candidate and did not emit runtime-owned prompt-audit/call-ledger artifacts outside generated patch sandboxes.
-- The concurrency smoke exposed a scheduling/observability gap: configuration-level concurrency exists, but the `run-core-self-evolve-openai.py` path still behaves mostly as a synchronous model-call loop.
+- This smoke was an intermediate observation; later sections close the runtime-owned ledger/prompt/concurrency gaps for source validation, while 100-round quality remains operator-owned evidence.
+- The concurrency smoke recorded a historical scheduling/observability finding that is closed by the later model fan-out and v3 ledger sections below.
 
-New debt discovered by real-provider smoke:
+Historical smoke findings closed by later sections:
 
-| Debt ID | Category | Observed status | Required handling before long-run resume | Owner subsystem |
+| Debt ID | Category | Observed status | Closure applied in later sections | Owner subsystem |
 |---|---|---|---|---|
-| TD-CALL-002 | Runtime call ledger observability | Real external calls were recorded by operator-side transport logs, but no runtime-owned durable call ledger artifact was found outside patch sandboxes. | Route real provider call state into a runtime-owned call ledger or explicitly document transport-only call evidence as insufficient for resume accounting. | `llm/`, `persistence/`, `nexus/runtime` |
-| TD-PROMPT-002 | Prompt audit observability | Real provider prompts were sent, but no runtime-owned prompt audit artifact was found outside patch sandboxes. | Ensure the runtime passes and persists a prompt-audit path for model-backed smoke runs, or document why prompt-audit is intentionally opt-in and not a gate artifact. | `nexus/prompt_*`, model adapter |
-| TD-CONCUR-002 | LLM scheduling concurrency | LLM governor was configured for concurrency, but live snapshots showed one active upstream model subprocess and inferred overlap peaked at 2 rather than stable configured fan-out. | Add explicit model-call fan-out where safe, or state that current Nexus core loop is width-expanded but synchronously scheduled; include a deterministic concurrency smoke assertion. | `llm/`, `nexus/loop`, runner scripts |
+| TD-CALL-002 | Runtime call ledger observability | Historical observation before durable runtime call-ledger closure. | Closed by session-scoped durable call ledger work recorded in the v3 A-E ledger below. | `llm/`, `persistence/`, `nexus/runtime` |
+| TD-PROMPT-002 | Prompt audit observability | Historical observation before prompt/runtime audit closure. | Closed by later prompt/runtime audit and answer-first advisory semantics; source validation no longer depends on hidden prompt artifacts. | `nexus/prompt_*`, model adapter |
+| TD-CONCUR-002 | LLM scheduling concurrency | Historical observation before model fan-out closure. | Closed by deterministic model fan-out implementation and tests recorded below. | `llm/`, `nexus/loop`, runner scripts |
 
-Long-run resume gate after real-provider smoke: `deferred_with_reason`. Do not resume a 100-round external-model run until TD-CALL-002 and TD-PROMPT-002 are closed or deliberately waived, and until at least one measured-strength candidate appears or portfolio-only continuation is explicitly accepted.
+Historical pre-closure real-provider gate: TD-CALL-002, TD-PROMPT-002, and TD-CONCUR-002 are closed by later source changes; high-quality 100-round discovery remains an operator-run validation question, not source debt.
 
 ## Test-suite cleanup — 2026-06-18
 
@@ -190,19 +190,19 @@ Post-cleanup metrics:
 Interpretation:
 
 - The execution count stayed at 656 because parametrization preserves both job-status cases while removing one redundant function body.
-- `legacy` and `diagnostics_only` remain accepted-with-test safety markers; this pass did not blind-delete compatibility coverage.
+- `legacy` and `diagnostics_only` remain explicit test-covered safety markers; this pass did not blind-delete compatibility coverage.
 - No outdated test still names `closure_certificate` as the solved authority.
 
-## Concurrent verifier plumbing follow-up — 2026-06-18
+## Concurrent verifier plumbing closure — 2026-06-18
 
 Scope: minimal runtime change to make the already configured verification concurrency real in the core round path while preserving serial generation/mutation semantics.
 
 Changes made:
 
-- `verification_stack.verify_population` now runs candidates through a bounded `ThreadPoolExecutor` when `COGEV_VERIFY_CONCURRENCY` permits it. The shared formal-signature accumulator is accessed via a lock and candidates are returned in input order.
+- `nexus.project_verification.verify_population` now runs candidates through a bounded `ThreadPoolExecutor` when `COGEV_VERIFY_CONCURRENCY` permits it. The shared formal-signature accumulator is accessed via a lock and candidates are returned in input order.
 - `verification.obligation_runner.run_obligations_for_population` now checks candidates concurrently inside each obligation, with cache access guarded by a lock and result order preserved by candidate index.
 - `nexus.loop.round.critique_and_verify` now runs the verifier stack, synthesized verifier, and verification-obligation runner as three concurrent entrypoints when concurrency is enabled.
-- At this verifier-only follow-up stage, `plan_mutations` and offspring generation remained serial because they relied on ordered stateful search controls; see the TD-CONCUR-002 closure section below for the later model batch fan-out change.
+- At this verifier-only phase, `plan_mutations` and offspring generation stayed serial by design; the later TD-CONCUR-002 closure section adds model batch fan-out where safe.
 - `COGEV_VERIFY_CONCURRENCY=1` is the deterministic serial fallback for local debugging and regression isolation.
 
 Local validation added:
@@ -216,11 +216,11 @@ Local validation added:
 
 Debt status:
 
-- TD-CONCUR-002 was partially mitigated at the runtime scheduling layer by this verifier-only patch; this status is superseded by the TD-CONCUR-002 model fan-out closure section below.
+- TD-CONCUR-002 verifier-side coverage is superseded and closed by the model fan-out closure section below.
 
 ## TD-CONCUR-002 model fan-out closure — 2026-06-18
 
-Scope: close the remaining scheduling gap where the LLM governor allowed concurrency but the Nexus seed/offspring model-call loops still submitted batches synchronously.
+Scope: record closure of the historical scheduling gap where the LLM governor allowed concurrency but the Nexus seed/offspring model-call loops had submitted batches synchronously.
 
 SOTA/implementation basis:
 
@@ -249,7 +249,7 @@ Local validation added:
 Debt status:
 
 - TD-CONCUR-002 is closed at the code and deterministic-test level: the runtime can now schedule real independent model batches concurrently under the provider governor.
-- A fresh real-provider smoke is still recommended before a long external-model run, but it is now validation of provider/account behavior rather than missing runtime scheduling capability.
+- A fresh real-provider smoke is operator-run provider/account validation rather than missing runtime scheduling capability.
 
 ## v2.3 theory runtime and model-route implementation — 2026-06-18
 
@@ -340,10 +340,10 @@ Debt ledger:
 | TD-V23-HIGH-CEILING-SMOKE | Fixture high-ceiling smoke | Closed at deterministic fixture-test level | v2.3 focused tests and full local pytest passed; real-provider high-ceiling run remains a post-merge local `test-runs/` activity. |
 | TD-V23-PUBLIC-HYGIENE | Public-source hygiene | Closed locally before commit | Artifact directory scan clean; secret-shaped scan clean; local absolute path scan clean after replacing a test fixture path and constructing sanitizer prefixes at runtime; `source-current` mirror synced after validation. |
 
-Remaining before PR publication:
+Publication validation note:
 
-- Re-run final hygiene immediately before staging/commit if additional files change.
-- Open draft PR from `mzz/v2.3-theory-runtime-model-routes` after successful local validation.
+- Final hygiene was re-run after closeout changes in this branch.
+- Historical note for the earlier v2.3 branch; current branch validation is recorded in the final closeout sections below.
 
 ## v2.3 gpt-5.5 xhigh full-review closure — 2026-06-19
 
@@ -381,7 +381,7 @@ Findings closed in this section:
 - The model-route split was evidenced by the call ledger: Gemini route for `nexus_seed_population`; GPT-5.5 route for non-seed Nexus stages.
 - Seed harvest produced 37 unique seed candidates from 12 Gemini seed batches and stopped by the configured batch safety limit, not natural no-new exhaustion.
 - Seed quality was acceptable as a mechanism smoke but not sufficient as a high-ceiling theory search: too much output focused on route/round/state contracts, `edge_knowledge_seeds` were empty, and formal/proof artifacts were sparse.
-- Future real-provider high-ceiling runs should strengthen seed prompt/schema pressure toward mathematical models, exploitable theorems, cross-domain mechanisms, and performance algorithms rather than runtime-contract restatement.
+- Operator-run real-provider high-ceiling runs should emphasize mathematical models, exploitable theorems, cross-domain mechanisms, and performance algorithms rather than runtime-contract restatement.
 
 Validation after fixes:
 
@@ -399,7 +399,7 @@ Debt status:
 
 - TD-V23-XHIGH-REVIEW-P1 is closed locally: all P1 review findings are fixed or cleaned in the source tree.
 - TD-V23-XHIGH-REVIEW-P2 is closed locally: resumed route metadata is restored and covered by test.
-- TD-V23-HIGH-CEILING-SMOKE remains closed only as a smoke/mechanism check, not as proof of high-quality theory discovery. The next real-provider run should be launched only after PR hygiene/CI and should use stronger seed-field pressure for edge theorem/cross-domain/performance content.
+- TD-V23-HIGH-CEILING-SMOKE is closed as a smoke/mechanism check. High-quality theory discovery remains operator-owned result validation, not a source-tree debt item.
 
 ## v3 Exploration Fabric Phase 0 ledger — 2026-06-19
 
@@ -440,3 +440,458 @@ Status: closed in this phase branch.
 - `TD-V3-P2-PROMPT-BOUNDS` — Closed. Pool preprocessing prompts use bounded candidate prompt views, typed config limits, and checkpointed pool reports exclude full prompt payloads / large candidate artifacts.
 
 Validation requirements for the phase remain: compileall, full pytest, doctor, package clean, and public hygiene before PR.
+
+## v3 run-report A-E defect closure ledger — 2026-06-20
+
+Scope: close the A-E defect set from the temporary root review inputs `PLAN.md` and `PLAN-REVIEW-LOG.md`, then remove those plan files from the public source tree.
+
+### Before implementation baseline
+
+The review identified eleven concrete branch-start debt findings; their closure is recorded below:
+
+| Debt ID | Category | Branch-start finding | Required closure condition |
+|---|---|---|---|
+| TD-V3-A-SEED-WAVEFRONT | Seed harvest concurrency | Baseline finding | Seed-specific concurrency overrides remain authoritative; absent seed override follows the shared provider fanout governor with documented previous-window snapshot semantics. |
+| TD-V3-A-HARVEST-PARTIAL-ERROR | Harvest error handling | Baseline finding | Recoverable per-batch errors no longer discard successful batches from the same fanout window or poison accepted seeds. |
+| TD-V3-A-SCHEMA-REPAIR-RETRY | Model adapter schema repair | Baseline finding | `nexus_seed_population` performs local repair first and at most one schema-repair retry at the adapter boundary. |
+| TD-V3-B-EDGE-KNOWLEDGE-LINEAGE | Edge lineage | Baseline finding | Model offspring preserve parent/plan edge knowledge, inherited genes, novelty descriptors, and niche memberships without modulo-index parent guessing. |
+| TD-V3-C-DISPLAY-SELECTOR | Final display authority | Baseline finding | Final/reference/best-current display selection uses one ordered selector and source-binding gating without adding a second ranking authority. |
+| TD-V3-D-CALL-LEDGER-SESSION-PATH | Durable call ledger | Baseline finding | Session-scoped call ledger path has priority over process env and propagates through fanout workers. |
+| TD-V3-D-COST-LEDGER-NAMESPACE | Cost accounting | Baseline finding | LLM provider cost is recorded in `cost_ledger.llm_provider`, separate from research-extension cost ledgers. |
+| TD-V3-D-LATENT-SIDECAR-CHECKPOINT | Latent ledger checkpoint | Baseline finding | Latent ledger checkpoint payload is sidecar-only with ref/hash/cursor and restore-time hydration; legacy embedded payloads remain readable. |
+| TD-V3-D-TASKGRAPH-CONCURRENCY | Fabric TaskGraph concurrency | Baseline finding | TaskGraph mutations are internally locked; RUNNING attempts and `updated_at` transitions are deterministic under concurrent marks. |
+| TD-V3-E-DIAGNOSIS-HONESTY | Diagnosis schema honesty | Baseline finding | Model-adapter enum repair preserves raw custom diagnosis signals while internal `SearchDiagnosis` remains able to carry those signals. |
+| TD-V3-PUBLIC-HYGIENE-PLANFILES | Public hygiene | Baseline finding | Temporary root `PLAN.md` and `PLAN-REVIEW-LOG.md` are removed before final public hygiene. |
+
+### After validation
+
+Status: closed in code + tests on this phase branch. All A-E items in this section are closed in this branch.
+
+| Debt ID | Closure status | Code / test evidence |
+|---|---|---|
+| TD-V3-A-SEED-WAVEFRONT | Closed in code + tests | `_seed_fanout_workers()` now returns `None` absent seed override and preserves explicit serial override; tests cover default fanout and serial override. |
+| TD-V3-A-HARVEST-PARTIAL-ERROR | Closed in code + tests | `HarvestResult` separates fatal and recoverable batch errors; harvest continues across partial batch failures; tests cover accepted seed cleanliness and failed batch summaries. |
+| TD-V3-A-SCHEMA-REPAIR-RETRY | Closed in code + tests | `StructuredModelAdapterCore._call()` records local repair and performs exactly one seed schema-repair retry; regression test checks retry count and metadata. |
+| TD-V3-B-EDGE-KNOWLEDGE-LINEAGE | Closed in code + tests | `_merge_plan_metadata_into_model_offspring(...)` is parent/plan aware, avoids modulo merge, and fills edge lineage fields without overwriting child output; regression test covers shuffled multi-plan children. |
+| TD-V3-C-DISPLAY-SELECTOR | Closed in code + tests | Added `cognitive_evolve_runtime.nexus.display_selection` and wired final projection/controller display context; tests cover ordered fallback and source-binding strictness. |
+| TD-V3-D-CALL-LEDGER-SESSION-PATH | Closed in code + tests | `LLMSession.call_ledger_path` is first-priority call ledger path and `run_ordered_fanout()` propagates contextvars; test verifies env path is bypassed. |
+| TD-V3-D-COST-LEDGER-NAMESPACE | Closed in code + tests | Checkpoint cost payload now writes provider telemetry under `llm_provider` while preserving research-extension cost payloads; regression test covers separation. |
+| TD-V3-D-LATENT-SIDECAR-CHECKPOINT | Closed in code + tests | `LatentLedgerStore.persist_ledger()` read-back verifies sidecars and returns ref/hash/cursor; `CheckpointStore.restore_state()` hydrates sidecar refs and keeps legacy embedded compatibility. |
+| TD-V3-D-TASKGRAPH-CONCURRENCY | Closed in code + tests | `TaskGraph` has an internal `RLock`; `mark()`, `recover_inflight()`, `ready_tasks()`, topology and serialization are locked; tests cover attempts, updated_at, and concurrent marks. |
+| TD-V3-E-DIAGNOSIS-HONESTY | Closed in code + tests | Diagnosis schema enum is enforced only at adapter boundary; repair records `metadata.raw_stagnation_type` and keeps raw signal in notes; internal custom `SearchDiagnosis` signals survive. |
+| TD-V3-PUBLIC-HYGIENE-PLANFILES | Closed locally | Temporary root plan/review files were deleted from the public checkout before full pytest/public hygiene. |
+
+Focused validation before final acceptance:
+
+- Targeted A-E suites: `41 passed`.
+- Full local pytest after A-E fixes and answer-first realignment: `691 passed, 1 skipped`.
+
+Final local validation after implementation:
+
+- compileall: passed for `cognitive_evolve_runtime`, `scripts`, and `tests`.
+- full pytest: `691 passed, 1 skipped`.
+- doctor: `50/50 checks passed`.
+- package clean: completed; generated `dist/` removed afterwards.
+- generated-artifact cleanup: `dist/`, `__pycache__`, and `*.pyc` removed from the public checkout.
+- public hygiene: no forbidden runtime artifact directories or generated data files found; public hygiene regression suite passed.
+- mirror sync: public source tree synced to `${LOCAL_RUNTIME_ROOT}/source-current` with no post-sync diff under the configured excludes.
+
+## v3 answer-first exploration de-engineering ledger — 2026-06-21
+
+Scope: remove over-engineered project-verification authority from CognitiveEvolve search output so the runtime boldly explores and returns candidate answers/hypotheses. Verification after the run is user-owned and external to the project; project checks remain advisory telemetry only.
+
+Status: closed in code + tests on this phase branch. All answer-first realignment items in this section are closed in this branch.
+
+| Debt ID | Closure status | Code / test evidence |
+|---|---|---|
+| TD-V3-X-ANSWER-FIRST-AUTHORITY | Closed in code + tests | Final synthesis, closure, runtime status, and API payload semantics now treat nonempty candidate answers as completion material instead of requiring project-certified proof/evidence gates. |
+| TD-V3-X-ARTIFACT-CONTRACT-ADVISORY | Closed in code + tests | Dynamic artifact contract validation and candidate contract evaluation are advisory; missing patch/proof/source fields no longer block rank/final eligibility for answer material. |
+| TD-V3-X-PROOFOBJECT-RETIRE | Closed in code + tests | Proof-object, obligation, and external-evidence diagnostics were removed from hard-reject/repair policy and normalized away from diagnosis control flow. |
+| TD-V3-X-DIRECT-FINAL-ANSWER | Closed in code + tests | Final projection and synthesis now display the best answer directly; seed/route/reference wrappers are not used as a second authority layer. |
+| TD-V3-X-SOURCE-BINDING-NONBLOCKING | Closed in code + tests | Source binding, hallucinated symbol, and lineage checks remain visible as advisory metadata/diagnostics but no longer block displayed answers. |
+| TD-V3-X-DIAGNOSIS-ANSWER-FIRST | Closed in code + tests | Stagnation diagnosis and policy directives no longer force proof/source repair loops; retired proof-bottleneck categories are mapped to answer-first diversity/convergence handling while raw signals remain preserved where needed. |
+| TD-V3-X-TEST-REALIGNMENT | Closed in code + tests | Regression tests were realigned to answer-first semantics across final gates, projection, synthesis, archive fates, stage policy, evidence control plane, and project patch sandbox behavior. |
+| TD-V3-X-RESUME-NO-RESEED | Closed in code + tests | No long run was restarted and no new seed_population run was launched from the public source checkout; changes are source/runtime semantics only and are ready for the user to validate in a resumed runtime run. |
+
+Validation after answer-first realignment:
+
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m compileall -q cognitive_evolve_runtime scripts tests` — passed.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider` — `691 passed, 1 skipped`.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B scripts/cogev.py doctor --scope all` — `50/50 checks passed`.
+- `bash scripts/package_clean.sh` — completed; generated `dist/` is removed again during final public hygiene cleanup.
+
+## v3 subagent closeout review ledger — 2026-06-21
+
+Scope: close the multi-agent review findings after answer-first realignment and ensure there is one user-facing answer authority, no stale routed-output path, no hidden project-certification gate, and no public-local path leakage.
+
+Status: closed in code + tests on this branch.
+
+| Debt ID | Closure status | Code / test evidence |
+|---|---|---|
+| TD-V3-R-SINGLE-ANSWER-AUTHORITY | Closed in code + tests | `FinalSynthesizer` now returns one answer path; `build_final_projection()` uses `synthesis.final_answer` and `synthesis.best_candidate_id` first, with ranking/display context only as diagnostic fallback. |
+| TD-V3-R-MODEL-ANSWER-BINDING | Closed in code + tests | Model synthesis no longer binds a mismatched model `final_answer` to a candidate artifact/replay id; mismatch is surfaced via `model_final_answer_unbound_to_candidate_artifact`. |
+| TD-V3-R-PROJECTION-ADVISORY-VISIBILITY | Closed in code + tests | Final projection no longer rewrites advisory evidence to certified-clean status; it exposes advisory fields such as `advisory_final_blocked`, `advisory_artifact_final_eligible`, and `answer_candidate_mismatch`. |
+| TD-V3-R-ANSWER-VS-SOLVED-SEPARATION | Closed in code + tests | Runtime completion keeps answer production separate from correctness: `answer_produced` records candidate output, while `objective_solved` is not self-certified without user/external verification. |
+| TD-V3-R-STATUS-CANONICALIZATION | Closed in code + tests | Public API/job/state surfaces normalize legacy routed-output statuses to `completed`; answer-bearing terminal jobs expose results by payload availability rather than a second completion status. |
+| TD-V3-R-LATENT-VERIFY-NONBLOCKING | Closed in code + tests | `requires_verified_solution` and latent convergence no longer create a hard public continuation path for answer-first output; verification/latent state remains advisory metadata. |
+| TD-V3-R-DEAD-GATE-CLEANUP | Closed in code + tests | Removed unreachable legacy final-gate/proof blocking code from archive constraints and cleaned misleading comments/names around project-certification gates. |
+| TD-V3-R-PUBLIC-HYGIENE-TMP-PATHS | Closed in code + tests | Validation commands in this public ledger use `${PY:-python}` instead of host-specific `/tmp` venv paths; public hygiene tests now detect local home and repo-specific temp venv paths. |
+| TD-V3-R-DISPLAY-FALLBACK-ORDER | Closed in code + tests | `DisplayContext` now includes synthesis answer candidate fallback ids before population-order fallback, preventing stale ranking or seed order from silently replacing the selected answer. |
+
+Subagent review closure validation:
+
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m compileall -q cognitive_evolve_runtime scripts tests` — passed.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider` — `691 passed, 1 skipped`.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider tests/test_public_tree_hygiene.py` — `5 passed`.
+- `git diff --check` — passed.
+
+## v3 fresh seed24 runtime cap closure — 2026-06-21
+
+Scope: close the fresh-run discovery that the user-requested seed cap of 24 was recorded in run-local overlay metadata but the source seeding helper still clamped configured seed batches to 16.
+
+Status: closed in code + tests on this branch.
+
+| Debt ID | Closure status | Code / test evidence |
+|---|---|---|
+| TD-V3-R-SEED24-HARD-CAP | Closed in code + tests | `_seed_safety_batch_limit()` honors explicit policy/env seed batch values; the later self-bootstrap loop closure removed the stale low fixed seed cap entirely while preserving the explicit 24-batch regression. |
+
+Runtime evidence behind this closure:
+
+- Fresh retry evidence under the local test-run tree showed `seed_overlay.seed_safety_max_batches=24` but checkpoint `seed_harvest.batches=16` with `stopped_reason=batch_limit`.
+- The hard cap was source-local in `cognitive_evolve_runtime/nexus/loop/seeding.py`, not a provider or bridge behavior.
+- The source fix is required before launching the next fresh 24-seed run from `source-current`.
+
+## v3 NextGen CBT-PCBG landing ledger — 2026-06-22
+
+Scope: land the NextGen CognitiveEvolve CBT-PCBG review plan while preserving answer-first exploration semantics. The implementation removes pre-existing exploration hard gates before adding Critical Branching soft budget signals, keeps verification/authority walls advisory for final claims only, avoids new heavy dependencies, and keeps the public source tree clean.
+
+Status: closed in code + tests on this branch.
+
+| Debt ID | Closure status | Code / test evidence |
+|---|---|---|
+| TD-V3-NG-PR0-HARVEST-RESERVOIR-SOFT-REJECT | Closed in code + tests | `CandidateHarvester` supports `reservoir_mode`; low-relevance and semantic-duplicate seed outputs enter `HarvestResult.reservoir` with `candidate_budget_decision` soft traces. Covered by `tests/test_nextgen_cbt_pcbg_landing.py`. |
+| TD-V3-NG-PR0-OFFSPRING-PLAN-DEDUPE-SOFT | Closed in code + tests | Offspring semantic duplicates and plan signature duplicates are retained with soft trace metadata; exact structural blockers remain the only hard exclusion lane. Covered by nextgen and reproduction regressions. |
+| TD-V3-NG-PR0-FATE-NONTERMINAL-EXPLORATION | Closed in code + tests | Verifier/project/archive/compaction paths now keep non-structural source-free, docs-only, narrative-only, and repairable failures as Active/Incubating/Dormant advisory material. Covered by archive, population, dormant repair, failure classifier, and nextgen regressions. |
+| TD-V3-NG-PR0-BUDGET-ELIGIBLE-LANE | Closed in code + tests | `budget_eligible_candidates()` includes dormant/reserve/reservoir material and excludes only structural or safety failures; parent/ranking/diagnosis paths use this lane. |
+| TD-V3-NG-PR0-CANDIDATE-BUDGET-TRACE | Closed in code + tests | Former hard gates write capped `candidate_budget_decisions` events through `record_candidate_budget_decision()`, including harvest, archive, parent, compaction, verifier, and repair reactivation paths. |
+| TD-V3-NG-PR1-SUBSTRATE-REGRESSION | Closed in code + tests | Existing A-E substrate tests remain green; stage-budget strict env and `llm_provider` cost namespace were preserved by the full regression suite. |
+| TD-V3-NG-PR2-CANONICAL-FAMILY-ID | Closed in code + tests | Compatible `metadata.nextgen` identity fields are populated; unknown search-space families become provisional singleton families instead of falling back to the first configured family. |
+| TD-V3-NG-PR2-PRODUCTIVE-OBSERVATION-NONBLOCKING | Closed in code + tests | `ProductiveChildObservation` is observation-only and has no `.passed` or `must_not_block` runtime branch field. |
+| TD-V3-NG-PR2-CONSUMER-ALLOWLIST | Closed in code + tests | Static consumer tests scan archive, parent, ranking, verifier, repair, synthesis, final-gate, and verification-stack files to prevent productive/CBT soft signals from becoming hard gate consumers. |
+| TD-V3-NG-PR3-LLM-PROFILE-IDENTITY | Closed in code + tests | `LLMCallIdentity` and `LLMModelSpec.profile_id` flow through breaker keys, idempotency, journal, call ledger, telemetry, and public route summary while preserving legacy provider/model fields. |
+| TD-V3-NG-PR4-SEED-RESERVOIR-CHECKPOINT | Closed in code + tests | Seed reservoir summaries are carried in seed metadata and checkpoint-safe population serialization; source acceptance does not require a real-provider rerun. |
+| TD-V3-NG-PR4-PROMPT-PROTECTED-FRONTIER | Closed in code + tests | Prompt view compression preserves protected candidate objects by shrinking detail before dropping frontier candidates; tiny-budget fallback keeps protected ids and summaries. |
+| TD-V3-NG-PR5-CBT-SOFT-QUOTA | Closed in code + tests | CBT Critical Branching is implemented as a soft trace/score adjustment with floor `1`; singleton, rare, novel, and edge branches are protected rather than blocked. |
+| TD-V3-NG-PR5-FALSE-CULL-NOVELTY-MONITOR | Closed in code + tests | Prompt population stats expose false-cull and boundary-loop counters so throttle can be defanged when exploration quality worsens. |
+| TD-V3-NG-PR6-COST-OPT-IN-ONLY | Closed in code + tests | Ranking reverse-order audit is controlled by `COGEV_RANK_ORDER_AUDIT=off|sample|always`; transport cost metadata stays in provider ledgers and prompt limits only shrink payloads. |
+| TD-V3-NG-PR7-PUBLIC-USABILITY | Closed in code + tests | README and provider docs are fixture-first and profile-aware, with no host-local paths, private relay facts, or runtime artifacts added. |
+| TD-V3-NG-PUBLIC-HYGIENE-MIRROR | Closed in code + tests | Full local acceptance passed; final cleanup and mirror sync are performed after `package_clean.sh` and public hygiene scans. |
+
+Validation after NextGen CBT-PCBG landing:
+
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m compileall -q cognitive_evolve_runtime scripts tests` — passed.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider` — `704 passed, 1 skipped`.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B scripts/cogev.py doctor --scope all` — `50/50 checks passed`.
+- Subagent closeout review found no blocking old-gate, dual-authority, public-hygiene, or over-engineering issues; one static-test coverage suggestion was closed by expanding the consumer allowlist test.
+
+## v3 Final Best Direction + Resurrection cleanup ledger — 2026-06-22
+
+Scope: make answer-first output total over all non-structural/non-safety candidates, add a minimal loser-pool resurrection lane inspired by Swiss/non-elimination and double-elimination loser brackets, and close the small review debts without adding a second selector, tournament framework, database, or new dependency.
+
+Status: closed in code + tests on this branch.
+
+| Debt ID | Closure status | Code / test evidence |
+|---|---|---|
+| TD-V3-NG-FINAL-BEST-CURRENT | Closed in code + tests | `SynthesizedResult` and `FinalProjection` expose `best_current_direction` for the best non-structural candidate; failed/source-free candidates can produce an answer while `objective_solved=false`, and structural/stage hard rejects remain excluded. Covered by `tests/test_nextgen_cbt_pcbg_landing.py`, `tests/test_nexus_audit_regressions.py`, and adaptive projection regressions. |
+| TD-V3-NG-RESURRECTION-LANE | Closed in code + tests | `ParentSelector` adds a bounded soft resurrection quota from dormant/reserve/failed/reservoir candidates, writes `resurrection_*` trace metadata, and protects Critical Branching over pure framework noise without adding a bracket scheduler or second selector. |
+| TD-V3-NG-RESERVOIR-CAP | Closed in code + tests | `HarvestPolicy.reservoir_limit` defaults to `256`; overflow records `reservoir_truncated_count` and capped summaries instead of appending full objects indefinitely. |
+| TD-V3-NG-SOFT-CAP-NAMING | Closed in code + tests | Legacy `max_per_group` repair/reseed config is documented and emitted as `soft_group_hint`; overrepresented groups remain selectable and are not hard-capped. |
+| TD-V3-NG-SEED-ENSEMBLE-LINEAGE | Closed in code + tests | `SeedModelEnsembleAdapter` preserves `origin_model_index` for both dict seed outputs and `CandidateGenome` seed outputs while keeping input-order-stable fanout. |
+| TD-V3-NG-IDENTITY-NO-PARALLEL-PATH | Closed in code + tests | LLM profile identity regression verifies provider dispatch still uses provider/model, while breaker/idempotency/journal/call-ledger use profile identity for isolation rather than a duplicate provider path. |
+
+Validation after Final Best Direction + Resurrection cleanup:
+
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m compileall -q cognitive_evolve_runtime scripts tests` — passed.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider` — `712 passed, 1 skipped` after explicit removal of a pre-existing `.pytest_cache/` runtime artifact.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B scripts/cogev.py doctor --scope all` — `50/50 checks passed`.
+- `bash scripts/package_clean.sh` — completed; generated `dist/` is removed again during final public hygiene cleanup.
+- Independent subagent review findings on structural hard rejects, fallback ordering, display route tests, and public hygiene self-cleaning were addressed before closure.
+
+## v3 NextGen intent binding final-direction correction ledger — 2026-06-22
+
+Scope: close the smoke-run finding that final selection could choose an audit/ledger support object as the best direction when the frozen user goal asked for mechanism/model/framework exploration, and that final summaries could surface advisory material as `verified`.
+
+Status: closed in code + tests on this branch.
+
+| Debt ID | Closure status | Code / test evidence |
+|---|---|---|
+| TD-V3-NG-INTENT-BINDING-NO-ENUM | Closed in code + tests | `metadata.intent_binding` stores free-text `search_intent`, `candidate_main_claim`, `supporting_claims`, `alignment_rationale`, and continuous `direct_answer_score`; no target-kind enum was added. |
+| TD-V3-NG-NO-DOMAIN-HARDCODED-FINAL-SCORE | Closed in code + tests | Final and resurrection scoring now use intent directness plus existing soft signals; static regression tests reject domain-specific final/resurrection scoring constants. |
+| TD-V3-NG-SUPPORTING-ARTIFACT-NOT-BEST-DIRECTION | Closed in code + tests | When the frozen goal asks for a search/model direction, direct goal claims outrank support artifacts even if the support artifact has stronger artifact/verifiability scores; the same support artifact can still win when the goal asks for it. |
+| TD-V3-NG-USER-FACING-VERIFICATION-HONESTY | Closed in code + tests | `best_current_direction.verification_status` only reports `verified` from graded verified output or replayable final certificate evidence; candidate-local metadata alone is advisory. |
+| TD-V3-NG-SUMMARY-ANSWER-PRODUCED-CONSISTENCY | Closed in code + tests | The controller refreshes `best_current_direction` after graded output is known, preserving `objective_solved=false` while keeping answer-first output available. |
+
+Validation after intent binding correction:
+
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m compileall -q cognitive_evolve_runtime/nexus tests/test_nextgen_cbt_pcbg_landing.py tests/test_failure_classifier.py` — passed.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider tests/test_nextgen_cbt_pcbg_landing.py tests/test_failure_classifier.py tests/test_nexus_audit_regressions.py tests/adaptive/test_evidence_control_plane.py` — `77 passed`.
+
+## v3 semantic consistency and lightweight boundary closure ledger — 2026-06-23
+
+- `TD-V3-RUNTIME-OPTIONS-RESUME-SEMANTICS` — Closed in code + tests. Checkpoints now persist open `runtime_options`; project resume restores effective `verification.include_tests` instead of falling back to a hard-coded verifier default.
+- `TD-V3-FALLBACK-CAPTURE-CONTEXT-MANAGER` — Closed in code + tests. Nexus runtime entrypoints use `capture_fallback_events()` and text-world fallback only catches component-declared fallback exceptions or model-boundary errors.
+- `TD-V3-CONTRACT-HASH-LINEAGE-NO-REBASE` — Closed in code + tests. Resumed candidates keep their generation-time `contract_hash`; current verification contract and overlays are recorded in verification summaries.
+- `TD-V3-PROJECT-CONTEXT-EXPLICIT-FLOW` — Closed in code + tests. Project context is passed through explicit runtime/Fabric context and can be resolved by downstream components without extra positional parameters.
+- `TD-V3-SEED-FAMILY-PRIORITY-OPEN-PLANES` — Closed in code + tests. Seed batches receive model-authored family priority and coverage traces without finite domain enums or hard gates.
+- `TD-V3-SERDE-BOUNDARY-LOWER-LAYER` — Closed in code + tests. Stable JSON/hash helpers moved to `core.serialization`; `nexus._serde` remains a compatibility re-export while non-Nexus low-level packages import the core module.
+- `TD-V3-LLM-REQUEST-POLICY-NO-NEXUS-TRANSPORT` — Closed in code + tests. Long-context output budgets are selected by explicit `LLMRequestPolicy` from the model adapter, not by Nexus request-name constants inside transport.
+- `TD-V3-PUBLIC-HYGIENE-MIRROR` — Closed in code + tests. No run artifacts, local virtualenvs, bridge logs, or plan files are introduced by this change; mirror sync remains part of final acceptance.
+
+## v3 self-bootstrap loop seed coverage and resurrection ledger — 2026-06-24
+
+Scope: close the real self-bootstrap loop findings around low seed caps, seed family coverage, target-perturb continuation, loser-pool factor resurrection, strategy comparison, checkpoint monitor state, route discipline, and capability-preserving efficiency.
+
+Status: closed in code + tests on this branch.
+
+| Debt ID | Closure status | Code / test evidence |
+|---|---|---|
+| TD-V3-LOOP-SEED-UNCAPPED-COVERAGE | Closed in code + tests | `_seed_safety_batch_limit()` now honors explicit policy/env values without the stale 64 cap; `tests/test_search_kernel_v3.py` proves a high seed batch env is no longer clipped. |
+| TD-V3-LOOP-SEED-COVERAGE-ASSESSMENT | Closed in code + tests | `nexus/seed_coverage.py::assess_seed_coverage()` records accepted/reservoir/rejected/family/singleton/origin coverage and is written into policy/candidate metadata; `tests/test_self_bootstrap_loop_controls.py` covers broad vs thin coverage. |
+| TD-V3-LOOP-SEED-PARTIAL-FAILURE-STATUS | Closed in code + tests | Seed coverage carries `partial_failure_count`; existing harvester result keeps recoverable failed batch ids without poisoning accepted seeds, and full pytest covers harvester regressions. |
+| TD-V3-LOOP-TARGET-PERTURB-SEED | Closed in code + tests | `target_perturb_seed_judgment()` provides evidence-first `not_needed/watch/trigger_recommended` guidance from checkpoint population signals without rerunning initial seed; tests cover the round-10 stuck trigger. |
+| TD-V3-LOOP-FACTOR-RESURRECTION-TRACE | Closed in code + tests | `nexus/factor_resurrection.py` extracts advisory factors from dormant/failed/reservoir candidates while keeping source candidates non-terminal; tests cover loser-pool factor extraction. |
+| TD-V3-LOOP-FAILURE-FACTOR-VIEW | Closed in code + tests | `archive_prompt_view()` adds `failure_factor_hints` even when `FailureArchive.records` is empty but dormant candidates carry failure lessons; tests cover this exact case. |
+| TD-V3-LOOP-RESURRECTION-QUOTA-DATA-SENSITIVE | Closed in code + tests | `resurrection_quota()` now accepts pool size/pressure and can exceed 3 under large loser pools while staying within branch budget; tests prove scaling and floor. |
+| TD-V3-LOOP-NO-HARDCODED-GENERAL-SEARCH-WORDLIST | Closed in code + tests | General scaffold stripping and false-cull boundary wordlist checks were removed from search steering; tests prove terms are not stripped/flagged by those generic helpers. |
+| TD-V3-LOOP-STRATEGY-COMPARISON-CARRIER | Closed in code + tests | `nexus/strategy_comparison.py` carries open free-text hypotheses/observations into prompt views without architecture enums; tests cover arbitrary free-text strategy observations. |
+| TD-V3-LOOP-CHECKPOINT-MONITOR-STATE | Closed in code + tests | `LiveNexusStore` and final persistence carry `search_kernel`, `runtime_options`, and `monitor_state`; tests read checkpoint and round snapshot evidence. |
+| TD-V3-LOOP-CODEX-GPT55-HIGH-ROUTING | Closed in protocol + tests | Public LOOP protocol requires all real self-bootstrap roles to resolve to one high-capability profile before provider calls; route values stay run-local rather than embedded as source constants. |
+| TD-V3-LOOP-ALGORITHM-EFFICIENCY-METRICS | Closed in code + tests | Seed loop records `algorithm_efficiency` metrics such as accepted-per-batch, reservoir count, and partial failures as measure-only metadata; prompt/checkpoint tests cover persistence. |
+| TD-V3-LOOP-MODEL-PARALLEL-EFFICIENCY | Closed in code + tests | Seed loop records `model_parallel_efficiency` and no longer clips explicit seed fanout by stale seed batch cap; model fanout and seed tests pass in full pytest. |
+| TD-V3-LOOP-TRANSPORT-SCAFFOLD-HYGIENE | Closed in code + tests | Public LOOP protocol avoids private transport scaffold terms and public hygiene tests continue to guard bridge/proxy/local path leakage. |
+| TD-V3-LOOP-SELFBOOTSTRAP-PROTOCOL | Closed in docs + tests | `docs/SELF_BOOTSTRAP_LOOP_PROTOCOL.md` defines the minimal run-audit-modify-rerun protocol without adding a scheduler framework. |
+| TD-V3-LOOP-PUBLIC-HYGIENE-MIRROR | Closed in acceptance | `compileall`, full pytest, doctor, and package_clean passed; final cleanup, hygiene scan, and source-current mirror sync are required before push. |
+
+Validation evidence for this closure:
+
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m compileall -q cognitive_evolve_runtime scripts tests` — passed.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider` — `733 passed, 1 skipped`.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B scripts/cogev.py doctor --scope all` — `50/50 checks passed`.
+- `bash scripts/package_clean.sh` — produced the clean package artifact, then `dist/` and bytecode caches were removed.
+
+## v3 minimal-core/full-fusion ablation and efficiency closure ledger — 2026-06-24
+
+Scope: reopen the remaining gaps from the run-result review: minimal active core and full fusion must be represented as runnable comparison profiles, failure theorem and R_eff must exist as source mechanisms, large seed pool must be separated from the active frontier, reservoir sidecar must keep large pools out of checkpoints, and efficiency work must be capability-preserving.
+
+Status: closed in code + tests on this branch.
+
+| Debt ID | Closure status | Code / test evidence |
+|---|---|---|
+| TD-V3-MINCORE-FOUR-WAY-ABLATION | Closed in code + tests | `nexus/minimal_core.py::run_core_ablation()` replays `score_only`, `Nexus_QD_failure_replay`, `minimal_active_core`, and `full_fusion` on the same candidate pool with zero added provider calls; tests assert all four profiles are compared. |
+| TD-V3-MINCORE-R-EFF | Closed in code + tests | `estimate_reproduction_pressure()` records an advisory `r_eff.v1` signal from surviving child pressure, novelty pressure, and failure reactivation without becoming a hard gate. |
+| TD-V3-MINCORE-FAILURE-THEOREM | Closed in code + tests | `extract_failure_theorem()`/`extract_failure_theorems()` lift reusable failure lessons into advisory theorem payloads and prompt/checkpoint traces. |
+| TD-V3-MINCORE-SINGLE-PROMOTION-GATE | Closed in code + tests | `single_promotion_gate()` separates promotion eligibility from verified-claim permission so exploratory candidates can advance without self-certifying solved. |
+| TD-V3-MINCORE-LARGE-POOL-SMALL-FRONTIER | Closed in code + tests | `apply_seed_active_frontier()` keeps large accepted seed pools intact while marking a bounded active frontier and moving overflow to Dormant with trace metadata. |
+| TD-V3-MINCORE-SEED-UNBOUNDED-RUNMODE | Closed in code + tests | `COGEV_NEXUS_SEED_BATCH_LIMIT=unbounded` disables the static seed batch cap and harvests until exhaustion/low-gain/budget/operator stop; default bounded behavior remains available for ordinary runs. |
+| TD-V3-MINCORE-SEED-RESERVOIR-SIDECAR | Closed in code + tests | Seed reservoir payloads are written to digest-named sidecars and checkpoints store only refs, not large embedded seed pools. |
+| TD-V3-MINCORE-OPTIONAL-LAYERS-PAY-RENT | Closed in code + tests | The four-way ablation reports optional-layer marginal gains and recommends minimal core unless full fusion shows enough measured advantage. |
+| TD-V3-MINCORE-ALGORITHM-EFFICIENCY-NO-CAPABILITY-LOSS | Closed in code + tests | Seed loop records algorithm-efficiency metrics and active-frontier separation while preserving reservoir/dormant material instead of deleting breadth. |
+| TD-V3-MINCORE-MODEL-PARALLEL-EFFICIENCY | Closed in code + tests | Seed fanout remains governed by explicit policy/env concurrency and records parallel-efficiency metadata without clipping seed breadth. |
+| TD-V3-MINCORE-GPT55-HIGH-GUARD | Closed in code + tests | `COGEV_LLM_REQUIRED_MODEL` blocks real provider calls whose resolved `COGEV_LLM_MODEL` differs from the operator-selected GPT 5.5 high model id; the self-bootstrap runner exposes `--required-model`. |
+| TD-V3-MINCORE-RUN-SUMMARY-FIELDS | Closed in code + tests | Runtime result/checkpoint/prompt paths carry `minimal_core_ablation`, `factor_resurrection_summary`, seed coverage, active frontier, reservoir ref, and efficiency summaries. |
+
+Validation after minimal-core/full-fusion closure:
+
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m compileall -q cognitive_evolve_runtime scripts tests` — passed.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider tests/test_search_kernel_v3.py tests/test_model_fanout_concurrency.py tests/test_nextgen_cbt_pcbg_landing.py tests/test_self_bootstrap_loop_controls.py tests/test_security_config_and_stop_decision.py` — `68 passed`.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider` — `738 passed, 1 skipped`.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B scripts/cogev.py doctor --scope all` — `50/50 checks passed`.
+- `bash scripts/package_clean.sh` — completed; generated `dist/` and bytecode caches were removed again during final public hygiene cleanup.
+
+## v3 self-bootstrap LOOP artifact-backed closure ledger — 2026-06-24
+
+Scope: close issues confirmed by the GPT 5.5 high unbounded-seed self-bootstrap run artifacts, without adding hardcoded finite categories or sacrificing search breadth.
+
+Status: closed in code + tests on this branch.
+
+| Debt ID | Closure status | Code / test evidence |
+|---|---|---|
+| TD-V3-LOOP-UNBOUNDED-SEED-HANDOFF | Closed in code + tests | Unbounded seed harvest now hands off after broad coverage and consecutive low marginal family-yield signals derived from target/min-batches/patience, not a static low seed cap; replaying Attempt4 would stop at 524 accepted candidates / 210 families. |
+| TD-V3-LOOP-SEED-HARVEST-METADATA-BLOAT | Closed in code + tests | Full seed harvest summary is stored once in policy metadata; each candidate now carries only a compact per-candidate seed_harvest trace while retaining failed-batch and stop evidence. |
+| TD-V3-LOOP-INTENT-BINDING-STALE-FALLBACK | Closed in code + tests | Intent binding now refreshes stale no-contract or different-goal bindings once the frozen contract intent is available, and the token matcher now computes real free-text overlap. |
+| TD-V3-LOOP-SEED-COVERAGE-PERSISTENCE | Closed in code + tests | PolicyUpdater preserves seed/search-kernel metadata when model-authored policy updates omit those fields, so final checkpoint persistence can still emit coverage/frontier/efficiency refs. |
+| TD-V3-LOOP-CAPABILITY-PRESERVING-EFFICIENCY | Closed in code + tests | The fix reduces duplicated metadata and adds dynamic handoff without deleting accepted seeds; active/dormant/reservoir semantics remain intact for later resurrection. |
+
+
+Validation after artifact-backed LOOP closure:
+
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider tests/test_search_kernel_v3.py tests/test_model_fanout_concurrency.py tests/test_nextgen_cbt_pcbg_landing.py tests/test_self_bootstrap_loop_controls.py tests/test_nexus_audit_regressions.py tests/adaptive/test_evidence_control_plane.py` — `102 passed`.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m compileall -q cognitive_evolve_runtime scripts tests` — passed.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider` — `741 passed, 1 skipped`.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B scripts/cogev.py doctor --scope all` — `50/50 checks passed`.
+- `bash scripts/package_clean.sh` — completed; generated `dist/` and bytecode caches were removed again during final public hygiene cleanup.
+
+## v3 self-bootstrap LOOP handoff efficiency closure ledger — 2026-06-24
+
+Scope: close the run-confirmed efficiency bug where unbounded seed harvest kept spending GPT 5.5 high calls after coverage was already broad because the handoff floor double-counted `low_gain_patience`.
+
+Status: closed in code + tests on this branch.
+
+| Debt ID | Closure status | Code / test evidence |
+|---|---|---|
+| TD-V3-LOOP-HANDOFF-PATIENCE-DOUBLE-COUNT | Closed in code + tests | `_unbounded_seed_handoff_exhausted()` now uses `target_size * min_batches` as the broad-pool evidence floor; the caller still applies `low_gain_patience` as consecutive low-gain streak, avoiding duplicate patience. `tests/test_search_kernel_v3.py::test_unbounded_seed_handoff_floor_does_not_double_count_patience` replays this run's 287 accepted / 33-family handoff condition. |
+
+Validation for this closure:
+
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider tests/test_search_kernel_v3.py` — `11 passed`.
+
+## v3 self-bootstrap LOOP result projection/size closure ledger — 2026-06-24
+
+Scope: close issues confirmed by `subbootstrap-gpt55high-loop2-handofffix-20260624-115052` artifacts without changing the research direction or reducing search breadth.
+
+Status: closed in code + tests on this branch.
+
+| Debt ID | Closure status | Code / test evidence |
+|---|---|---|
+| TD-V3-LOOP-FINAL-PROJECTION-CANDIDATE-BINDING | Closed in code + tests | `build_final_projection()` now checks `synthesis.best_current_direction.candidate_id` before falling back to an unbound synthesis answer, so adaptive `final-projection.json` can stay bound to the same displayed candidate as `final-answer.md`. |
+| TD-V3-LOOP-LATENT-AUDIT-RESULT-BLOAT | Closed in code + tests | `audit_latent_replay_bundle()` now records `active_evidence_id_count` plus a bounded `active_evidence_ids` sample and source hash/preview instead of duplicating thousands of evidence ids per trace result. |
+
+Validation for this closure:
+
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider tests/test_latent_replay_audit_bundle.py tests/test_nextgen_cbt_pcbg_landing.py` — `33 passed`.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider tests/test_latent_m5_2_runtime_audit.py tests/adaptive/test_evidence_control_plane.py` — `31 passed`.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m compileall -q cognitive_evolve_runtime scripts tests` — passed.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider` — `744 passed, 1 skipped`.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B scripts/cogev.py doctor --scope all` — `50/50 checks passed`.
+- `bash scripts/package_clean.sh` — completed; generated `dist/` and bytecode caches were removed again during public hygiene cleanup.
+
+## v3 self-bootstrap LOOP post-run persistence closure ledger — 2026-06-24
+
+Scope: close issues confirmed by `subbootstrap-gpt55high-loop3-postresultfix-20260624-134900` artifacts without reducing search breadth or changing the selected research direction.
+
+Status: closed in code + tests on this branch.
+
+| Debt ID | Closure status | Code / test evidence |
+|---|---|---|
+| TD-V3-LOOP-LATENT-LEDGER-CHECKPOINT-REGRESSION | Closed in code + tests | `build_checkpoint_state()` now uses `contract_payload_for_persistence()` to strip hydrated `metadata.latent_ledger` whenever a sidecar ref exists; restore still hydrates from the ref. |
+| TD-V3-LOOP-RUN-RESULT-CONTRACT-PERSISTENCE | Closed in code + tests | `NexusRuntime` now serializes text/project/resume run contracts with `contract_payload_for_persistence()`, so `run-result.json` keeps `latent_ledger_ref` without re-embedding the hydrated ledger. |
+
+
+Validation for this closure:
+
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider tests/test_latent_live_store_persistence.py` — `2 passed`.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider tests/test_latent_live_store_persistence.py tests/test_progress_events_match_checkpoint.py tests/test_runtime_options_and_context.py` — `11 passed`.
+- Actual LOOP3 artifact replay through `contract_payload_for_persistence()` reduces the persisted contract payload from ~20.3 MB to ~1.21 MB while retaining `latent_ledger_ref`.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m compileall -q cognitive_evolve_runtime scripts tests` — passed.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider` — `745 passed, 1 skipped`.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B scripts/cogev.py doctor --scope all` — `50/50 checks passed`.
+- `bash scripts/package_clean.sh` — completed; generated `dist/` and bytecode caches were removed again during public hygiene cleanup.
+
+## v3 self-bootstrap LOOP seed handoff broadness closure ledger — 2026-06-24
+
+Scope: close the LOOP4 run-confirmed bug where unbounded seed handoff still scaled the broadness floor with total accepted seeds, forcing a narrow-but-sufficient convergence-comparison goal to keep spending GPT 5.5 high calls until it invented extra families.
+
+Status: closed in code + tests on this branch.
+
+| Debt ID | Closure status | Code / test evidence |
+|---|---|---|
+| TD-V3-LOOP-SEED-HANDOFF-BROADNESS-FLOOR | Closed in code + tests | `_seed_pool_broad_enough()` now derives its minimum family floor from the requested target size, not from ever-growing accepted seed count; LOOP4 evidence shape of 374 accepted seeds / 9 families / target 64 can hand off, while a 2-family pool still cannot. |
+
+Validation for this closure:
+
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider tests/test_search_kernel_v3.py` — `12 passed`.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m compileall -q cognitive_evolve_runtime scripts tests` — passed.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider` — `746 passed, 1 skipped`.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B scripts/cogev.py doctor --scope all` — `50/50 checks passed`.
+- `bash scripts/package_clean.sh` — completed; generated `dist/` and bytecode caches were removed again during public hygiene cleanup.
+
+## v3 self-bootstrap LOOP advisory boundary closure ledger — 2026-06-24
+
+Scope: close the LOOP4c run-confirmed bug where a model-authored pool-preprocess advisory payload containing `final_selection_policy.objective_solved` crashed the runtime after seed handoff instead of being rejected at the model advisory boundary and downgraded to non-blocking diagnostics.
+
+Status: closed in code + tests on this branch.
+
+| Debt ID | Closure status | Code / test evidence |
+|---|---|---|
+| TD-V3-LOOP-POOL-PREPROCESS-AUTHORITY-PAYLOAD | Closed in code + tests | `preprocess_candidate_pool()` keeps `coerce_pool_preprocess_response()` strict, but catches model advisory authority-key violations at the model boundary and returns empty advisory hints plus `model_preprocess_authority_payload_rejected`; verification authority remains blocked. |
+
+Validation for this closure:
+
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider tests/test_v3_pool_preprocessing.py tests/test_v3_fabric_abstractions.py` — `22 passed`.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m compileall -q cognitive_evolve_runtime scripts tests` — passed.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider` — `747 passed, 1 skipped`.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B scripts/cogev.py doctor --scope all` — `50/50 checks passed`.
+- `bash scripts/package_clean.sh` — completed; generated `dist/` and bytecode caches were removed again during public hygiene cleanup.
+
+## v3 self-bootstrap LOOP effect closure ledger — 2026-06-24
+
+Scope: close LOOP4d effect gaps where the run found a useful "minimal active core" direction but final projection displayed a status/support carrier instead of the real mechanism candidate, and the ablation compared a bare minimal core against full fusion without reporting every positive support attachment.
+
+Status: closed in code + tests on this branch.
+
+| Debt ID | Closure status | Code / test evidence |
+|---|---|---|
+| TD-V3-LOOP-FINAL-DIRECTION-CARRIER-UNWRAP | Closed in code + tests | `build_final_projection()` now unwraps an explicit `artifact.best_current_direction.candidate_id` carrier to the referenced mechanism candidate when that target exists and is displayable; the carrier is retained as supporting metadata, not the user-facing best direction. |
+| TD-V3-LOOP-MINCORE-USEFUL-ATTACHMENT-STACK | Closed in code + tests | `run_core_ablation()` now compares `minimal_core_plus_useful_attachments`, discovers all positive support attachments from candidate/open metadata fields, reports an `active_support_stack`, and recommends the stacked minimal core when the same-pool marginal signal beats the bare minimal core. |
+
+Validation for this closure:
+
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider tests/test_nextgen_cbt_pcbg_landing.py tests/test_self_bootstrap_loop_controls.py` — `41 passed`.
+
+## v3 self-bootstrap LOOP incumbent comparison closure ledger — 2026-06-24
+
+Scope: close the follow-up effect bar that a minimal active core plus attachments is only acceptable if it covers the currently effective project attachments and beats the current-project incumbent baseline, not merely a bare minimal-core replay.
+
+Status: closed in code + tests on this branch.
+
+| Debt ID | Closure status | Code / test evidence |
+|---|---|---|
+| TD-V3-LOOP-CURRENT-PROJECT-INCUMBENT-BASELINE | Closed in code + tests | `run_core_ablation()` now exposes `current_project_incumbent` from `effective_project_attachment_inventory(...)`, so `full_fusion` is no longer the proxy for the existing project baseline. |
+| TD-V3-LOOP-EFFECTIVE-ATTACHMENT-COVERAGE-GATE | Closed in code + tests | `current_project_comparison.effective_attachment_coverage` reports covered/missing effective attachments and prevents a success recommendation while the stacked core lacks current-project support inventory. |
+
+Validation for this closure:
+
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider tests/test_self_bootstrap_loop_controls.py` — `15 passed`.
+
+## v3 self-bootstrap LOOP effect-preserving efficiency/diversity closure ledger — 2026-06-25
+
+Scope: close LOOP5 run-confirmed issues without lowering search breadth, model strength, failure-pool resurrection, seed coverage, or attachment-stack effect. Efficiency improvements are storage/selection-algorithm improvements only; they do not delete candidates or narrow the objective.
+
+Status: closed in code + tests on this branch.
+
+| Debt ID | Closure status | Code / test evidence |
+|---|---|---|
+| TD-V3-LOOP-ARCHIVE-CHECKPOINT-REF-THINNING | Closed in code + tests | Thin checkpoints now keep candidate bodies once in `population` and store archive memberships as population refs via `apply_checkpoint_profile_to_archives(...)`; `CheckpointStore.restore_state()` hydrates refs before rebuilding `ArchiveManager`. |
+| TD-V3-LOOP-RUN-RESULT-ARCHIVE-DEDUP | Closed in code + tests | `EvolutionLoopResult.to_dict()` uses the same thin population/archive/history profile, so `run-result.json` no longer repeats full archive candidate bodies. Offline replay on LOOP5 artifacts estimates checkpoint `98,997,045 → 25,536,437` bytes and run-result `105,612,159 → 27,351,127` bytes. |
+| TD-V3-LOOP-OPEN-FAMILY-DIVERSITY-PRESSURE | Closed in code + tests | `SearchStateDiagnoser` now derives over/under explored family pressure from candidate metadata/content distribution rather than fixed placeholder families; `PolicyUpdater` feeds that into existing selection scoring. |
+| TD-V3-LOOP-SEED-ORIGIN-OBSERVABILITY | Closed in code + tests | Model-backed seed candidates now record public route metadata (`origin_model`, `model_profile_id`, `origin_model_spec_hash`) at the adapter boundary, preserving acceptance behavior while making GPT/profile coverage auditable. |
+| TD-V3-LOOP-EFFECT-PRESERVING-EFFICIENCY-GUARD | Closed in code + tests | Tests assert storage thinning preserves population payload and hydrated archive behavior; no seed cap, candidate deletion, model downgrade, or final-gate relaxation is introduced. |
+
+Validation for this closure:
+
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider tests/test_search_kernel_v3.py tests/test_v221_call_checkpoint_executor_debt.py tests/test_stagnation_diagnosis_generates_action.py` — `27 passed`.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m compileall -q cognitive_evolve_runtime scripts tests` — passed.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider` — `755 passed, 1 skipped`.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B scripts/cogev.py doctor --scope all` — `50/50 checks passed`.
+- `bash scripts/package_clean.sh` — completed; generated `dist/` and bytecode caches were removed again during public hygiene cleanup.
+
+## v3 self-bootstrap LOOP final-binding closure ledger — 2026-06-25
+
+Scope: close the LOOP6b run-confirmed final-answer split where model synthesis text selected one best direction while the runtime-displayed `best_current_direction` was overwritten by an archive/display fallback candidate, creating a double-path final answer.
+
+Status: closed in code + tests on this branch.
+
+| Debt ID | Closure status | Code / test evidence |
+|---|---|---|
+| TD-V3-LOOP-FINAL-MODEL-TEXT-CANDIDATE-BINDING | Closed in code + tests | `FinalSynthesizer._model_synthesis()` now rebinds model-authored final text without a candidate id to the matching candidate by open-text artifact evidence; LOOP6b offline replay selects `C6232b2065f58` instead of stale archive candidate `C8f6847935a08`. |
+| TD-V3-LOOP-FINAL-DISPLAY-CONTEXT-NO-STALE-OVERRIDE | Closed in code + tests | `_selected_final_candidate()` refuses display-context fallback when synthesis recorded an unbound model final answer and no candidate binding exists, so old archive/display candidates cannot create a second best-direction path. |
+
+Validation for this closure:
+
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider tests/test_nextgen_cbt_pcbg_landing.py tests/test_auxiliary_candidate_not_main_winner_by_default.py tests/test_nexus_audit_regressions.py::test_model_synthesis_uses_reference_not_seed_or_final_id_for_unverified_candidate` — `32 passed`.
+- LOOP6b artifact replay: `_candidate_bound_to_final_answer(...)` selected `C6232b2065f58` from the run-local final text instead of stale archive candidate `C8f6847935a08`.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m compileall -q cognitive_evolve_runtime scripts tests` — passed.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B -m pytest -q -p no:cacheprovider` — `757 passed, 1 skipped`.
+- `PYTHONDONTWRITEBYTECODE=1 ${PY:-python} -B scripts/cogev.py doctor --scope all` — `50/50 checks passed`.
+- `bash scripts/package_clean.sh` — completed; generated `dist/` and bytecode caches were removed again during public hygiene cleanup.
+

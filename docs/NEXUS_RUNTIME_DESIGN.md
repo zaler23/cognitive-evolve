@@ -146,7 +146,7 @@ Model tiers select adaptive internal search policy:
 - API model caps default to `0`, meaning adaptive Nexus policy rather than a fixed profile round count.
 - Profile safety limits are checkpoints; they never mean the objective is solved.
 - `deep`, `ultra`, and `exhaustive` increase minimum stop depth, safety window, and branch factor, while candidate width is derived from policy diversity or explicit operator floors.
-- `completion_status=needs_continuation` is returned when the safety checkpoint is reached without a stop/verifier signal.
+- `completion_status=completed` is returned when the safety checkpoint yields answer material; explicit interruption/quota/operator continuation remains separate metadata.
 
 For API calls, Nexus uses `StructuredModelAdapter.from_configured_llm()` unless a caller injects a model adapter. This means objective-contract generation, policy generation, seed population, relative ranking, diagnosis, policy update, mutation planning, offspring generation, and final synthesis can all be LLM-backed. Deterministic seed/ranking logic is reserved for hermetic tests and direct offline calls with no configured adapter.
 

@@ -4,13 +4,20 @@ from __future__ import annotations
 from typing import Any, Mapping
 
 from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome
-from cognitive_evolve_runtime.archives.quality_diversity import live_reproductive_candidates, pareto_frontier_ids
+from cognitive_evolve_runtime.archives.quality_diversity import pareto_frontier_ids
 from cognitive_evolve_runtime.nexus.adaptive_signals import mean_percentile, percentile_rank
 from cognitive_evolve_runtime.nexus.obligations import candidate_has_obligation_or_evidence_delta
-from cognitive_evolve_runtime.nexus._serde import coerce_dict
+from cognitive_evolve_runtime.core.serialization import coerce_dict
 from cognitive_evolve_runtime.nexus.population_vitality import repair_slot_count
-from cognitive_evolve_runtime.nexus.stage_policy import stage_eligibility
-from cognitive_evolve_runtime.nexus.source_binding_resolver import annotate_candidate_source_bindings, candidate_admission_route, candidate_source_binding_class
+from cognitive_evolve_runtime.nexus.nextgen import (
+    budget_eligible_candidates,
+    cbt_soft_budget_adjustment,
+    mark_resurrection_candidate,
+    record_candidate_budget_decision,
+    resurrection_quota,
+    resurrection_score,
+    structurally_blocked,
+)
 from .novelty import population_novelty
 from .lineage_saturation import detect_lineage_saturation
 from cognitive_evolve_runtime.nexus.search_kernel.diverse_selector import select_diverse
@@ -22,14 +29,14 @@ def reproductive_value(
     archives: object | None = None,
     *,
     advisory_features: Mapping[str, Any] | None = None,
+    budget_context: list[CandidateGenome] | None = None,
 ) -> float:
-    live_context = live_reproductive_candidates(population)
+    live_context = list(budget_context) if budget_context is not None else budget_eligible_candidates(population)
     fate = CandidateFate.normalize(candidate.current_fate)
-    if fate not in {CandidateFate.ACTIVE.value, CandidateFate.ELITE.value, CandidateFate.INCUBATING.value}:
+    if structurally_blocked(candidate):
         return -1.0
-    if fate == CandidateFate.INCUBATING.value and not _incubating_parent_allowed(candidate):
-        return -1.0
-    context = live_context or population or [candidate]
+    score_context = [c for c in live_context if CandidateFate.normalize(c.current_fate) not in {CandidateFate.CULLED.value, CandidateFate.FAILED.value}]
+    context = score_context or live_context or population or [candidate]
     relative_quality = mean_percentile(
         candidate,
         context,
@@ -48,10 +55,10 @@ def reproductive_value(
     niche_signal = 1.0 if candidate.niche_memberships else 0.0
     uncertainty_signal = 1.0 if candidate.uncertainty_notes else 0.0
     complementarity_signal = 1.0 if candidate.missing_parts and (candidate.edge_knowledge_seeds or candidate.core_mechanism) else 0.0
-    lineage_report = detect_lineage_saturation(live_context)
+    lineage_report = detect_lineage_saturation(context)
     family = candidate.lineage[0] if candidate.lineage else candidate.id
     lineage_penalty = diversity_signal if family in lineage_report.saturated_families and not candidate_has_obligation_or_evidence_delta(candidate) else 0.0
-    frontier_signal = 1.0 if candidate.id in pareto_frontier_ids(live_context) else 0.0
+    frontier_signal = 1.0 if candidate.id in pareto_frontier_ids(context) else 0.0
     constraint_penalty = _archive_constraint_penalty(candidate, archives)
     repeated_failure_penalty = len(candidate.failure_lessons) / max(1, len(candidate.failure_lessons) + len(context))
     auxiliary_penalty = 1.0 if candidate.current_fate == CandidateFate.AUXILIARY else 0.0
@@ -72,39 +79,26 @@ def reproductive_value(
         frontier_signal,
     ]
     value = sum(positive) / max(1, len(positive))
+    reserve_penalty = 0.15 if fate in {CandidateFate.CULLED.value, CandidateFate.FAILED.value, CandidateFate.DORMANT.value} else 0.0
     return (
         value
         + _advisory_selection_adjustment(candidate, advisory_features)
         + _archive_directive_adjustment(candidate, archives)
-        + _source_binding_selection_adjustment(candidate)
+        # cbt_soft (canonical search-diversity soft quota) and source-binding
+        # annotation are intentionally NOT applied here: this base reproductive
+        # value feeds the >=0 parent-eligibility floor in ParentSelector.select,
+        # and a soft search signal must never gate whether a candidate can parent.
+        # cbt_soft is applied as an ordering-only bonus in select(); source bindings
+        # are annotated by the round/registry with the real project root.
         - lineage_penalty
         - constraint_penalty
         - repeated_failure_penalty
         - auxiliary_penalty
         - incubation_penalty
         - deprioritized_penalty
+        - reserve_penalty
     )
 
-
-
-def _source_binding_selection_adjustment(candidate: CandidateGenome) -> float:
-    metadata = candidate.metadata if isinstance(candidate.metadata, dict) else {}
-    if "source_binding_manifest" not in metadata and getattr(candidate, "source_bindings", None):
-        try:
-            annotate_candidate_source_bindings(candidate)
-        except Exception:
-            return -0.05
-    binding_class = candidate_source_binding_class(candidate)
-    route = candidate_admission_route(candidate)
-    if binding_class == "resolved" and route == "normal":
-        return 0.08
-    if binding_class == "negative_fixture_only":
-        return 0.02
-    if binding_class in {"invented", "unresolved"}:
-        return -0.25
-    if binding_class == "no_binding":
-        return -0.08
-    return 0.0
 
 def _archive_directive_adjustment(candidate: CandidateGenome, archives: object | None) -> float:
     qd = getattr(archives, "quality_diversity", None)
@@ -154,13 +148,27 @@ class ParentSelector:
         eligibility_policy: dict[str, object] | None = None,
         advisory_features: Mapping[str, Any] | None = None,
     ) -> list[CandidateGenome]:
-        viable = live_reproductive_candidates(population)
+        viable = budget_eligible_candidates(population)
+        target = max(0, limit)
+        round_index = _int(coerce_dict(eligibility_policy).get("current_round"), default=0)
         selection_pressure = coerce_dict(coerce_dict(eligibility_policy).get("selection_pressure"))
-        base_values = {candidate.id: reproductive_value(candidate, population, archives) + _selection_pressure_adjustment(candidate, selection_pressure) for candidate in viable}
+        base_values = {candidate.id: reproductive_value(candidate, population, archives, budget_context=viable) + _selection_pressure_adjustment(candidate, selection_pressure) for candidate in viable}
+        # cbt_soft is a canonical search-diversity soft quota: it may reorder viable
+        # parents but must NEVER enter the >=0 base_values eligibility floor below.
+        # Compute it once per viable candidate -- it records a budget-decision side
+        # effect, so it must not be recomputed inside each quality_fn lambda.
+        cbt_ordering = {candidate.id: cbt_soft_budget_adjustment(candidate, viable) for candidate in viable}
+
+        def _order(candidate: CandidateGenome, *, floor: float) -> float:
+            return base_values.get(candidate.id, floor) + _advisory_selection_adjustment(candidate, advisory_features) + cbt_ordering.get(candidate.id, 0.0)
+
+        resurrection_candidates = _resurrection_candidates(viable, target=target)
+        for candidate in resurrection_candidates:
+            base_values[candidate.id] = base_values.get(candidate.id, 0.0) + max(0.0, resurrection_score(candidate, viable)) * 0.25 + 0.20
         by_value = sorted(
             viable,
             key=lambda candidate: (
-                base_values.get(candidate.id, -1.0) + _advisory_selection_adjustment(candidate, advisory_features),
+                _order(candidate, floor=-1.0),
                 base_values.get(candidate.id, -1.0),
                 candidate.id,
             ),
@@ -171,8 +179,12 @@ class ParentSelector:
         # runtime value.
         ranked = [candidate for candidate in by_value if base_values.get(candidate.id, -1.0) >= 0.0]
         primary = [candidate for candidate in ranked if CandidateFate.normalize(candidate.current_fate) in {CandidateFate.ACTIVE.value, CandidateFate.ELITE.value}]
-        incubating = [candidate for candidate in ranked if CandidateFate.normalize(candidate.current_fate) == CandidateFate.INCUBATING.value and _incubating_parent_allowed(candidate)]
-        target = max(0, limit)
+        incubating = [
+            candidate
+            for candidate in ranked
+            if CandidateFate.normalize(candidate.current_fate) in {CandidateFate.INCUBATING.value, CandidateFate.DORMANT.value, CandidateFate.CULLED.value, CandidateFate.FAILED.value}
+            and _incubating_parent_allowed(candidate)
+        ]
         if target <= 0:
             return []
         if primary:
@@ -184,10 +196,12 @@ class ParentSelector:
                 max_parent_fraction=_float(repair_policy.get("max_parent_fraction"), default=None),
                 enabled=repair_policy.get("enabled", True) is not False,
             )
+            if resurrection_candidates:
+                repair_slots = max(repair_slots, min(resurrection_quota(target, pool_size=len(resurrection_candidates)), len(resurrection_candidates), target))
             selected, trace = select_diverse(
                 primary,
                 limit=max(0, target - repair_slots),
-                quality_fn=lambda candidate: base_values.get(candidate.id, 0.0) + _advisory_selection_adjustment(candidate, advisory_features),
+                quality_fn=lambda candidate: _order(candidate, floor=0.0),
                 archives=archives,
                 advisory_features=advisory_features,
                 eligibility_policy=eligibility_policy,
@@ -196,7 +210,7 @@ class ParentSelector:
                 repair_selected, repair_trace = select_diverse(
                     incubating,
                     limit=max(0, target - len(selected)),
-                    quality_fn=lambda candidate: base_values.get(candidate.id, 0.0) + _advisory_selection_adjustment(candidate, advisory_features),
+                    quality_fn=lambda candidate: _order(candidate, floor=0.0),
                     archives=archives,
                     advisory_features=advisory_features,
                     eligibility_policy=eligibility_policy,
@@ -204,21 +218,23 @@ class ParentSelector:
                 selected.extend(repair_selected)
                 trace.rejected.extend(repair_trace.rejected)
                 trace.selected_ids.extend([candidate.id for candidate in repair_selected])
+            selected = _mark_selected_resurrections(selected[:target], resurrection_candidates, round_index=round_index)
             self.last_selection_trace = trace.to_dict()
-            return selected[:target]
+            return selected
         # If the run has temporarily lost all Active/Elite candidates, keep a
         # small repair lane alive instead of declaring no parents available.
         if incubating:
             selected, trace = select_diverse(
                 incubating,
                 limit=target,
-                quality_fn=lambda candidate: base_values.get(candidate.id, 0.0) + _advisory_selection_adjustment(candidate, advisory_features),
+                quality_fn=lambda candidate: _order(candidate, floor=0.0),
                 archives=archives,
                 advisory_features=advisory_features,
                 eligibility_policy=eligibility_policy,
             )
+            selected = _mark_selected_resurrections(selected[:target], resurrection_candidates, round_index=round_index)
             self.last_selection_trace = trace.to_dict()
-            return selected[:target]
+            return selected
         # A current Elite/Active candidate can still have a negative numeric
         # reproductive value after conservative penalties for repeated failure
         # lessons, lineage constraints, or zero final-answer scores.  That
@@ -236,13 +252,14 @@ class ParentSelector:
             selected, trace = select_diverse(
                 primary_floor,
                 limit=target,
-                quality_fn=lambda candidate: base_values.get(candidate.id, 0.0) + _advisory_selection_adjustment(candidate, advisory_features),
+                quality_fn=lambda candidate: _order(candidate, floor=0.0),
                 archives=archives,
                 advisory_features=advisory_features,
                 eligibility_policy=eligibility_policy,
             )
+            selected = _mark_selected_resurrections(selected[:target], resurrection_candidates, round_index=round_index)
             self.last_selection_trace = trace.to_dict()
-            return selected[:target]
+            return selected
         # A conservative verifier can assign negative reproductive value to all
         # live candidates because they carry failure lessons, zero final-answer
         # scores, or archive constraints.  That should block final synthesis,
@@ -256,45 +273,54 @@ class ParentSelector:
         selected, trace = select_diverse(
             repairable,
             limit=target,
-            quality_fn=lambda candidate: base_values.get(candidate.id, 0.0) + _advisory_selection_adjustment(candidate, advisory_features),
+            quality_fn=lambda candidate: _order(candidate, floor=0.0),
             archives=archives,
             advisory_features=advisory_features,
             eligibility_policy=eligibility_policy,
         )
+        selected = _mark_selected_resurrections(selected[:target], resurrection_candidates, round_index=round_index)
         self.last_selection_trace = trace.to_dict()
-        return selected[:target]
+        return selected
+
+
+def _resurrection_candidates(candidates: list[CandidateGenome], *, target: int) -> list[CandidateGenome]:
+    if target <= 0:
+        return []
+    pool = [candidate for candidate in candidates if _resurrection_pool_candidate(candidate)]
+    if not pool:
+        return []
+    quota = resurrection_quota(target, pool_size=len(pool))
+    ranked = sorted(pool, key=lambda candidate: (resurrection_score(candidate, candidates), candidate.id), reverse=True)
+    return [candidate for candidate in ranked if resurrection_score(candidate, candidates) > -0.05][:quota]
+
+
+def _resurrection_pool_candidate(candidate: CandidateGenome) -> bool:
+    if not _incubating_parent_allowed(candidate):
+        return False
+    fate = CandidateFate.normalize(getattr(candidate, "current_fate", ""), default="")
+    metadata = candidate.metadata if isinstance(candidate.metadata, dict) else {}
+    if fate in {CandidateFate.DORMANT.value, CandidateFate.CULLED.value, CandidateFate.FAILED.value}:
+        return True
+    return bool(metadata.get("seed_reservoir") or metadata.get("seed_reservoir_reason") or metadata.get("source_pool") == "reservoir")
+
+
+def _mark_selected_resurrections(selected: list[CandidateGenome], resurrection_candidates: list[CandidateGenome], *, round_index: int) -> list[CandidateGenome]:
+    resurrection_ids = {candidate.id for candidate in resurrection_candidates}
+    for candidate in selected:
+        if candidate.id in resurrection_ids:
+            mark_resurrection_candidate(candidate, round_index=round_index)
+    return selected
 
 
 def _incubating_parent_allowed(candidate: CandidateGenome) -> bool:
-    metadata = candidate.metadata if isinstance(candidate.metadata, dict) else {}
-    repair = metadata.get("repair_required")
-    decision_payload = metadata.get("stage_eligibility")
-    if isinstance(decision_payload, dict):
-        if decision_payload.get("parent_eligible") is False:
-            return False
-        if decision_payload.get("repair_required") is False:
-            return False
-        if decision_payload.get("repair_exhausted") is True:
-            return False
-    elif not stage_eligibility(candidate).parent_eligible:
+    if structurally_blocked(candidate):
+        record_candidate_budget_decision(candidate, source="parent_selection", reason="structural_or_safety_blocked", action="hard_exclude", hard_gate=True)
         return False
-    else:
-        decision = stage_eligibility(candidate)
-        if decision.repair_exhausted:
-            return False
-    if isinstance(repair, dict) and repair.get("blockers"):
-        return True
-    if isinstance(repair, list) and repair:
-        return True
-    guidance = metadata.get("failure_micro_guidance")
-    return bool(guidance)
+    return bool(str(candidate.artifact or candidate.concise_claim or candidate.core_mechanism).strip())
 
 
 def _repair_target_candidate(candidate: CandidateGenome) -> bool:
     metadata = candidate.metadata if isinstance(candidate.metadata, dict) else {}
-    decision_payload = metadata.get("stage_eligibility")
-    if isinstance(decision_payload, dict) and decision_payload.get("repair_exhausted") is True:
-        return False
     repair = metadata.get("repair_required")
     if isinstance(repair, dict) and repair.get("blockers"):
         return True
@@ -306,14 +332,12 @@ def _repair_target_candidate(candidate: CandidateGenome) -> bool:
 
 def _stage_parent_eligible(candidate: CandidateGenome) -> bool:
     metadata = candidate.metadata if isinstance(candidate.metadata, dict) else {}
-    decision_payload = metadata.get("stage_eligibility")
-    if isinstance(decision_payload, dict):
-        if decision_payload.get("parent_eligible") is False:
-            return False
-        if str(decision_payload.get("hard_reject_reason") or "").strip():
-            return False
-    hard_reject = metadata.get("hard_reject_reason") or metadata.get("terminal_reject_reason") or metadata.get("hard_reject_class")
-    return not bool(str(hard_reject or "").strip())
+    if structurally_blocked(candidate):
+        return False
+    hard_reject = metadata.get("terminal_reject_reason") or metadata.get("terminal_failure") or metadata.get("terminal_reject")
+    if hard_reject:
+        record_candidate_budget_decision(candidate, source="parent_selection_stage_floor", reason="legacy_terminal_flag_defanged", action="soft_floor")
+    return True
 
 
 def _selection_pressure_adjustment(candidate: CandidateGenome, pressure: dict[str, object] | None) -> float:
@@ -399,6 +423,13 @@ def _bounded_float(value: object, *, default: float) -> float:
     if parsed is None:
         return default
     return max(0.0, min(1.0, parsed))
+
+
+def _int(value: object, *, default: int) -> int:
+    try:
+        return int(value or default)
+    except (TypeError, ValueError):
+        return default
 
 
 __all__ = ["ParentSelector", "reproductive_value"]

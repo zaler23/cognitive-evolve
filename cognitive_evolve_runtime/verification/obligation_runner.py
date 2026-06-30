@@ -8,7 +8,7 @@ from typing import Any
 from cognitive_evolve_runtime.evaluators.evidence import EvidenceRecord, apply_evidence_record
 from cognitive_evolve_runtime.llm.env import env_int
 from cognitive_evolve_runtime.llm.governor import llm_governor
-from cognitive_evolve_runtime.nexus._serde import stable_hash
+from cognitive_evolve_runtime.core.serialization import stable_hash
 from .cache import candidate_artifact_hash
 from .minimax_budget import _allocate_adversarial_budget, allocation_summary
 

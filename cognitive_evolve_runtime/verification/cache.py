@@ -4,7 +4,7 @@ from __future__ import annotations
 import threading
 from typing import Any
 
-from cognitive_evolve_runtime.nexus._serde import stable_hash
+from cognitive_evolve_runtime.core.serialization import stable_hash
 from .honesty_core import measure_verification_result
 from .probe_executor import execute_probes
 from .regime import compile_grounding_regime

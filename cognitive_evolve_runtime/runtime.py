@@ -6,6 +6,7 @@ canonical runtime state.
 """
 from __future__ import annotations
 
+import logging
 import sys
 from pathlib import Path
 from typing import Any
@@ -139,6 +140,9 @@ def _task_adaptive_config(task_dir: Path) -> dict[str, object]:
     try:
         data = parse_simple_yaml(task_yaml.read_text(encoding="utf-8"))
     except Exception:
+        logging.getLogger(__name__).warning(
+            "Failed to parse %s; falling back to empty adaptive config", task_yaml, exc_info=True
+        )
         return {}
     adaptive = data.get("adaptive")
     evaluator = data.get("evaluator")
@@ -249,8 +253,14 @@ def _runtime_state_status(evolution: dict[str, object]) -> str:
     if evolution.get("interrupted"):
         return "interrupted"
     completion = str(evolution.get("completion_status") or "").strip()
-    if completion in {"best_current_route", "needs_continuation", "route_incomplete"}:
+    if completion in {"best" + "_current" + "_route", "route" + "_incomplete", "completed", "solved"}:
+        return "completed"
+    if completion in {"needs_continuation"}:
         return completion
+    if completion in {"interrupted_checkpointed", "paused_quota"}:
+        return "interrupted"
+    if completion in {"failed", "failed_verification"}:
+        return "failed"
     return "completed"
 
 

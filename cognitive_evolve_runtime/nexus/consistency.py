@@ -9,8 +9,6 @@ TERMINAL_STATUSES = {
     "completed",
     "solved",
     "needs_continuation",
-    "best_current_route",
-    "route_incomplete",
     "failed_verification",
     "failed",
     "interrupted_checkpointed",

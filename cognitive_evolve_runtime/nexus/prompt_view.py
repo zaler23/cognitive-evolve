@@ -19,6 +19,8 @@ from cognitive_evolve_runtime.llm.env import LLM_MAX_PROMPT_CHARS_ENV
 from cognitive_evolve_runtime.nexus.activation import ACTIVATION_REQUESTS, activation_prompt_contract
 from cognitive_evolve_runtime.nexus.search_space import build_search_space_map
 from cognitive_evolve_runtime.nexus.prompt_profiles import apply_prompt_profile
+from cognitive_evolve_runtime.nexus.nextgen import false_cull_monitor
+from cognitive_evolve_runtime.nexus.strategy_comparison import strategy_comparison_context
 
 NEXUS_PROMPT_MAX_CHARS_ENV = "COGEV_NEXUS_PROMPT_MAX_CHARS"
 NEXUS_LONG_CONTEXT_MAX_CHARS_ENV = "COGEV_NEXUS_LONG_CONTEXT_MAX_CHARS"
@@ -78,6 +80,10 @@ def build_prompt_view(request_type: str, payload: dict[str, Any], *, max_chars: 
     raw_chars = _json_chars(payload)
     compressed = _apply_prompt_context_controls(_compress_payload(request_type, payload), controls)
     profiled, profile_metadata = apply_prompt_profile(request_type, compressed)
+    protected_candidate_ids = _protected_candidate_ids_from_controls(controls)
+    if protected_candidate_ids and "candidates" not in profiled and isinstance(compressed.get("candidates"), list):
+        profiled["candidates"] = _trimmed_with_protected(compressed.get("candidates"), max(1, len(protected_candidate_ids)), protected_candidate_ids)
+        profiled["_protected_candidate_ids"] = sorted(protected_candidate_ids)
     compressed_chars = _json_chars(profiled)
     bounded = _fit_payload(profiled, max_chars=limit, protected_paths=protected_paths)
     sent_chars = _json_chars(bounded)
@@ -140,6 +146,9 @@ def candidate_prompt_view(candidate: CandidateGenome | dict[str, Any], *, detail
         "artifact_sha256": _sha256_text(artifact_text) if artifact_text else "",
         "metadata": _metadata_view(genome.metadata),
     }
+    nextgen = _to_mapping(_to_mapping(genome.metadata).get("nextgen"))
+    if nextgen:
+        view["nextgen"] = _small_mapping(nextgen, max_items=8, string_chars=180)
     repair_seed_contract = _repair_seed_contract_view(genome)
     if repair_seed_contract:
         view["repair_seed_contract"] = repair_seed_contract
@@ -253,6 +262,8 @@ def contract_prompt_view(contract: Any) -> dict[str, Any]:
         search_space_plan = dac.get("search_space_plan") or dac.get("search_space")
     if isinstance(search_space_plan, dict):
         view["search_space_plan"] = _small_mapping(search_space_plan, max_items=10, string_chars=500)
+        if isinstance(search_space_plan.get("candidate_families"), list):
+            view["search_space_plan"]["candidate_families"] = [dict(item) for item in search_space_plan["candidate_families"][:12] if isinstance(item, dict)]
     return view
 
 
@@ -278,8 +289,17 @@ def policy_prompt_view(policy: Any) -> dict[str, Any]:
     search_space_plan = metadata.get("search_space_plan") or metadata.get("search_space_contract")
     if isinstance(search_space_plan, dict):
         view["search_space_plan"] = _small_mapping(search_space_plan, max_items=10, string_chars=500)
+        if isinstance(search_space_plan.get("candidate_families"), list):
+            view["search_space_plan"]["candidate_families"] = [dict(item) for item in search_space_plan["candidate_families"][:12] if isinstance(item, dict)]
     if metadata.get("search_space_plan_required"):
         view["search_space_plan_required"] = _clip(metadata.get("search_space_plan_required"), 500)
+    if isinstance(metadata.get("strategy_comparison"), dict):
+        view["strategy_comparison"] = _small_mapping(metadata.get("strategy_comparison"), max_items=8, string_chars=260)
+    if isinstance(metadata.get("theory"), dict):
+        view["theory"] = _small_mapping(metadata.get("theory"), max_items=8, string_chars=160)
+    for key in ("seed_coverage", "target_perturb_seed_judgment", "algorithm_efficiency", "model_parallel_efficiency", "minimal_core_ablation", "seed_active_frontier", "seed_reservoir_ref"):
+        if key in metadata:
+            view[key] = _small_mapping(metadata.get(key), max_items=10, string_chars=260)
     return view
 
 
@@ -334,6 +354,8 @@ def _compress_payload(request_type: str, payload: dict[str, Any]) -> dict[str, A
         compressed["round_index"] = payload.get("round_index")
     if "actions" in payload:
         compressed["actions"] = _clip_list(payload.get("actions") or [], 20, 160)
+    if "source_context" in payload:
+        compressed["source_context"] = _source_context_view(payload.get("source_context"))
     if "mutation_instruction" in payload:
         compressed["mutation_instruction"] = _clip(payload.get("mutation_instruction"), 1000)
     if "plans" in payload:
@@ -341,11 +363,20 @@ def _compress_payload(request_type: str, payload: dict[str, Any]) -> dict[str, A
     compressed["contract"] = contract_view
     compressed["policy"] = policy_view
     compressed["world"] = world_view
+    protected_candidate_ids = _protected_candidate_ids_from_controls(_prompt_context_controls(payload))
     if candidates:
-        compressed["candidates"] = [candidate_prompt_view(c, detail="summary") for c in _select_candidates_for_prompt(candidates, limit=48)]
+        compressed["candidates"] = [
+            candidate_prompt_view(c, detail="summary")
+            for c in _select_candidates_for_prompt(candidates, limit=48, protected_ids=protected_candidate_ids)
+        ]
+        if protected_candidate_ids:
+            compressed["_protected_candidate_ids"] = sorted(protected_candidate_ids)
         compressed["candidate_population_stats"] = _population_stats(candidates)
     if parents:
         compressed["parents"] = [candidate_prompt_view(c, detail="summary") for c in parents[:16]]
+    strategy = strategy_comparison_context(payload.get("policy"), population or candidates)
+    if strategy:
+        compressed["strategy_comparison"] = strategy
     compressed["archives"] = archive_prompt_view(payload.get("archives"), population=population or candidates)
     compressed["history"] = history_prompt_view(payload.get("history") if isinstance(payload.get("history"), list) else [])
     diagnosis = payload.get("diagnosis")
@@ -353,13 +384,44 @@ def _compress_payload(request_type: str, payload: dict[str, Any]) -> dict[str, A
         compressed["diagnosis"] = _small_mapping(_to_mapping(diagnosis), max_items=14, string_chars=400)
     # Keep unknown scalar/small fields, but never carry huge nested blobs by default.
     for key, value in payload.items():
-        if key in {"user_goal", "contract", "world", "snapshot", "policy", "candidates", "population", "parents", "archives", "history", "diagnosis", "plans", "actions", "mutation_instruction", "round_index"}:
+        if key in {"user_goal", "contract", "world", "snapshot", "policy", "candidates", "population", "parents", "archives", "history", "diagnosis", "plans", "actions", "source_context", "mutation_instruction", "round_index"}:
             continue
         if _json_chars(value) <= 4000:
             compressed[key] = value
         else:
             compressed[key] = _summarize_value(value)
     return compressed
+
+
+def _source_context_view(value: Any) -> dict[str, Any]:
+    data = _to_mapping(value)
+    out: dict[str, Any] = {}
+    selected = data.get("selected_files")
+    if isinstance(selected, list):
+        out["selected_files"] = [str(item) for item in selected[:12] if str(item or "").strip()]
+    elif selected:
+        out["selected_files"] = _clip_list([selected], 1, 260)
+    budget = data.get("budget_policy")
+    if isinstance(budget, dict):
+        out["budget_policy"] = _small_mapping(budget, max_items=8, string_chars=260)
+    elif budget is not None:
+        out["budget_policy"] = _clip(budget, 260)
+    slices: list[dict[str, Any]] = []
+    raw_slices = data.get("slices") if isinstance(data.get("slices"), list) else []
+    for item in raw_slices[:8]:
+        if not isinstance(item, dict):
+            continue
+        view: dict[str, Any] = {}
+        for key in ("path", "hash", "start", "end"):
+            if key in item and item.get(key) is not None:
+                view[key] = item.get(key)
+        if "text" in item:
+            view["text"] = _stringify(item.get("text"))
+        if view:
+            slices.append(view)
+    if slices:
+        out["slices"] = slices
+    return out
 
 
 def _artifact_generation_contract(contract: Any, *, request_type: str) -> dict[str, Any]:
@@ -393,6 +455,7 @@ def _artifact_generation_contract_from_view(view: dict[str, Any], *, request_typ
         "search_space_rule": "Before deepening one surface, allocate candidates across materially different model-defined planes from the user objective; local files/tools/evidence are grounding surfaces, not the objective itself.",
         "surface_bias_guard": "Do not let an easy-to-patch or easy-to-verify local surface monopolize seed, mutation, or offspring generation when the user objective asks for higher-level mechanism, lifecycle, policy, materialization, or final-answer design.",
         "required_search_space_metadata": "Each candidate should include metadata.search_space.family_id or search_space.plane_id chosen from the model-authored search space; if none exists, author one from the objective first.",
+        "project_patch_output_rule": "For project/code patch candidates, prefer artifact.patch_set with PatchOperation objects ({path, operation, content, old_text, new_text}) for simple write/append/replace/delete edits. If you use artifact.unified_diff instead, every hunk header must be standard unified diff syntax with line ranges like @@ -start,count +start,count @@; never emit bare @@ headers.",
         "examples_are_not_domain_limits": True,
         "valid_evolution_shapes": [
             "existing artifact refinement",
@@ -406,8 +469,10 @@ def _artifact_generation_contract_from_view(view: dict[str, Any], *, request_typ
             "evidence_refs",
             "evaluation_dimensions",
             "final_gate",
+            "edge_knowledge_seeds",
+            "formal_artifacts",
         ],
-        "structured_field_rule": "Populate these fields from the actual artifact delta. Use empty arrays/objects when the model-defined contract is not file/source based; do not invent paths or evidence.",
+        "structured_field_rule": "Populate these fields from the actual artifact delta. Preserve or extend parent edge_knowledge_seeds and formal_artifacts when they remain relevant. Use empty arrays/objects when the model-defined contract is not file/source based; do not invent paths or evidence.",
     }
 
 
@@ -429,6 +494,17 @@ def _search_space_contract_from_views(
         "search_space_plan": plan,
     }
     search_map = build_search_space_map(assessment, requested_candidate_count=max(0, int(candidate_target_count or 0)))
+    theory = _to_mapping(policy_view.get("theory"))
+    producers = _to_mapping(theory.get("producers"))
+    theory_dimensions = [str(key) for key, enabled in producers.items() if enabled][:6]
+    if not theory_dimensions and theory.get("enabled"):
+        theory_dimensions = ["mdl", "boed", "geometry"]
+    world_structure = {
+        "kind": world_view.get("kind"),
+        "file_roles": list(_to_mapping(world_view.get("file_roles")).keys())[:8],
+        "hotspots": list(_to_mapping(world_view.get("hotspot_map")).keys())[:8],
+        "objective_relevant_files": list(_to_mapping(world_view.get("objective_relevance_map")).keys())[:8],
+    }
     return {
         "request_type": request_type,
         "source": search_map.get("source"),
@@ -437,6 +513,12 @@ def _search_space_contract_from_views(
         "candidate_families": search_map.get("candidate_families", [])[:12],
         "coverage_gate": search_map.get("coverage_gate", {}),
         "surface_bias_guard": search_map.get("surface_bias_guard", {}),
+        "theory_dimensions": {
+            "source": "supplemental_prompt_pressure",
+            "dimensions": theory_dimensions,
+            "rule": "Use these only to diversify exploration pressure; do not treat them as eligibility, stop, or correctness gates.",
+        },
+        "world_structure": {k: v for k, v in world_structure.items() if v},
         "anti_narrowing_instruction": (
             "If recent candidates cluster around one implementation/detail surface, generate the next candidates from different objective-level planes rather than another same-surface patch variant."
         ),
@@ -455,7 +537,7 @@ def _synthesis_evidence_manifest(payload: dict[str, Any]) -> dict[str, Any]:
     """
 
     candidates = _coerce_candidates(payload.get("population") or payload.get("candidates") or [])
-    selected = _select_candidates_for_prompt(candidates, limit=16)
+    selected = _select_candidates_for_prompt(candidates, limit=16, protected_ids=_protected_candidate_ids_from_controls(_prompt_context_controls(payload)))
     return {
         "request_type": "nexus_synthesize_result",
         "prompt_contract": {
@@ -463,17 +545,23 @@ def _synthesis_evidence_manifest(payload: dict[str, Any]) -> dict[str, Any]:
             "full_state_location": "local Nexus checkpoint/population/archive files",
             "final_synthesis_must_not_claim_unverified_completion": True,
             "if_no_contract_valid_final_exists_return_reference_or_route_incomplete": True,
+            "best_direction_must_directly_answer_frozen_user_goal": True,
+            "supporting_material_must_not_replace_the_explored_object": True,
+            "do_not_use_fixed_target_categories": True,
         },
         "contract": contract_prompt_view(payload.get("contract")),
         "world": world_prompt_view(payload.get("world"), detail="tiny"),
         "candidate_population_stats": _population_stats(candidates),
         "candidates": [candidate_prompt_view(c, detail="tiny", max_artifact_chars=240) for c in selected],
         "archives": archive_prompt_view(payload.get("archives"), population=candidates),
+        "strategy_comparison": strategy_comparison_context(payload.get("policy"), candidates),
         "synthesis_requirements": {
             "return_non_empty_json": True,
             "required_fields": ["status", "final_answer"],
             "do_not_treat_reference_material_as_solved": True,
-            "surface_useful_reference_candidates_when_final_gate_blocks": True,
+            "surface_answer_candidates_without_project_certification": True,
+            "best_candidate_id_rule": "Choose the candidate whose main claim directly answers the frozen goal. Put records, verification wrappers, or audit scaffolds in supporting material unless the frozen goal itself asks for them.",
+            "intent_binding_output": "If useful, include free-text intent_alignment_rationale and a continuous intent_directness score; do not emit enum target kinds.",
         },
     }
 
@@ -497,6 +585,13 @@ def _protected_paths_from_controls(controls: dict[str, Any]) -> list[str]:
     if controls.get("verification_regime"):
         out.append("verification_regime")
     return list(dict.fromkeys(out))
+
+
+def _protected_candidate_ids_from_controls(controls: dict[str, Any]) -> set[str]:
+    raw = controls.get("protect_candidate_ids") or controls.get("protected_candidate_ids") or []
+    if not isinstance(raw, list):
+        return set()
+    return {str(item) for item in raw if str(item or "").strip()}
 
 
 def _apply_prompt_context_controls(compressed: dict[str, Any], controls: dict[str, Any]) -> dict[str, Any]:
@@ -636,7 +731,7 @@ def _fit_payload(payload: dict[str, Any], *, max_chars: int, protected_paths: li
         return fitted
     # First reduce candidate and archive exemplars; these dominate most payloads.
     for limit in (32, 24, 16, 12, 8, 4):
-        _trim_sequence(fitted, "candidates", limit)
+        _trim_sequence(fitted, "candidates", limit, protected_ids=set(fitted.get("_protected_candidate_ids", []) if isinstance(fitted.get("_protected_candidate_ids"), list) else []))
         _trim_sequence(fitted, "parents", min(limit, 8))
         for key in ("answer_elites", "rarity_elites", "dormant_hints", "auxiliary_hints", "failure_lessons"):
             if isinstance(fitted.get("archives"), dict):
@@ -656,7 +751,7 @@ def _fit_payload(payload: dict[str, Any], *, max_chars: int, protected_paths: li
         "contract": fitted.get("contract"),
         "policy": fitted.get("policy"),
         "candidate_population_stats": fitted.get("candidate_population_stats"),
-        "candidates": fitted.get("candidates", [])[:3],
+        "candidates": _trimmed_with_protected(fitted.get("candidates", []), 3, set(fitted.get("_protected_candidate_ids", []) if isinstance(fitted.get("_protected_candidate_ids"), list) else [])),
         "archives": fitted.get("archives", {}).get("summary", {}) if isinstance(fitted.get("archives"), dict) else {},
         "_fit_warning": "payload was reduced to minimal Nexus prompt view",
     }
@@ -668,7 +763,8 @@ def _fit_payload(payload: dict[str, Any], *, max_chars: int, protected_paths: li
     return clipped
 
 
-def _select_candidates_for_prompt(candidates: list[CandidateGenome], *, limit: int) -> list[CandidateGenome]:
+def _select_candidates_for_prompt(candidates: list[CandidateGenome], *, limit: int, protected_ids: set[str] | None = None) -> list[CandidateGenome]:
+    protected_ids = set(protected_ids or set())
     if len(candidates) <= limit:
         return candidates
     buckets: list[CandidateGenome] = []
@@ -687,12 +783,14 @@ def _select_candidates_for_prompt(candidates: list[CandidateGenome], *, limit: i
                 return
 
     by_quality = sorted(candidates, key=_candidate_prompt_priority, reverse=True)
+    protected = [c for c in candidates if c.id in protected_ids]
     active = [c for c in by_quality if c.current_fate == "Active"]
     elite = [c for c in by_quality if c.current_fate == "Elite"]
     incubating = [c for c in by_quality if c.current_fate == "Incubating"]
     rare = [c for c in by_quality if c.edge_knowledge_seeds or c.multihead_scores.get("rarity", 0.0) > 0.3]
     dormant = [c for c in by_quality if c.current_fate == "Dormant"]
     recent = sorted(candidates, key=lambda c: (int(c.generation or 0), c.created_at), reverse=True)
+    add(protected, len(protected))
     add(elite, max(4, limit // 6))
     add(active, max(8, limit // 3))
     add(incubating, max(4, limit // 5))
@@ -733,6 +831,7 @@ def _population_stats(candidates: list[CandidateGenome]) -> dict[str, Any]:
         "top_search_planes": sorted(search_planes.items(), key=lambda item: item[1], reverse=True)[:12],
         "top_source_surfaces": sorted(source_surfaces.items(), key=lambda item: item[1], reverse=True)[:12],
         "surface_concentration_warning": _surface_concentration_warning(candidates, source_surfaces),
+        "nextgen_false_cull_monitor": false_cull_monitor(candidates),
     }
 
 
@@ -843,9 +942,15 @@ def _project_world_view(mapping: dict[str, Any]) -> dict[str, Any]:
         "test_map": _small_mapping(world.get("test_map") or {}, max_items=30, string_chars=160),
         "config_map": _small_mapping(world.get("config_map") or {}, max_items=30, string_chars=160),
         "hotspot_map": _small_mapping(world.get("hotspot_map") or {}, max_items=30, string_chars=160),
-        "objective_relevance_map": _small_mapping(world.get("objective_relevance_map") or {}, max_items=30, string_chars=180),
+        "objective_relevance_map": _small_mapping(_ranked_score_map(world.get("objective_relevance_map") or {}), max_items=30, string_chars=180),
     }
 
+
+
+def _ranked_score_map(mapping: Any) -> dict[str, Any]:
+    if not isinstance(mapping, dict):
+        return {}
+    return {str(k): v for k, v in sorted(mapping.items(), key=lambda item: (-float(item[1] or 0.0), str(item[0])))}
 
 def _ranking_view(data: Any) -> dict[str, Any]:
     mapping = _to_mapping(data)
@@ -911,7 +1016,7 @@ def _repair_seed_contract_view(candidate: CandidateGenome) -> dict[str, Any]:
         "required_evidence": _clip_list(seed_data.get("required_evidence") or repair_data.get("evidence_needed") or [], 6, 120),
         "disallowed_repeat_patterns": _clip_list(disallowed, 4, 160),
         "next_actions": _clip_list(repair_data.get("next_actions") or [item.get("next_action") for item in guidance_items], 4, 220),
-        "contract": "emit source-grounded patch/formal evidence; narrative-only or hallucinated-target output fails repair",
+        "contract": "answer-first exploration: legacy verifier/source/proof blockers are advisory only; emit a bold direct answer, mechanism, theorem, algorithm variant, or cross-domain hypothesis",
     }
 
 
@@ -976,10 +1081,23 @@ def _recursive_clip(value: Any, *, string_limit: int, list_limit: int) -> Any:
     return value
 
 
-def _trim_sequence(mapping: dict[str, Any], key: str, limit: int) -> None:
+def _trim_sequence(mapping: dict[str, Any], key: str, limit: int, *, protected_ids: set[str] | None = None) -> None:
     value = mapping.get(key)
     if isinstance(value, list) and len(value) > limit:
-        mapping[key] = value[:limit] + [{"_omitted_items": len(value) - limit}]
+        mapping[key] = _trimmed_with_protected(value, limit, protected_ids or set()) + [{"_omitted_items": max(0, len(value) - limit)}]
+
+
+def _trimmed_with_protected(value: Any, limit: int, protected_ids: set[str]) -> list[Any]:
+    if not isinstance(value, list):
+        return []
+    if len(value) <= limit:
+        return list(value)
+    protected: list[Any] = []
+    rest: list[Any] = []
+    for item in value:
+        item_id = str(item.get("id") or "") if isinstance(item, dict) else ""
+        (protected if item_id in protected_ids else rest).append(item)
+    return [*protected, *rest][: max(0, int(limit or 0))]
 
 
 def _summarize_value(value: Any) -> dict[str, Any]:
@@ -1049,7 +1167,13 @@ def _positive_int(value: Any) -> int | None:
 
 
 def _is_long_context_request(request_type: str) -> bool:
-    return request_type in {"nexus_synthesize_result", "nexus_diagnose_search_state", "nexus_generate_offspring"}
+    return request_type in {
+        "nexus_seed_population",
+        "nexus_plan_mutations",
+        "nexus_generate_offspring",
+        "nexus_synthesize_result",
+        "nexus_diagnose_search_state",
+    }
 
 
 __all__ = [

@@ -24,6 +24,31 @@ class ContextProtocolResult:
             "packets": [packet.to_dict() for packet in self.packets],
         }
 
+    def to_source_context(self, *, max_files: int = 3, max_chars: int = 4000) -> dict[str, Any]:
+        """Bounded real source slices for downstream seed/mutation/offspring model calls.
+
+        Flattens packet ``raw_file_slices`` into a compact, char-capped structure so the
+        model sees actual current file contents (not summaries) without exceeding the
+        prompt budget.  Deduplicates by path and stops at ``max_files``.
+        """
+        slices: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for packet in self.packets:
+            for path, text in packet.raw_file_slices.items():
+                if path in seen:
+                    continue
+                seen.add(path)
+                slices.append({"path": path, "text": (text or "")[:max_chars], "hash": packet.source_hashes.get(path, "")})
+                if len(slices) >= max_files:
+                    break
+            if len(slices) >= max_files:
+                break
+        return {
+            "selected_files": [item["path"] for item in slices],
+            "slices": slices,
+            "budget_policy": f"top_{max_files}_files_capped_{max_chars}chars_from_context_packets",
+        }
+
 
 class ContextOrchestrator:
     """Ask a model for bounded project context, then materialize slices locally."""

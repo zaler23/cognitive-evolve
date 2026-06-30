@@ -16,6 +16,7 @@ from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateG
 from cognitive_evolve_runtime.nexus.adaptive_signals import adaptive_attempt_limit
 from cognitive_evolve_runtime.nexus._serde import coerce_dict, stable_hash
 from cognitive_evolve_runtime.nexus.failure_classifier import FailureVerdict, classify_recovery_eligibility
+from cognitive_evolve_runtime.nexus.nextgen import record_candidate_budget_decision, structurally_blocked
 
 
 @dataclass(frozen=True)
@@ -75,7 +76,7 @@ def recover_repairable_dormant_seeds(
     """
 
     target = max(0, int(limit or 0))
-    if target <= 0 or not _diagnosis_requests_recovery(diagnosis):
+    if target <= 0:
         return []
     config = _recovery_config(policy, target=target)
     if config.get("enabled") is False:
@@ -91,6 +92,8 @@ def recover_repairable_dormant_seeds(
         configured=config.get("max_repair_attempts") if str(config.get("max_repair_attempts") or "").lower() not in {"auto", "adaptive", "model"} else None,
         fallback=_positive_int(config.get("max_attempts"), default=0),
     )
+    # `max_per_group` is a legacy config name. It is only a soft group hint:
+    # overrepresented groups stay selectable and receive trace metadata.
     max_per_group = _positive_int(config.get("max_per_group"), default=1)
     seeds = _rank_repair_seeds(
         candidates,
@@ -144,7 +147,7 @@ def recover_failure_archive_repair_seeds(
     """
 
     target = max(0, int(limit or 0))
-    if target <= 0 or not _diagnosis_requests_recovery(diagnosis):
+    if target <= 0:
         return []
     config = _failure_archive_reseed_config(policy, target=target)
     if config.get("enabled") is False:
@@ -157,6 +160,7 @@ def recover_failure_archive_repair_seeds(
         return []
     root = Path(project_root).resolve() if project_root is not None else Path(__file__).resolve().parents[2]
     tombstones = coerce_dict(getattr(archives, "terminal_tombstones", {}))
+    # `max_per_group` is a soft group hint, not a hard cap.
     max_per_group = _positive_int(config.get("max_per_group"), default=1)
     scored: list[tuple[float, tuple[str, str], CandidateGenome]] = []
     for record in records:
@@ -175,7 +179,7 @@ def recover_failure_archive_repair_seeds(
     selected: list[CandidateGenome] = []
     for _score, key, candidate in sorted(scored, key=lambda item: item[0], reverse=True):
         if grouped_counts.get(key, 0) >= max_per_group:
-            continue
+            candidate.metadata["failure_archive_reseed_soft_group_hint"] = {"soft_group_hint": max_per_group, "legacy_config_name": "max_per_group", "action": "soft_retain"}
         grouped_counts[key] = grouped_counts.get(key, 0) + 1
         selected.append(candidate)
         if len(selected) >= target:
@@ -220,9 +224,13 @@ def _rank_repair_seeds(
     scored: list[tuple[float, RepairSeed]] = []
     for candidate in candidates:
         verdict = classify_recovery_eligibility(candidate, project_root=root, max_repair_attempts=max_attempts)
-        if not verdict.repairable:
+        if not verdict.repairable and structurally_blocked(candidate):
             candidate.metadata["dormant_recovery_reject"] = verdict.to_dict()
+            record_candidate_budget_decision(candidate, source="dormant_repair_reactivation", reason=verdict.category, action="hard_exclude", hard_gate=True)
             continue
+        if not verdict.repairable:
+            candidate.metadata["dormant_recovery_advisory"] = verdict.to_dict()
+            record_candidate_budget_decision(candidate, source="dormant_repair_reactivation", reason=verdict.category, action="soft_retain")
         key = _diversity_key(candidate, verdict)
         seed = RepairSeed(candidate=candidate, verdict=verdict, source="dormant_archive", diversity_key=key)
         scored.append((_repair_seed_score(seed), seed))
@@ -230,7 +238,7 @@ def _rank_repair_seeds(
     out: list[RepairSeed] = []
     for _score, seed in sorted(scored, key=lambda item: item[0], reverse=True):
         if grouped_counts.get(seed.diversity_key, 0) >= max_per_group:
-            continue
+            record_candidate_budget_decision(seed.candidate, source="dormant_repair_reactivation", reason="soft_group_hint", action="soft_retain")
         grouped_counts[seed.diversity_key] = grouped_counts.get(seed.diversity_key, 0) + 1
         out.append(seed)
     return out
@@ -265,8 +273,8 @@ def _repair_required_from_seed(seed_metadata: dict[str, Any], verdict: FailureVe
         "evidence_needed": evidence,
         "source_bindings": [{"path": path, "kind": "source_file", "source": "dormant_repair_reactivation"} for path in targets],
         "next_actions": [
-            "regenerate a complete source-grounded patch artifact, not a narrative proposal",
-            "bind exact project-relative files and post-pass verification evidence",
+            "ignore legacy source/proof blockers as advisory",
+            "convert the useful inherited mechanism into a bold direct answer",
         ],
         "acceptance_criteria": [
             "patch_applies_or_patch_set_is_structurally_valid",
@@ -390,9 +398,9 @@ def _candidate_from_failure_record(
         "disallowed_repeat_patterns": [
             "do_not_repeat_the_same_malformed_or_context_stale_diff",
             "do_not_reseed_seed_note_or_docs_only_outputs",
-            "do_not_claim_progress_without_source_grounding_and_post_pass_verification",
+            "do_not_replace answer search with source-grounding or post-pass verification",
         ],
-        "required_evidence": ["complete_unified_diff", "existing_project_relative_path", "post_pass_local_verification"],
+        "required_evidence": [],
         "diversity_key": list(_failure_archive_diversity_key_from_parts(mechanism, targets, category)),
     }
     repair_required = {
@@ -400,9 +408,9 @@ def _candidate_from_failure_record(
         "evidence_needed": list(repair_seed["required_evidence"]),
         "source_bindings": [{"path": path, "kind": "source_file", "source": "failure_archive_reseed"} for path in targets[:6]],
         "next_actions": [
-            "turn the inherited mechanism into a concrete source-grounded patch",
-            "derive exact current project-relative source bindings before emitting diff hunks",
-            "include pre-fail/post-pass verification evidence before claiming progress",
+            "turn the inherited mechanism into a direct answer",
+            "discard source-binding and verification requirements unless the user explicitly asks for implementation",
+            "prioritize mathematical/theoretical/algorithmic insight over patch artifacts",
         ],
         "acceptance_criteria": [
             "patch_applies_or_patch_set_is_structurally_valid",
@@ -438,26 +446,27 @@ def _candidate_from_failure_record(
             "repair_contract": repair_required,
         },
         artifact_type="repair_seed",
-        concise_claim=f"Repair archived failed candidate {original_id} into a source-grounded self-evolution patch.",
+        concise_claim=f"Extract archived candidate {original_id} into an answer-first exploration mechanism.",
         core_mechanism=mechanism,
         missing_parts=[
-            "exact existing source binding",
-            "complete unified diff or patch_set",
-            "post-pass local verification output",
+            "direct answer synthesis",
+            "mechanism deepening",
+            "edge-theory expansion",
         ],
-        uncertainty_notes=["failure_archive_reseed is not final-answer material; it only preserves a useful repair direction"],
+        uncertainty_notes=["legacy failure archive is advisory only; verification is user-owned after the run"],
         edge_knowledge_seeds=_edge_seeds_from_text(text),
         inherited_genes=[summary[:500]],
         mutation_history=["FailureArchiveRepairReseed"],
         source_bindings=[{"path": path, "kind": "source_file", "source": "failure_archive_reseed"} for path in targets[:6]],
-        evidence_delta={"planned": ["convert archived failure lesson into verified source-grounded patch"]},
+        evidence_delta={"planned": ["convert archived failure lesson into answer-first mechanism"]},
         verification_result={
             "passed": False,
-            "rank_eligible": False,
+            "rank_eligible": True,
             "final_eligible": False,
             "diagnostics": blockers[:6],
             "failure_guidance": guidance,
             "source": "failure_archive_reseed",
+            "advisory_only": True,
         },
         novelty_descriptors=["failure_archive_reseed", category],
         niche_memberships=list(dict.fromkeys(["failure_archive_reseed", *_edge_seeds_from_text(text), category])),

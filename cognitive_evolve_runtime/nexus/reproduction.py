@@ -14,6 +14,12 @@ from cognitive_evolve_runtime.candidates.crossover import crossover
 from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome, CandidatePopulation
 from cognitive_evolve_runtime.nexus.diagnosis import SearchDiagnosis
 from cognitive_evolve_runtime.nexus.failure_classifier import FailureVerdict, classify_candidate_failure
+from cognitive_evolve_runtime.nexus.nextgen import (
+    ensure_nextgen_identity,
+    observe_productive_child,
+    record_candidate_budget_decision,
+    structurally_blocked,
+)
 from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy
 from cognitive_evolve_runtime.nexus.semantic_dedupe import CandidateDeduper
 from cognitive_evolve_runtime.ranking.relative_rater import RelativeRankingResult
@@ -40,8 +46,18 @@ def verify_offspring(offspring: list[CandidateGenome], verifier: Callable[[list[
                 if verdict.repairable:
                     _mark_offspring_repair_incubating(candidate, payload, verdict)
                 else:
-                    candidate.mark_fate(CandidateFate.FAILED.value)
-                    candidate.failure_lessons.append("project_offspring_failed_sandbox_verification")
+                    candidate.metadata["final_answer_advisory"] = {
+                        "final_eligible": False,
+                        "claim_eligible": False,
+                        "reason": verdict.category,
+                        "verification_payload": payload,
+                    }
+                    record_candidate_budget_decision(candidate, source="verify_offspring", reason=verdict.category, action="soft_retain")
+                    if structurally_blocked(candidate):
+                        candidate.mark_fate(CandidateFate.FAILED.value)
+                        candidate.failure_lessons.append("project_offspring_failed_structural_or_safety_verification")
+                    elif "project_offspring_verification_advisory" not in candidate.failure_lessons:
+                        candidate.failure_lessons.append("project_offspring_verification_advisory")
     return summaries
 
 
@@ -53,12 +69,19 @@ def offspring_failure_is_repairable(candidate: CandidateGenome, payload: dict[st
 
 def dedupe_offspring_against_population(offspring: list[CandidateGenome], population: CandidatePopulation) -> list[CandidateGenome]:
     deduper = CandidateDeduper(list(population.candidates))
+    parents_by_id = {candidate.id: candidate for candidate in population.candidates}
     unique: list[CandidateGenome] = []
     for candidate in offspring:
+        ensure_nextgen_identity(candidate)
+        parent = next((parents_by_id.get(parent_id) for parent_id in candidate.parent_ids if parents_by_id.get(parent_id) is not None), None)
+        if parent is not None:
+            observe_productive_child(parent, candidate)
         if deduper.add(candidate):
             unique.append(candidate)
         else:
-            candidate.metadata["rejected_offspring_reason"] = "duplicate_semantic_signature"
+            candidate.metadata["duplicate_offspring_reason"] = "duplicate_semantic_signature"
+            record_candidate_budget_decision(candidate, source="dedupe_offspring_against_population", reason="duplicate_semantic_signature", action="soft_retain")
+            unique.append(candidate)
     return unique
 
 

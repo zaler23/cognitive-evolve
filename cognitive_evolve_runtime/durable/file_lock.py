@@ -14,7 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
-from cognitive_evolve_runtime.nexus._serde import json_ready
+from cognitive_evolve_runtime.core.serialization import json_ready
 
 try:  # pragma: no cover - Windows fallback is covered by behavior, not platform.
     import fcntl  # type: ignore[attr-defined]

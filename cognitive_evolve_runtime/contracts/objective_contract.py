@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from cognitive_evolve_runtime.nexus.artifact_contract import DynamicArtifactContract, validate_dynamic_artifact_contract
-from cognitive_evolve_runtime.nexus._serde import coerce_dict
+from cognitive_evolve_runtime.core.serialization import coerce_dict
 from cognitive_evolve_runtime.nexus.protocols import NexusModelLike
 
 from ..nexus.task_types import (
@@ -432,7 +432,7 @@ class NexusObjectiveContract:
     task_type: str = DEFAULT_TASK_TYPE
     outcome_policy: dict[str, Any] = field(default_factory=lambda: {
         "model_driven": True,
-        "accepts_best_current_route": True,
+        "accepts_answer_first_output": True,
         "requires_strict_optimum": False,
         "requires_verified_solution": False,
         "final_claim_policy": "do_not_claim_absolute_optimality_or_solution_unless_verified",
@@ -468,7 +468,7 @@ class NexusObjectiveContract:
             task_type=str(data.get("task_type") or DEFAULT_TASK_TYPE).strip() or DEFAULT_TASK_TYPE,
             outcome_policy=dict(data.get("outcome_policy") or {
                 "model_driven": True,
-                "accepts_best_current_route": True,
+                "accepts_answer_first_output": True,
                 "requires_strict_optimum": False,
                 "requires_verified_solution": False,
                 "final_claim_policy": "do_not_claim_absolute_optimality_or_solution_unless_verified",
@@ -870,24 +870,26 @@ def _default_dynamic_artifact_contract(objective: str) -> dict[str, Any]:
     objective_text = " ".join(str(objective or "user objective").split()) or "user objective"
     return DynamicArtifactContract(
         objective=objective_text,
-        artifact_domain_label="model_defined_artifact",
-        required_work_product={"description": "a concrete objective-appropriate artifact, not only commentary about one"},
+        artifact_domain_label="answer_first_exploration_artifact",
+        required_work_product={"description": "a direct answer, mathematical model, theory mechanism, algorithm variant, or cross-domain hypothesis"},
         allowed_artifact_shapes=[
-            {"name": "model_defined_object", "required_fields": ["content_or_structured_object"]},
+            {"name": "direct_answer", "required_fields": ["content_or_structured_object"]},
+            {"name": "mathematical_model", "required_fields": ["mechanism_or_equations"]},
+            {"name": "algorithmic_hypothesis", "required_fields": ["mechanism"]},
             {
                 "name": "design_candidate",
-                "stage": "exploration_non_final",
-                "required_fields": ["mechanism", "evaluation_dimensions", "design_diff", "failure_conditions"],
+                "stage": "valid_final_answer_material",
+                "required_fields": ["mechanism"],
             },
         ],
-        minimum_concrete_delta={"observable_signal": "specific changed material, new object structure, or measurable evidence relative to parent"},
-        invalid_outputs=["empty output", "meta commentary only", "restating objective without artifact"],
-        evaluation_dimensions=[{"name": "objective_fit", "measurement": "comparison against the frozen user objective and artifact contract"}],
-        comparison_method={"method": "relative comparison under the frozen contract"},
-        final_gate={"check": "structural artifact presence plus independent comparison/evidence linkage"},
+        minimum_concrete_delta={"observable_signal": "new mechanism, stronger framing, broader theory reach, or clearer answer"},
+        invalid_outputs=["empty output"],
+        evaluation_dimensions=[{"name": "answer_value", "measurement": "novelty, mechanism clarity, theoretical ceiling, and usefulness to the frozen user objective"}],
+        comparison_method={"method": "relative answer-first comparison"},
+        final_gate={"check": "non-empty direct answer; external verification is user-owned after the run", "advisory_only": True},
         repair_contract={
-            "on_missing_artifact": "produce the required work product with an observable delta",
-            "design_candidate_rule": "exploration design candidates may rank and reproduce when structurally complete, but are never final eligible until materialized into the contract's required work product",
+            "on_missing_artifact": "produce a direct answer instead of a validation or implementation checklist",
+            "design_candidate_rule": "exploration design candidates may rank, reproduce, and be selected as final answer material",
         },
         adapter_requirements={},
     ).to_dict()

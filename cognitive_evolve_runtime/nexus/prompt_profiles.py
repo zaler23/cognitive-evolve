@@ -11,6 +11,8 @@ _OFFSPRING_KEEP = {
     "contract",
     "policy",
     "world",
+    "source_context",
+    "activation_contract",
     "mutation_instruction",
     "artifact_generation_contract",
     "search_space_contract",
@@ -26,15 +28,29 @@ _PLAN_KEEP = {
     "contract",
     "archives",
     "history",
+    "source_context",
+    "activation_contract",
+    "search_space_contract",
+    "artifact_generation_contract",
+    "verification_regime",
+}
+_SEED_KEEP = {
+    "request_type",
+    "contract",
+    "policy",
+    "world",
+    "source_context",
+    "activation_contract",
     "search_space_contract",
     "artifact_generation_contract",
     "verification_regime",
 }
 _CRITIQUE_KEEP = {"request_type", "candidates", "contract", "policy", "world", "verification_plan", "verification_regime", "candidate_population_stats"}
-_DIAGNOSE_KEEP = {"request_type", "candidate_population_stats", "history", "diagnosis", "policy", "contract", "archives", "verification_plan", "verification_regime"}
+_DIAGNOSE_KEEP = {"request_type", "candidate_population_stats", "history", "diagnosis", "policy", "contract", "archives", "activation_contract", "verification_plan", "verification_regime"}
 _POLICY_KEEP = {"request_type", "diagnosis", "policy", "history", "contract", "candidate_population_stats"}
 
 PROFILE_KEEP: dict[str, set[str]] = {
+    "nexus_seed_population": _SEED_KEEP,
     "nexus_generate_offspring": _OFFSPRING_KEEP,
     "nexus_plan_mutations": _PLAN_KEEP,
     "nexus_critique_candidates": _CRITIQUE_KEEP,

@@ -11,7 +11,7 @@ This release keeps CognitiveEvolve Nexus-only while moving the useful v1 behavio
 | Stage budget policy | `nexus/stage_budget.py` | Replaces the old global budget policy module. |
 | Native eval / runtime validation / prompt optimization | `nexus/evaluation.py` | Single post-run Nexus artifact validation and prompt optimization path. |
 | Search-space breadth contract | `nexus/search_space.py` | Keeps breadth pressure as a model-defined Nexus contract while avoiding hard-coded domain families or a separate search-space runtime. |
-| Verifier stack | `tools/verification_stack.py` | Adds structured `ToolFeedback` to candidate genomes and prevents seed/auxiliary artifacts from silently becoming final answers. |
+| Verifier stack | `nexus/project_verification.py` | Adds structured `ToolFeedback` to candidate genomes and prevents seed/auxiliary artifacts from silently becoming final answers. |
 | In-flight provider status | `llm/inflight.py` | Keeps production diagnostics inside the LLM boundary. |
 | Task type registry | `nexus/task_types.py` | Contract/evidence schemas import the Nexus canonical registry. |
 
@@ -50,7 +50,7 @@ API / CLI
 → NexusRuntime
 → CandidateGenome population
 → prompt-view-bounded model calls
-→ critique + tools.verification_stack feedback
+→ critique + nexus.project_verification feedback
 → ranking + archives
 → checkpoint / live store / final synthesis
 → nexus.evaluation self-check

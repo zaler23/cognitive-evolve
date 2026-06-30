@@ -209,14 +209,42 @@ def test_runtime_explicit_rounds_override_model_difficulty_estimate() -> None:
     assert budget.max_rounds == 6
 
 
+def test_final_answer_artifact_includes_human_candidate_table() -> None:
+    from cognitive_evolve_runtime.candidates.genome import CandidatePopulation
+    from cognitive_evolve_runtime.candidates.project_candidate import ProjectCandidateGenome
+    from cognitive_evolve_runtime.nexus.runtime_services import candidates_markdown, final_answer_artifact_text
+
+    candidate = ProjectCandidateGenome(
+        id="C1",
+        concise_claim="update parser",
+        touched_files=["pkg/parser.py"],
+        patch_application_result={"status": "applied", "applied_files": ["pkg/parser.py"]},
+        multihead_scores={"objective_alignment": 0.8},
+    )
+    result = SimpleNamespace(
+        completion_status="completed",
+        stop_reason="max_rounds",
+        synthesis=SimpleNamespace(best_candidate_id="C1", final_answer="\nAnswer body", closure_certificate={}),
+        population=CandidatePopulation([candidate]),
+        graded_output={},
+    )
+
+    text = final_answer_artifact_text(result)
+    candidates = candidates_markdown(result)
+
+    assert "## Candidate summary" in text
+    assert "pkg/parser.py" in text
+    assert "| 1 | `C1` | update parser" in candidates
+
+
 def test_final_answer_artifact_defers_correctness_to_external_review() -> None:
     from cognitive_evolve_runtime.nexus.runtime_services import final_answer_artifact_text
 
     text = final_answer_artifact_text(
         SimpleNamespace(
-            completion_status="best_current_route",
+            completion_status="completed",
             stop_reason="max_rounds",
-            synthesis=SimpleNamespace(reference_candidate_id="C1", final_answer="\nAnswer body"),
+            synthesis=SimpleNamespace(best_candidate_id="C1", final_answer="\nAnswer body"),
         )
     )
 

@@ -6,7 +6,7 @@ from typing import Any
 
 from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome
 from cognitive_evolve_runtime.candidates.project_candidate import ProjectCandidateGenome
-from cognitive_evolve_runtime.nexus._serde import coerce_str_list
+from cognitive_evolve_runtime.core.serialization import coerce_str_list
 from cognitive_evolve_runtime.nexus.source_binding_resolver import annotate_candidate_source_bindings, candidate_admission_route, candidate_source_binding_class
 
 from .latent_pareto import _candidate_is_latent_pareto_frontier
@@ -25,7 +25,7 @@ class ArchiveRegistry:
     def route_candidate(self, candidate: CandidateGenome, assignment: FateAssignment) -> None:
         fate = CandidateFate.normalize(assignment.fate)
         try:
-            annotate_candidate_source_bindings(candidate)
+            annotate_candidate_source_bindings(candidate, project_root=getattr(self.manager, "project_root", "") or None)
         except Exception:
             if isinstance(candidate.metadata, dict):
                 candidate.metadata.setdefault("source_binding_manifest", {"binding_class": "no_binding", "admission_route": "repair_only", "diagnostics": ["source_binding_annotation_failed"]})

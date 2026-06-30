@@ -4,6 +4,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import fnmatch
 from pathlib import Path
 from typing import Any
 
@@ -14,9 +15,10 @@ from cognitive_evolve_runtime.durable.file_lock import file_lock
 
 
 class PatchSandbox:
-    def __init__(self, source_root: str | Path, sandbox_root: str | Path) -> None:
+    def __init__(self, source_root: str | Path, sandbox_root: str | Path, *, allowed_patch_scope: list[str] | None = None) -> None:
         self.source_root = Path(source_root).resolve()
         self.sandbox_root = Path(sandbox_root).resolve()
+        self.allowed_patch_scope = [str(item) for item in allowed_patch_scope or [] if str(item).strip()]
 
     def prepare(self, candidate_id: str) -> Path:
         target = self.sandbox_root / candidate_id
@@ -80,6 +82,9 @@ class PatchSandbox:
         return result
 
     def _apply_operation(self, sandbox: Path, op: PatchOperation) -> tuple[bool, str]:
+        scope_error = _patch_scope_error(op.path, self.allowed_patch_scope)
+        if scope_error:
+            return False, scope_error
         if _source_path_uses_symlink(self.source_root, op.path):
             return False, f"unsafe source symlink in patch path: {op.path}"
         target, guard_error = _safe_patch_target(sandbox, op.path)
@@ -133,6 +138,9 @@ class PatchSandbox:
         if not patch_files:
             return False, "patch_no_effect:no_files_declared", []
         for path in patch_files:
+            scope_error = _patch_scope_error(path, self.allowed_patch_scope)
+            if scope_error:
+                return False, scope_error, patch_files
             if _source_path_uses_symlink(self.source_root, path):
                 return False, f"unsafe source symlink in patch path: {path}", patch_files
             _target, guard_error = _safe_patch_target(sandbox, path, allow_missing=True)
@@ -201,6 +209,16 @@ def _safe_patch_target(sandbox: Path, raw_path: str, *, create_parent: bool = Fa
         # safety violation and is handled by the operation-specific branch.
         pass
     return target, ""
+
+
+def _patch_scope_error(raw_path: str, allowed_patch_scope: list[str]) -> str:
+    relative = Path(raw_path)
+    if not raw_path or relative.is_absolute() or ".." in relative.parts:
+        return f"unsafe patch path: {raw_path}"
+    normalized = relative.as_posix()
+    if allowed_patch_scope and not any(fnmatch.fnmatchcase(normalized, pattern) for pattern in allowed_patch_scope):
+        return f"patch path outside allowed_patch_scope: {raw_path}"
+    return ""
 
 
 def _generic_unified_patch_text(candidate: CandidateGenome) -> str:

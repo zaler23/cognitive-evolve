@@ -26,7 +26,7 @@ from cognitive_evolve_runtime.verification.ladder import VerificationStrength
 from cognitive_evolve_runtime.verification.types import GradedOutput, VerifiedResult
 
 
-def test_failed_candidate_is_removed_from_answer_archive_and_never_synthesized() -> None:
+def test_failed_candidate_is_removed_from_answer_archive_but_can_be_best_current() -> None:
     candidate = CandidateGenome(
         id="candidate",
         artifact="bad answer",
@@ -43,8 +43,11 @@ def test_failed_candidate_is_removed_from_answer_archive_and_never_synthesized()
     assert "candidate" not in archives.answer_archive
     assert "candidate" in archives.failure_archive.records
     result = synthesize_result(population=CandidatePopulation([candidate]), archives=archives)
-    assert result.status == "failure_report"
-    assert result.best_candidate_id == ""
+    assert result.status == "synthesized"
+    assert result.best_candidate_id == "candidate"
+    assert result.best_current_direction["route"] == "best_current"
+    assert result.best_current_direction["verification_status"] == "failed"
+    assert result.objective_solved is False
 
 
 def test_failed_candidate_does_not_pollute_general_archives() -> None:
@@ -133,8 +136,8 @@ def test_model_synthesis_failure_falls_back_to_reference_summary() -> None:
         id="reference",
         artifact="Use a source-aware patch preflight before expensive ranking.",
         current_fate=CandidateFate.DORMANT,
-        source_bindings=[{"path": "cognitive_evolve_runtime/tools/verification_stack.py", "symbol": "NexusVerifierStack"}],
-        evidence_refs=[{"kind": "test", "path": "tests/test_project_candidate_patch_sandbox.py", "status": "planned"}],
+        source_bindings=[{"path": "cognitive_evolve_runtime/nexus/project_verification.py", "symbol": "ProjectCandidateVerifier"}],
+        evidence_refs=[{"kind": "test", "path": "tests/test_nexus_audit_regressions.py", "status": "planned"}],
         obligation_delta={"targeted": ["obl_source_preflight"]},
         multihead_scores={"objective_alignment": 0.8, "answer_likelihood": 0.55, "verifiability": 0.4},
         verification_result={
@@ -149,17 +152,15 @@ def test_model_synthesis_failure_falls_back_to_reference_summary() -> None:
     result = synthesize_result(
         population=CandidatePopulation([candidate]),
         archives=ArchiveManager(),
-        contract={"outcome_policy": {"accepts_best_current_route": False, "requires_verified_solution": True}},
+        contract={"outcome_policy": {"accepts_answer_first_output": False, "requires_verified_solution": True}},
         model=EmptySynthModel(),
     )
 
-    assert result.status == "best_current_route"
+    assert result.status == "final_synthesis_local_fallback"
     assert result.best_candidate_id == "reference"
-    assert result.reference_candidate_id == "reference"
+    assert not hasattr(result, "reference" + "_candidate_id")
     assert "model_synthesis_local_fallback:empty_final_answer" in result.warnings
-    assert "non_final_from_dormant_material" in result.reference_note
-    assert "Candidate result / best current route only" in result.final_answer
-    assert "not externally validated" in result.final_answer
+    assert result.final_answer == "Use a source-aware patch preflight before expensive ranking."
 
 
 
@@ -198,15 +199,13 @@ def test_model_synthesis_uses_reference_not_seed_or_final_id_for_unverified_cand
 
     result = synthesize_result(population=CandidatePopulation([seed, answer]), archives=archives, model=ReviewSynthModel())
 
-    assert result.status == "best_current_route"
+    assert result.status == "model_synthesized"
     assert result.best_candidate_id == ""
-    assert result.reference_candidate_id == "ANS1"
-    assert "SEED0" not in result.reference_candidate_id
-    assert "external review" in result.final_answer.lower()
-    assert "not project-certified" in result.final_answer
-    assert "model_synthesis_not_runtime_final_external_review_required" in result.warnings
+    assert not hasattr(result, "reference" + "_candidate_id")
+    assert "review externally" in result.final_answer.lower()
+    assert "model_final_answer_unbound_to_candidate_artifact" in result.warnings
 
-def test_reference_candidate_ranking_prefers_source_bound_evidence_over_hallucinated_symbol() -> None:
+def test_answer_candidate_ranking_can_prioritize_high_answer_score_without_source_gate() -> None:
     hallucinated = CandidateGenome(
         id="Z-hallucinated",
         artifact="Patch an invented select_parents symbol.",
@@ -223,10 +222,10 @@ def test_reference_candidate_ranking_prefers_source_bound_evidence_over_hallucin
     )
     grounded = CandidateGenome(
         id="A-grounded",
-        artifact="Add source-aware preflight in the existing verifier stack.",
+        artifact="Add source-aware preflight in the existing project verifier.",
         current_fate=CandidateFate.DORMANT,
-        source_bindings=[{"path": "cognitive_evolve_runtime/tools/verification_stack.py", "symbol": "NexusVerifierStack"}],
-        evidence_refs=[{"kind": "test", "path": "tests/test_project_candidate_patch_sandbox.py", "status": "planned"}],
+        source_bindings=[{"path": "cognitive_evolve_runtime/nexus/project_verification.py", "symbol": "ProjectCandidateVerifier"}],
+        evidence_refs=[{"kind": "test", "path": "tests/test_nexus_audit_regressions.py", "status": "planned"}],
         obligation_delta={"targeted": ["obl_source_preflight"]},
         multihead_scores={"objective_alignment": 0.75, "answer_likelihood": 0.55, "verifiability": 0.35},
         verification_result={"passed": True, "rank_eligible": True, "final_eligible": False, "diagnostics": []},
@@ -235,11 +234,11 @@ def test_reference_candidate_ranking_prefers_source_bound_evidence_over_hallucin
     result = synthesize_result(
         population=CandidatePopulation([hallucinated, grounded]),
         archives=ArchiveManager(),
-        contract={"outcome_policy": {"accepts_best_current_route": False, "requires_verified_solution": True}},
+        contract={"outcome_policy": {"accepts_answer_first_output": False, "requires_verified_solution": True}},
     )
 
-    assert result.reference_candidate_id == "A-grounded"
-    assert "source-aware preflight" in result.final_answer
+    assert result.best_candidate_id == "Z-hallucinated"
+    assert "invented select_parents" in result.final_answer
 
 
 def test_patch_sandbox_rejects_symlink_escape(tmp_path: Path) -> None:
@@ -255,6 +254,21 @@ def test_patch_sandbox_rejects_symlink_escape(tmp_path: Path) -> None:
     assert result.status == "failed"
     assert "unsafe" in " ".join(result.diagnostics)
     assert outside.read_text(encoding="utf-8") == "safe"
+
+
+def test_patch_sandbox_enforces_allowed_patch_scope(tmp_path: Path) -> None:
+    source = tmp_path / "source"
+    (source / "pkg").mkdir(parents=True)
+    (source / "docs").mkdir()
+    (source / "pkg" / "module.py").write_text("value = 1\n", encoding="utf-8")
+    (source / "docs" / "note.md").write_text("note\n", encoding="utf-8")
+
+    candidate = ProjectCandidateGenome(id="out-of-scope", patch_set=[PatchOperation(path="docs/note.md", operation="append", content="x")])
+    result = PatchSandbox(source, tmp_path / "sandboxes", allowed_patch_scope=["pkg/**/*.py"]).apply(candidate)
+
+    assert result.status == "failed"
+    assert "outside allowed_patch_scope" in " ".join(result.diagnostics)
+    assert (source / "docs" / "note.md").read_text(encoding="utf-8") == "note\n"
 
 
 def test_project_verification_failure_marks_candidate_failed(tmp_path: Path) -> None:

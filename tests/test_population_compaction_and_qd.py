@@ -25,7 +25,7 @@ def _candidate(candidate_id: str, *, niche: str = "same", score: float = 0.1, fa
     )
 
 
-def test_terminal_candidates_leave_live_population_but_keep_tombstones() -> None:
+def test_nonstructural_terminal_candidates_reopen_as_dormant_reserve() -> None:
     failed = _candidate("failed", fate=CandidateFate.FAILED.value)
     live = _candidate("live")
     population = CandidatePopulation([failed, live])
@@ -39,12 +39,12 @@ def test_terminal_candidates_leave_live_population_but_keep_tombstones() -> None
         round_index=3,
     )
 
-    assert [candidate.id for candidate in population.candidates] == ["live"]
-    assert result.removed_terminal_ids == ["failed"]
-    assert "failed" in archives.terminal_tombstones
-    assert "failed" in archives.failure_archive.records
+    assert [candidate.id for candidate in population.candidates] == ["failed", "live"]
+    assert failed.current_fate == CandidateFate.DORMANT.value
+    assert result.removed_terminal_ids == []
+    assert "failed" not in archives.terminal_tombstones
     reloaded = ArchiveManager.from_dict(archives.to_dict())
-    assert "failed" in reloaded.terminal_tombstones
+    assert "failed" not in reloaded.terminal_tombstones
 
 
 def test_quality_diversity_compacts_per_bin_without_fixed_global_cap() -> None:
@@ -65,8 +65,27 @@ def test_quality_diversity_compacts_per_bin_without_fixed_global_cap() -> None:
     live_ids = {candidate.id for candidate in population.candidates}
     assert "a-rare" in live_ids
     assert result.compacted_clone_ids
-    assert len([candidate for candidate in population.candidates if candidate_bin_key(candidate).startswith("alpha|")]) <= 3
-    assert len([candidate for candidate in population.candidates if candidate_bin_key(candidate).startswith("beta|")]) <= 3
+    bin_counts: dict[str, int] = {}
+    for candidate in population.candidates:
+        key = candidate_bin_key(candidate)
+        bin_counts[key] = bin_counts.get(key, 0) + 1
+    assert max(count for key, count in bin_counts.items() if key.startswith("alpha")) <= 3
+    assert max(count for key, count in bin_counts.items() if key.startswith("beta")) <= 3
     assert len(population.candidates) > 2  # bins, not one fixed global cap
-    assert set(result.compacted_clone_ids).issubset(set(archives.terminal_tombstones))
+    assert set(result.compacted_clone_ids).issubset(set(archives.dormant_archive.candidates))
 
+
+def test_candidate_bin_key_splits_applied_from_not_applied() -> None:
+    # #7 regression: two candidates identical in canonical family and src/patch/target
+    # path buckets but differing only in patch application status must land in distinct
+    # QD bins.  If the bin key ever drops the applied/not_applied descriptor token again
+    # (e.g. by slicing descriptor[1:4] instead of [1:5]), both collapse into one cell
+    # and this assertion fails.
+    applied = _candidate("applied-1")
+    not_applied = _candidate("notapplied-1")
+    for candidate in (applied, not_applied):
+        candidate.metadata["nextgen"] = {"canonical_mechanism_family_id": "fam"}
+    applied.metadata["patch_result"] = {"status": "applied"}
+    not_applied.metadata["patch_result"] = {"status": "rejected"}
+
+    assert candidate_bin_key(applied) != candidate_bin_key(not_applied)

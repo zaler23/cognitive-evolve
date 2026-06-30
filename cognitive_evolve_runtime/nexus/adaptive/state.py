@@ -31,9 +31,9 @@ class AdaptiveRuntimeState:
     warnings: list[str] = field(default_factory=list)
     events: list[dict[str, Any]] = field(default_factory=list)
     final_certificate: dict[str, Any] = field(default_factory=dict)
-    research_extensions: dict[str, Any] = field(default_factory=dict)
-    research_metrics: dict[str, Any] = field(default_factory=dict)
-    research_warnings: list[str] = field(default_factory=list)
+    verification_plan: dict[str, Any] = field(default_factory=dict)
+    verification_cache: dict[str, dict[str, Any]] = field(default_factory=dict)
+    effect_applications: list[dict[str, Any]] = field(default_factory=list)
     honesty_error_history: list[dict[str, Any]] = field(default_factory=list)
     cell_activation_history: list[dict[str, Any]] = field(default_factory=list)
     updated_at: str = field(default_factory=utc_now)
@@ -63,9 +63,9 @@ class AdaptiveRuntimeState:
             warnings=[str(item) for item in data.get("warnings", []) if item],
             events=[dict(item) for item in data.get("events", []) if isinstance(item, dict)],
             final_certificate=coerce_dict(data.get("final_certificate")),
-            research_extensions=coerce_dict(data.get("research_extensions")),
-            research_metrics=coerce_dict(data.get("research_metrics")),
-            research_warnings=[str(item) for item in data.get("research_warnings", []) if item],
+            verification_plan=coerce_dict(data.get("verification_plan") or coerce_dict(data.get("research_extensions")).get("verification_plan")),
+            verification_cache={str(k): dict(v) for k, v in coerce_dict(data.get("verification_cache") or coerce_dict(data.get("research_extensions")).get("verification_cache")).items() if isinstance(v, dict)},
+            effect_applications=[dict(item) for item in data.get("effect_applications", []) if isinstance(item, dict)],
             honesty_error_history=[dict(item) for item in data.get("honesty_error_history", []) if isinstance(item, dict)],
             cell_activation_history=[dict(item) for item in data.get("cell_activation_history", []) if isinstance(item, dict)],
             updated_at=str(data.get("updated_at") or utc_now()),

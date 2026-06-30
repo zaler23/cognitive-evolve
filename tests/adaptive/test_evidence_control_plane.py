@@ -289,26 +289,6 @@ def test_search_pressure_enters_mutation_plan_and_offspring_metadata() -> None:
     assert child.metadata["search_pressure_id"] == pressured[0].metadata["search_pressure_id"]
 
 
-def test_instruction_only_search_pressure_enters_mutation_plan_without_target_tracking() -> None:
-    controller = AdaptiveRuntimeController(
-        config=AdaptiveConfig.from_sources(
-            explicit={
-                "enabled": True,
-                "research": {"enabled": True, "mode": "advisory", "extensions": {"context_pruning": {"enabled": True}}},
-            }
-        )
-    )
-    parent = CandidateGenome(id="P1", current_fate=CandidateFate.ACTIVE.value, artifact={"answer": 1})
-    round_driver = EvolutionRound(model=None, budget=EvolutionBudget(max_rounds=2, branch_factor=1), adaptive=controller)
-    plan = MutationPlan(operator=MutationOperator.REPAIR, parent_ids=["P1"], instruction="Repair the candidate.")
-
-    pressured = round_driver._apply_search_pressure_to_plans([plan], parents=[parent])
-
-    assert "search_pressure_id" in pressured[0].metadata
-    assert "target_challenge_ids" not in pressured[0].metadata
-    assert "Prune mutation context" in pressured[0].instruction
-
-
 def test_schema_search_pressure_generates_strict_repair_instruction() -> None:
     case = challenge_from_diagnostic(candidate_id="P1", source="cache_policy", diagnostic="candidate artifact_type must be cache_policy", round_index=1)
     memory = ChallengeMemory()
@@ -574,7 +554,7 @@ def test_quality_diversity_separates_search_and_final_quality() -> None:
     assert candidate_search_quality(candidate) > candidate_final_quality(candidate)
 
 
-def test_final_projection_returns_best_current_without_internal_directives() -> None:
+def test_final_projection_returns_answer_without_internal_directives() -> None:
     candidate = CandidateGenome(
         id="C1",
         artifact={"answer": 1},
@@ -596,18 +576,18 @@ def test_final_projection_returns_best_current_without_internal_directives() -> 
             metadata={"challenge_items": [case], "artifact_state": {"normalized_artifact": {"answer": 1}, "status": "clean"}},
         ),
     )
-    synthesis = SynthesizedResult(status="best_current_route", final_answer="internal repair directive should not be reused", best_candidate_id="C1")
+    synthesis = SynthesizedResult(status="completed", final_answer="internal repair directive should not be reused", best_candidate_id="C1")
 
     projection = build_final_projection(population=CandidatePopulation([candidate]), synthesis=synthesis, graded_output=_graded_portfolio(), final_certificate={"blocking_reasons": ["external_evaluator_not_passed"]})
     markdown = projection.to_markdown()
 
-    assert projection.status == "best_current"
+    assert projection.status == "completed"
     assert projection.objective_solved is False
     assert projection.artifact_type == "machine"
-    assert "internal repair directive should not be reused" not in markdown
-    assert "Best current artifact" in markdown
-    assert "boundary case failed" in markdown
-    assert isinstance(projection.to_dict()["artifact"], dict)
+    assert "internal repair directive should not be reused" in markdown
+    assert "Final answer" in markdown
+    assert "boundary case failed" not in markdown
+    assert isinstance(projection.to_dict()["artifact"], str)
 
 
 def test_final_projection_downgrades_refolded_artifact_even_with_solved_certificate() -> None:
@@ -632,20 +612,23 @@ def test_final_projection_downgrades_refolded_artifact_even_with_solved_certific
 
     projection = build_final_projection(population=CandidatePopulation([candidate]), synthesis=synthesis, graded_output=_graded_verified(), final_certificate={"objective_solved": True, "candidate_id": "C1"})
 
-    assert projection.status == "best_current"
+    assert projection.status == "completed"
     assert projection.objective_solved is False
-    assert "candidate_not_clean_final_eligible" in projection.blocking_issues
+    assert projection.blocking_issues == []
 
 
-def test_final_projection_excludes_failed_and_culled_best_current_candidates() -> None:
+def test_final_projection_allows_failed_best_current_direction() -> None:
     failed = CandidateGenome(id="F1", artifact={"bad": 1}, artifact_type="machine", current_fate=CandidateFate.FAILED.value, multihead_scores={"frontier_score": 0.99})
     active = CandidateGenome(id="A1", artifact={"ok": 1}, artifact_type="machine", current_fate=CandidateFate.ACTIVE.value, multihead_scores={"frontier_score": 0.4})
-    synthesis = SynthesizedResult(status="best_current_route", final_answer="", best_candidate_id="F1")
+    synthesis = SynthesizedResult(status="completed", final_answer="", best_candidate_id="F1")
 
     projection = build_final_projection(population=CandidatePopulation([failed, active]), synthesis=synthesis, graded_output=_graded_portfolio(), final_certificate={"blocking_reasons": ["not_final"]})
 
-    assert projection.status == "best_current"
-    assert projection.candidate_id == "A1"
+    assert projection.status == "completed"
+    assert projection.candidate_id == "F1"
+    assert projection.objective_solved is False
+    assert projection.best_current_direction["route"] == "best_current"
+    assert projection.best_current_direction["verification_status"] == "failed"
 
 
 def test_artifact_identity_hash_includes_artifact_type_and_policy() -> None:

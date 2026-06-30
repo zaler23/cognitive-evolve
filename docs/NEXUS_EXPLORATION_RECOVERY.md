@@ -70,4 +70,4 @@ COGEV_NEXUS_PROFILE_EXHAUSTIVE_BRANCH_FACTOR
 # Legacy COGEV_MUTATION_BRANCH_FACTOR and COGEV_ACTIVE_POOL_LIMIT are ignored by default and surfaced as config warnings.
 ```
 
-This keeps API model tiers meaningful without reintroducing the old adaptive engine. Candidate seeding uses repeated model batches plus semantic dedupe until the dynamic target is met or novelty stalls; safety checkpoints are continuation states, not completion.
+This keeps API model tiers meaningful without reintroducing the old adaptive engine. Candidate seeding uses repeated model batches plus semantic dedupe until the dynamic target is met or novelty stalls; safety checkpoints can return completed answer-first candidate output; continuation remains reserved for explicit interruption/quota/operator continuation.

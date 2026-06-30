@@ -68,14 +68,30 @@ There are no alternate runtime, ranking, archive, or candidate-search packages. 
 python3 -m pip install -e .
 ```
 
-For deterministic tests and demos:
+## Fixture-first quickstart
+
+Start with the hermetic fixture path before any real model provider:
 
 ```bash
+python3 scripts/cogev.py doctor --scope core
+python3 scripts/cogev.py config init --profile fixture --print
 export COGEV_LLM_PROVIDER=fixture
 export COGEV_LLM_FIXTURE="$PWD/tests/fixtures/llm_fixture.json"
+python3 scripts/cogev.py llm status
+python3 scripts/cogev.py run "find three bold candidate directions for a hard open problem"
 ```
 
+Real provider runs are opt-in. Verification labels are advisory unless an
+external/user-owned verifier confirms the answer; CognitiveEvolve's default job
+is to explore high-ceiling candidate mechanisms.
+
 For real model use, configure a generic provider explicitly. Runtime code talks to `llm.provider_interface.LLMProviderInterface`; supported public modes are `litellm`, `direct_http` for OpenAI-compatible `/v1/chat/completions`, and deterministic `fixture` for tests. Tests default to hermetic mode and never read user-home `.env` files. The public project does not ship a private application model relay or provider-specific local integration.
+
+Advanced runs may route seed exploration and later ranking/synthesis through
+different public provider profiles. A profile is just a public id plus provider,
+model, limits, and an environment-variable name for the credential; sensitive
+values stay outside source control. Legacy `COGEV_LLM_MODEL` remains valid for a
+single-profile run.
 
 ```dotenv
 COGEV_LLM_PROVIDER=litellm
@@ -138,7 +154,7 @@ API Key:  <COGEV_SERVER_API_KEY>
 Model:    cognitive-evolve-one-shot-deep
 ```
 
-For long frontend runs, prefer `/v1/cogev/jobs` over holding one chat-completions request open. Jobs can be resumed with `POST /v1/cogev/jobs/{id}/resume` when a Nexus checkpoint exists. Streaming chat completions emit progress metadata while Nexus writes durable progress and checkpoint artifacts. API model tiers now select adaptive Nexus policies rather than fixed round/candidate counts. `cognitive-evolve-one-shot-exhaustive` activates an exhaustive policy with safety checkpoints, dynamic seed batching/deduplication, and wider mutation branching. Reaching a safety checkpoint returns `needs_continuation`. The only allowed early-stop statuses before the safety cap are `candidate_ready_for_external_review` and `diminishing_returns_checkpoint`; both produce reviewable candidate output, not a correctness claim. Only a verifier/model `objective_solved` signal marks the objective solved. Legacy `COGEV_NEXUS_PROFILE_*_ROUNDS`, `*_CANDIDATES`, `COGEV_MUTATION_BRANCH_FACTOR`, and `COGEV_ACTIVE_POOL_LIMIT` are ignored by default to prevent stale local `.env` files from pinning or narrowing adaptive runs. API calls bind Nexus to the configured generic LLM adapter rather than the deterministic offline seed fallback.
+For long frontend runs, prefer `/v1/cogev/jobs` over holding one chat-completions request open. Jobs can be resumed with `POST /v1/cogev/jobs/{id}/resume` when a Nexus checkpoint exists. Streaming chat completions emit progress metadata while Nexus writes durable progress and checkpoint artifacts. API model tiers now select adaptive Nexus policies rather than fixed round/candidate counts. `cognitive-evolve-one-shot-exhaustive` activates an exhaustive policy with safety checkpoints, dynamic seed batching/deduplication, and wider mutation branching. Reaching a safety checkpoint returns a completed answer-first candidate output when answer material exists; explicit interruption/quota/operator continuation remains separate metadata. `candidate_ready_for_external_review` and `diminishing_returns_checkpoint` also produce reviewable candidate output, not a correctness claim. `answer_produced` is distinct from `objective_solved`, which is not self-certified by the project. Legacy `COGEV_NEXUS_PROFILE_*_ROUNDS`, `*_CANDIDATES`, `COGEV_MUTATION_BRANCH_FACTOR`, and `COGEV_ACTIVE_POOL_LIMIT` are ignored by default to prevent stale local `.env` files from pinning or narrowing adaptive runs. API calls bind Nexus to the configured generic LLM adapter rather than the deterministic offline seed fallback.
 
 Compatibility boundary: `/v1/chat/completions` is OpenAI-shaped, not
 token-semantic identical. A single request may run adaptive multi-round

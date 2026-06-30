@@ -197,6 +197,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--not-before", default="", help="ISO timestamp; exit without model calls before this time")
     parser.add_argument("--require-upstream-health", action="store_true", help="require an operator-supplied upstream health endpoint before model calls")
     parser.add_argument("--upstream-health-url", default="")
+    parser.add_argument("--required-model", default=os.environ.get("COGEV_SELF_BOOTSTRAP_REQUIRED_MODEL", ""), help="fail before real provider calls unless COGEV_LLM_MODEL matches this model id")
     return parser.parse_args(argv)
 
 
@@ -206,6 +207,9 @@ def main(argv: list[str] | None = None) -> int:
     run_dir = Path(args.run_dir).expanduser().resolve() if args.run_dir else default_run_dir(args.label)
     env_file = Path(args.env_file).expanduser().resolve() if args.env_file else None
     load_runtime_environment(project_dir, env_file)
+    required_model = str(args.required_model or os.environ.get("COGEV_SELF_BOOTSTRAP_REQUIRED_MODEL", "")).strip()
+    if required_model:
+        os.environ["COGEV_LLM_REQUIRED_MODEL"] = required_model
     os.environ["COGEV_RUN_ID"] = run_dir.name
     goal = read_text_if_exists(Path(args.goal_file).expanduser()) if args.goal_file else DEFAULT_GOAL
     status_path = run_dir / "self-evolve-status.json"

@@ -65,7 +65,17 @@ def preprocess_candidate_pool(
         }
     if not isinstance(raw, dict):
         return {"advisory": True, "schedule_hints": [], "diagnostics": ["model_preprocess_non_dict"], "prompt_payload": payload}
-    return coerce_pool_preprocess_response(raw, prompt_payload=payload)
+    try:
+        return coerce_pool_preprocess_response(raw, prompt_payload=payload)
+    except ValueError as exc:
+        return {
+            "advisory": True,
+            "schedule_hints": [],
+            "source_gap_requests": [],
+            "diagnostics": ["model_preprocess_authority_payload_rejected"],
+            "error": {"type": exc.__class__.__name__, "message": str(exc)},
+            "prompt_payload": payload,
+        }
 
 
 def coerce_pool_preprocess_response(raw: dict[str, Any], *, prompt_payload: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -98,6 +108,18 @@ def _bounded_payload(payload: dict[str, Any], *, max_chars: int) -> dict[str, An
     if len(json.dumps(bounded, ensure_ascii=False, sort_keys=True, default=str)) > limit:
         bounded["representatives"] = []
         bounded["clusters"] = []
+    if len(json.dumps(bounded, ensure_ascii=False, sort_keys=True, default=str)) > limit and isinstance(bounded.get("coverage_report"), dict):
+        # Even with representatives/clusters stripped, the per-cell descriptor
+        # distribution and cell-key lists can exceed the prompt bound when the
+        # population spreads across many behavior bins. Keep the scalar coverage
+        # summaries and drop the per-cell detail so the prompt bound always holds.
+        cov = dict(bounded["coverage_report"])
+        cov.pop("descriptor_cell_distribution", None)
+        for cell_list_key in ("sparse_cells", "overrepresented_cells", "missing_cells"):
+            if cell_list_key in cov:
+                cov[cell_list_key] = []
+        cov["coverage_detail_truncated"] = True
+        bounded["coverage_report"] = cov
     return bounded
 
 

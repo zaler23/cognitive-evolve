@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from cognitive_evolve_runtime.candidates.genome import CandidateGenome
-from cognitive_evolve_runtime.nexus._serde import coerce_dict
+from cognitive_evolve_runtime.core.serialization import coerce_dict
 from cognitive_evolve_runtime.outcomes.anytime_valid import AnytimeValidSolveCertificate, verify_anytime_valid_certificate
 
 from .niches import normalize_niche_id

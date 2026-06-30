@@ -31,10 +31,11 @@ from cognitive_evolve_runtime.verification.synthesizer import VerificationSynthe
 from cognitive_evolve_runtime.verification.types import VerificationPlan
 from cognitive_evolve_runtime.nexus.protocols import NexusModelLike
 from cognitive_evolve_runtime.nexus.project_verification import ProjectVerificationSummary
-from cognitive_evolve_runtime.nexus.fallbacks import finish_fallback_capture, start_fallback_capture
+from cognitive_evolve_runtime.nexus.fallbacks import capture_fallback_events, record_fallback
+from cognitive_evolve_runtime.nexus.runtime_options import option_bool, resolve_runtime_options, restore_runtime_options
 from cognitive_evolve_runtime.nexus.runtime_services import NexusPersistenceService, NexusProjectVerificationService
-from cognitive_evolve_runtime.nexus._shared import positive_int
-from cognitive_evolve_runtime.persistence.checkpoint import CheckpointStore
+from cognitive_evolve_runtime.nexus._shared import MODEL_BOUNDARY_ERRORS, positive_int
+from cognitive_evolve_runtime.persistence.checkpoint import CheckpointStore, contract_payload_for_persistence
 
 
 @dataclass
@@ -126,64 +127,66 @@ class NexusRuntime:
         adaptive_config: dict[str, Any] | None = None,
         cancellation_callback: Any | None = None,
     ) -> NexusRunResult:
-        fallback_token = start_fallback_capture()
-        packet = TextInputPacket.from_text(text)
-        world = _build_text_world_model(packet, model=self.model)
-        goal = user_goal or packet.raw_text[:500] or "text evolution task"
-        artifact_policy_config = _artifact_policy_config_from_adaptive_config(adaptive_config)
-        contract = self.contract_builder.build_text_contract(
-            user_goal=goal,
-            packet=packet,
-            world=world,
-            model=self.model,
-            artifact_policy_config=artifact_policy_config,
-        )
-        policy = self.policy_builder.build(contract=contract, world=world, model=self.model)
-        budget = budget or evolution_budget_from_params(
-            max_rounds=max_rounds,
-            branch_factor=branch_factor,
-            initial_candidate_count=min_population_size or 0,
-            stop_policy=stop_policy,
-            min_rounds_before_stop=min_rounds_before_stop,
-        )
-        _resolve_budget_width_from_policy(budget, policy)
-        min_population_size = min_population_size if min_population_size is not None else budget.initial_candidate_count
-        population = seed_population(contract=contract, world=world, policy=policy, model=self.model_routes.model_for(NexusModelRole.SEED), min_population_size=min_population_size)
-        archives = ArchiveManager(policy.archive_schema)
-        verification_plan = VerificationSynthesizer(model=self.model).synthesize({"goal": goal, "contract": contract.to_dict()})
-        world_payload = _world_to_dict_with_latent_metadata(world, contract)
-        observer = self._live_observer(mode="text", contract=contract, world=world_payload, max_rounds=budget.max_rounds, budget=budget.to_dict())
-        result = evolve_once(
-            population=population,
-            archives=archives,
-            policy=policy,
-            contract=contract,
-            world=world,
-            budget=budget,
-            model=self.model,
-            observer=observer,
-            cancellation_callback=cancellation_callback,
-            adaptive_config=adaptive_config,
-            verification_plan=verification_plan,
-        )
-        run = NexusRunResult(
-            mode="text",
-            contract=contract.to_dict() | {"contract_hash": contract.contract_hash()},
-            policy=result.policy.to_dict(),
-            world=world_payload,
-            evolution=result.to_dict(),
-            pipeline_events=list(result.pipeline_events),
-        )
-        run.evolution.setdefault("runtime_metadata", {})["model_routes"] = self.model_routes.public_summary()
-        if runtime_metadata:
-            run.evolution["runtime_metadata"].update(dict(runtime_metadata))
-        prompt_metadata = _model_prompt_metadata(self.model)
-        if prompt_metadata:
-            run.evolution["prompt_view_metadata"] = prompt_metadata
-        _sync_runtime_round_metadata(run.evolution, result)
-        _attach_fallback_events(run.evolution, finish_fallback_capture(fallback_token))
-        run.artifacts = self._persist(run, result, contract=contract, world=world_payload, budget_history=result.budget_history, budget=budget)
-        return run
+        with capture_fallback_events() as fallback_events:
+            runtime_options = resolve_runtime_options(request_options={"seed.family_priority_source": "model_authored_search_space"})
+            packet = TextInputPacket.from_text(text)
+            world = _build_text_world_model(packet, model=self.model)
+            goal = user_goal or packet.raw_text[:500] or "text evolution task"
+            artifact_policy_config = _artifact_policy_config_from_adaptive_config(adaptive_config)
+            contract = self.contract_builder.build_text_contract(
+                user_goal=goal,
+                packet=packet,
+                world=world,
+                model=self.model,
+                artifact_policy_config=artifact_policy_config,
+            )
+            policy = self.policy_builder.build(contract=contract, world=world, model=self.model)
+            budget = budget or evolution_budget_from_params(
+                max_rounds=max_rounds,
+                branch_factor=branch_factor,
+                initial_candidate_count=min_population_size or 0,
+                stop_policy=stop_policy,
+                min_rounds_before_stop=min_rounds_before_stop,
+            )
+            _resolve_budget_width_from_policy(budget, policy)
+            min_population_size = min_population_size if min_population_size is not None else budget.initial_candidate_count
+            population = seed_population(contract=contract, world=world, policy=policy, model=self.model_routes.model_for(NexusModelRole.SEED), min_population_size=min_population_size)
+            archives = ArchiveManager(policy.archive_schema)
+            verification_plan = VerificationSynthesizer(model=self.model).synthesize({"goal": goal, "contract": contract.to_dict()})
+            world_payload = _world_to_dict_with_latent_metadata(world, contract)
+            observer = self._live_observer(mode="text", contract=contract, world=world_payload, max_rounds=budget.max_rounds, budget=budget.to_dict())
+            result = evolve_once(
+                population=population,
+                archives=archives,
+                policy=policy,
+                contract=contract,
+                world=world,
+                budget=budget,
+                model=self.model,
+                observer=observer,
+                cancellation_callback=cancellation_callback,
+                adaptive_config=adaptive_config,
+                verification_plan=verification_plan,
+            )
+            run = NexusRunResult(
+                mode="text",
+                contract=contract_payload_for_persistence(contract) | {"contract_hash": contract.contract_hash()},
+                policy=result.policy.to_dict(),
+                world=world_payload,
+                evolution=result.to_dict(),
+                pipeline_events=list(result.pipeline_events),
+            )
+            run.evolution["runtime_options"] = runtime_options
+            run.evolution.setdefault("runtime_metadata", {})["model_routes"] = self.model_routes.public_summary()
+            if runtime_metadata:
+                run.evolution["runtime_metadata"].update(dict(runtime_metadata))
+            prompt_metadata = _model_prompt_metadata(self.model)
+            if prompt_metadata:
+                run.evolution["prompt_view_metadata"] = prompt_metadata
+            _sync_runtime_round_metadata(run.evolution, result)
+            _attach_fallback_events(run.evolution, fallback_events)
+            run.artifacts = self._persist(run, result, contract=contract, world=world_payload, budget_history=result.budget_history, budget=budget, runtime_options=runtime_options)
+            return run
 
     def run_project(
         self,
@@ -200,184 +203,270 @@ class NexusRuntime:
         adaptive_config: dict[str, Any] | None = None,
         cancellation_callback: Any | None = None,
     ) -> NexusRunResult:
-        fallback_token = start_fallback_capture()
-        snapshot = ProjectSnapshot.from_path(root)
-        world = ProjectWorldModel.from_snapshot(snapshot, objective=user_goal)
-        artifact_policy_config = _artifact_policy_config_from_adaptive_config(adaptive_config)
-        contract = self.contract_builder.build_project_contract(
-            user_goal=user_goal,
-            snapshot=snapshot,
-            world=world,
-            model=self.model,
-            artifact_policy_config=artifact_policy_config,
-        )
-        policy = self.policy_builder.build(contract=contract, world=world, model=self.model)
-        budget = budget or evolution_budget_from_params(
-            max_rounds=max_rounds,
-            branch_factor=branch_factor,
-            initial_candidate_count=min_population_size or 0,
-            stop_policy=stop_policy,
-            min_rounds_before_stop=min_rounds_before_stop,
-        )
-        _resolve_budget_width_from_policy(budget, policy)
-        min_population_size = min_population_size if min_population_size is not None else budget.initial_candidate_count
-        population = seed_population(contract=contract, world=world, policy=policy, model=self.model_routes.model_for(NexusModelRole.SEED), min_population_size=min_population_size)
-        archives = ArchiveManager(policy.archive_schema)
-        verification_plan = VerificationSynthesizer(model=self.model).synthesize({"goal": user_goal, "contract": contract.to_dict(), "mode": "project"})
-        context_result = self.context_orchestrator.build_for_parents(
-            contract=contract,
-            snapshot=snapshot,
-            world=world,
-            parents=population.candidates[:3],
-            archives=archives,
-            model=self.model,
-            mutation_instruction="initial_project_seed_verification",
-        )
-        verification_summaries = self._verify_project_population(snapshot, population.candidates, include_tests=include_tests)
+        with capture_fallback_events() as fallback_events:
+            runtime_options = resolve_runtime_options(request_options={"verification.include_tests": bool(include_tests), "seed.family_priority_source": "model_authored_search_space"})
+            snapshot = ProjectSnapshot.from_path(root)
+            world = ProjectWorldModel.from_snapshot(snapshot, objective=user_goal)
+            artifact_policy_config = _artifact_policy_config_from_adaptive_config(adaptive_config)
+            contract = self.contract_builder.build_project_contract(
+                user_goal=user_goal,
+                snapshot=snapshot,
+                world=world,
+                model=self.model,
+                artifact_policy_config=artifact_policy_config,
+            )
+            _enable_project_latent_exploration(contract)
+            policy = self.policy_builder.build(contract=contract, world=world, model=self.model)
+            _enable_project_theory_advisory_pressure(policy)
+            budget = budget or evolution_budget_from_params(
+                max_rounds=max_rounds,
+                branch_factor=branch_factor,
+                initial_candidate_count=min_population_size or 0,
+                stop_policy=stop_policy,
+                min_rounds_before_stop=min_rounds_before_stop,
+            )
+            _resolve_budget_width_from_policy(budget, policy)
+            min_population_size = min_population_size if min_population_size is not None else budget.initial_candidate_count
+            archives = ArchiveManager(policy.archive_schema)
+            # Ground source-binding resolution in the real project root (runtime-only;
+            # never serialized into the archive payload).
+            archives.project_root = snapshot.root_path
+            initial_context_result = self.context_orchestrator.build_for_parents(
+                contract=contract,
+                snapshot=snapshot,
+                world=world,
+                parents=[],
+                archives=archives,
+                model=None,
+                mutation_instruction="initial_project_seed",
+            )
+            population = seed_population(
+                contract=contract,
+                world=world,
+                policy=policy,
+                model=self.model_routes.model_for(NexusModelRole.SEED),
+                min_population_size=min_population_size,
+                provided_context=initial_context_result.to_source_context(),
+            )
+            verification_plan = VerificationSynthesizer(model=self.model).synthesize({"goal": user_goal, "contract": contract.to_dict(), "mode": "project"})
+            context_result = self.context_orchestrator.build_for_parents(
+                contract=contract,
+                snapshot=snapshot,
+                world=world,
+                parents=population.candidates[:3],
+                archives=archives,
+                model=self.model,
+                mutation_instruction="initial_project_seed_verification",
+            )
+            applied_overlays = _applied_overlays(artifact_policy_config, contract)
+            verification_summaries = self._verify_project_population(
+                snapshot,
+                population.candidates,
+                include_tests=include_tests,
+                contract=contract,
+                applied_overlays=applied_overlays,
+            )
 
-        def verify_offspring(candidates: list[Any]) -> list[ProjectVerificationSummary]:
-            summaries = self._verify_project_population(snapshot, candidates, include_tests=include_tests)
-            verification_summaries.extend(summaries)
-            return summaries
+            def verify_offspring(candidates: list[Any]) -> list[ProjectVerificationSummary]:
+                summaries = self._verify_project_population(
+                    snapshot,
+                    candidates,
+                    include_tests=include_tests,
+                    contract=contract,
+                    applied_overlays=applied_overlays,
+                )
+                verification_summaries.extend(summaries)
+                return summaries
 
-        project_world_payload = _world_to_dict_with_latent_metadata({"snapshot": snapshot.to_dict(), "project_world_model": world.to_dict()}, contract)
-        observer = self._live_observer(mode="project", contract=contract, world=project_world_payload, max_rounds=budget.max_rounds, budget=budget.to_dict())
-        result = evolve_once(
-            population=population,
-            archives=archives,
-            policy=policy,
-            contract=contract,
-            world=world,
-            budget=budget,
-            model=self.model,
-            observer=observer,
-            cancellation_callback=cancellation_callback,
-            offspring_verifier=verify_offspring,
-            adaptive_config=adaptive_config,
-            verification_plan=verification_plan,
-        )
-        run = NexusRunResult(
-            mode="project",
-            contract=contract.to_dict() | {"contract_hash": contract.contract_hash()},
-            policy=result.policy.to_dict(),
-            world=project_world_payload,
-            evolution=result.to_dict(),
-            pipeline_events=list(result.pipeline_events),
-            context_protocol=context_result.to_dict(),
-            verification_summaries=[summary.to_dict() for summary in verification_summaries],
-        )
-        run.evolution.setdefault("runtime_metadata", {})["model_routes"] = self.model_routes.public_summary()
-        prompt_metadata = _model_prompt_metadata(self.model)
-        if prompt_metadata:
-            run.evolution["prompt_view_metadata"] = prompt_metadata
-        _sync_runtime_round_metadata(run.evolution, result)
-        _attach_fallback_events(run.evolution, finish_fallback_capture(fallback_token))
-        run.artifacts = self._persist(run, result, contract=contract, world=project_world_payload, budget_history=result.budget_history, budget=budget)
-        return run
+            project_world_payload = _world_to_dict_with_latent_metadata({"snapshot": snapshot.to_dict(), "project_world_model": world.to_dict()}, contract)
+            observer = self._live_observer(mode="project", contract=contract, world=project_world_payload, max_rounds=budget.max_rounds, budget=budget.to_dict())
+            result = evolve_once(
+                population=population,
+                archives=archives,
+                policy=policy,
+                contract=contract,
+                world=world,
+                budget=budget,
+                model=self.model,
+                observer=observer,
+                cancellation_callback=cancellation_callback,
+                offspring_verifier=verify_offspring,
+                adaptive_config=adaptive_config,
+                verification_plan=verification_plan,
+                provided_context={
+                    "ContextProtocolResult": context_result,
+                    "context_protocol": context_result.to_dict(),
+                    "source_context": context_result.to_source_context(),
+                },
+            )
+            run = NexusRunResult(
+                mode="project",
+                contract=contract_payload_for_persistence(contract) | {"contract_hash": contract.contract_hash()},
+                policy=result.policy.to_dict(),
+                world=project_world_payload,
+                evolution=result.to_dict(),
+                pipeline_events=list(result.pipeline_events),
+                context_protocol=context_result.to_dict(),
+                verification_summaries=[summary.to_dict() for summary in verification_summaries],
+            )
+            run.evolution["runtime_options"] = runtime_options
+            run.evolution.setdefault("runtime_metadata", {})["model_routes"] = self.model_routes.public_summary()
+            prompt_metadata = _model_prompt_metadata(self.model)
+            if prompt_metadata:
+                run.evolution["prompt_view_metadata"] = prompt_metadata
+            _sync_runtime_round_metadata(run.evolution, result)
+            _attach_fallback_events(run.evolution, fallback_events)
+            run.artifacts = self._persist(run, result, contract=contract, world=project_world_payload, budget_history=result.budget_history, budget=budget, runtime_options=runtime_options)
+            return run
 
     def resume_from_checkpoint(self, *, max_rounds: int | None = None) -> NexusRunResult:
-        if self.output_dir is None:
-            raise ValueError("resume_from_checkpoint requires output_dir")
-        checkpoint_path = self.output_dir / "checkpoint.json"
-        restored = CheckpointStore(checkpoint_path).restore_state()
-        if restored is None:
-            raise FileNotFoundError(checkpoint_path)
-        checkpoint = restored["checkpoint"]
-        mode = str(restored.get("mode") or checkpoint.mode or "text")
-        population = restored["population"]
-        archives = restored["archives"]
-        policy = restored["policy"]
-        contract = _contract_from_checkpoint(mode, restored.get("contract") or {})
-        restored_artifact_policy_config = _artifact_policy_config_from_adaptive_state(restored.get("adaptive_state") or {})
-        if restored_artifact_policy_config:
-            previous_contract_hash = contract.contract_hash()
-            previous_dynamic_hash = contract.dynamic_artifact_contract_hash()
-            apply_artifact_policy_to_contract(contract, restored_artifact_policy_config, source="adaptive_state.resume")
-            _rebase_population_contract_hashes(
-                population,
-                previous_contract_hash=previous_contract_hash,
-                current_contract_hash=contract.contract_hash(),
-                previous_dynamic_artifact_contract_hash=previous_dynamic_hash,
-                current_dynamic_artifact_contract_hash=contract.dynamic_artifact_contract_hash(),
+        with capture_fallback_events() as fallback_events:
+            if self.output_dir is None:
+                raise ValueError("resume_from_checkpoint requires output_dir")
+            checkpoint_path = self.output_dir / "checkpoint.json"
+            restored = CheckpointStore(checkpoint_path).restore_state()
+            if restored is None:
+                raise FileNotFoundError(checkpoint_path)
+            checkpoint = restored["checkpoint"]
+            runtime_options = restore_runtime_options(persisted=restored.get("runtime_options") or getattr(checkpoint, "runtime_options", {}), overrides={})
+            mode = str(restored.get("mode") or checkpoint.mode or "text")
+            population = restored["population"]
+            archives = restored["archives"]
+            policy = restored["policy"]
+            contract = _contract_from_checkpoint(mode, restored.get("contract") or {})
+            if mode == "project":
+                _enable_project_latent_exploration(contract)
+                _enable_project_theory_advisory_pressure(policy)
+            restored_artifact_policy_config = _artifact_policy_config_from_adaptive_state(restored.get("adaptive_state") or {})
+            if restored_artifact_policy_config:
+                apply_artifact_policy_to_contract(contract, restored_artifact_policy_config, source="adaptive_state.resume")
+            world = _world_from_checkpoint(mode, restored.get("world") or {})
+            verification_summaries: list[dict[str, Any]] = []
+            offspring_verifier = None
+            if mode == "project":
+                snapshot_data = _snapshot_payload_from_world(restored.get("world") or {})
+                if snapshot_data:
+                    snapshot = ProjectSnapshot.from_dict(snapshot_data)
+                    # Re-ground source-binding resolution after resume (runtime-only).
+                    archives.project_root = snapshot.root_path
+
+                    def verify_offspring(candidates: list[Any]) -> list[ProjectVerificationSummary]:
+                        summaries = self._verify_project_population(snapshot, candidates, include_tests=option_bool(runtime_options, "verification.include_tests", default=False), contract=contract, applied_overlays=_applied_overlays(restored_artifact_policy_config, contract))
+                        verification_summaries.extend(summary.to_dict() for summary in summaries)
+                        return summaries
+
+                    offspring_verifier = verify_offspring
+                    context_world = ProjectWorldModel.from_dict(dict(world.get("project_world_model") or world)) if isinstance(world, dict) else world
+                    context_result = self.context_orchestrator.build_for_parents(
+                        contract=contract,
+                        snapshot=snapshot,
+                        world=context_world,
+                        parents=population.candidates[:3],
+                        archives=archives,
+                        model=None,
+                        mutation_instruction="resume_project_context",
+                    )
+                    provided_context = {
+                        **dict(restored.get("provided_context") or {}),
+                        "ContextProtocolResult": context_result,
+                        "context_protocol": context_result.to_dict(),
+                        "source_context": context_result.to_source_context(),
+                    }
+                else:
+                    provided_context = dict(restored.get("provided_context") or {})
+            else:
+                provided_context = dict(restored.get("provided_context") or {})
+            budget_data = dict(getattr(checkpoint, "budget", {}) or {})
+            adaptive_resume = bool(budget_data.get("adaptive"))
+            if max_rounds is not None:
+                target_rounds = max(int(max_rounds), int(checkpoint.round or 0) + 1)
+            elif adaptive_resume:
+                previous_limit = int(budget_data.get("round_safety_limit") or checkpoint.max_rounds or 1)
+                safety_window = max(1, previous_limit)
+                target_rounds = int(checkpoint.round or 0) + safety_window
+            else:
+                target_rounds = max(int(checkpoint.max_rounds or checkpoint.round or 1), int(checkpoint.round or 0))
+            budget = resume_evolution_budget(
+                checkpoint_round=checkpoint.round,
+                checkpoint_max_rounds=checkpoint.max_rounds,
+                budget_data=budget_data,
+                max_rounds=max_rounds,
             )
-        world = _world_from_checkpoint(mode, restored.get("world") or {})
-        verification_summaries: list[dict[str, Any]] = []
-        offspring_verifier = None
-        if mode == "project":
-            snapshot_data = _snapshot_payload_from_world(restored.get("world") or {})
-            if snapshot_data:
-                snapshot = ProjectSnapshot.from_dict(snapshot_data)
-
-                def verify_offspring(candidates: list[Any]) -> list[ProjectVerificationSummary]:
-                    summaries = self._verify_project_population(snapshot, candidates, include_tests=False)
-                    verification_summaries.extend(summary.to_dict() for summary in summaries)
-                    return summaries
-
-                offspring_verifier = verify_offspring
-        budget_data = dict(getattr(checkpoint, "budget", {}) or {})
-        adaptive_resume = bool(budget_data.get("adaptive"))
-        if max_rounds is not None:
-            target_rounds = max(int(max_rounds), int(checkpoint.round or 0) + 1)
-        elif adaptive_resume:
-            previous_limit = int(budget_data.get("round_safety_limit") or checkpoint.max_rounds or 1)
-            safety_window = max(1, previous_limit)
-            target_rounds = int(checkpoint.round or 0) + safety_window
-        else:
-            target_rounds = max(int(checkpoint.max_rounds or checkpoint.round or 1), int(checkpoint.round or 0))
-        budget = resume_evolution_budget(
-            checkpoint_round=checkpoint.round,
-            checkpoint_max_rounds=checkpoint.max_rounds,
-            budget_data=budget_data,
-            max_rounds=max_rounds,
-        )
-        budget.max_rounds = target_rounds
-        budget.history = list(restored.get("budget_history") or [])
-        verification_plan = _verification_plan_from_restored(restored, contract=contract, mode=mode, model=self.model)
-        observer = self._live_observer(mode=mode, contract=contract, world=world, max_rounds=target_rounds, budget=budget.to_dict())
-        result = evolve_once(
-            population=population,
-            archives=archives,
-            policy=policy,
-            contract=contract,
-            world=world,
-            budget=budget,
-            model=self.model,
-            observer=observer,
-            offspring_verifier=offspring_verifier,
-            adaptive_state=restored.get("adaptive_state") or {},
-            verification_plan=verification_plan,
-            fabric_state=restored.get("fabric") or {},
-        )
-        world_payload = _world_to_dict_with_latent_metadata(world, contract)
-        run = NexusRunResult(
-            mode=mode,
-            contract=contract.to_dict() | {"contract_hash": contract.contract_hash()},
-            policy=result.policy.to_dict(),
-            world=world_payload,
-            evolution=result.to_dict(),
-            pipeline_events=list(result.pipeline_events),
-            verification_summaries=verification_summaries,
-        )
-        prompt_metadata = _model_prompt_metadata(self.model)
-        if prompt_metadata:
-            run.evolution["prompt_view_metadata"] = prompt_metadata
-        run.evolution.setdefault("runtime_metadata", {})["model_routes"] = self.model_routes.public_summary()
-        _sync_runtime_round_metadata(run.evolution, result)
-        run.artifacts = self._persist(run, result, contract=contract, world=world_payload, budget_history=budget.history, budget=budget)
-        return run
+            budget.max_rounds = target_rounds
+            budget.history = list(restored.get("budget_history") or [])
+            verification_plan = _verification_plan_from_restored(restored, contract=contract, mode=mode, model=self.model)
+            observer = self._live_observer(mode=mode, contract=contract, world=world, max_rounds=target_rounds, budget=budget.to_dict())
+            result = evolve_once(
+                population=population,
+                archives=archives,
+                policy=policy,
+                contract=contract,
+                world=world,
+                budget=budget,
+                model=self.model,
+                observer=observer,
+                offspring_verifier=offspring_verifier,
+                adaptive_state=restored.get("adaptive_state") or {},
+                verification_plan=verification_plan,
+                fabric_state=restored.get("fabric") or {},
+                provided_context=provided_context,
+            )
+            world_payload = _world_to_dict_with_latent_metadata(world, contract)
+            run = NexusRunResult(
+                mode=mode,
+                contract=contract_payload_for_persistence(contract) | {"contract_hash": contract.contract_hash()},
+                policy=result.policy.to_dict(),
+                world=world_payload,
+                evolution=result.to_dict(),
+                pipeline_events=list(result.pipeline_events),
+                verification_summaries=verification_summaries,
+            )
+            prompt_metadata = _model_prompt_metadata(self.model)
+            if prompt_metadata:
+                run.evolution["prompt_view_metadata"] = prompt_metadata
+            run.evolution["runtime_options"] = runtime_options
+            run.evolution.setdefault("runtime_metadata", {})["model_routes"] = self.model_routes.public_summary()
+            _sync_runtime_round_metadata(run.evolution, result)
+            _attach_fallback_events(run.evolution, fallback_events)
+            run.artifacts = self._persist(run, result, contract=contract, world=world_payload, budget_history=budget.history, budget=budget, runtime_options=runtime_options)
+            return run
 
     def _live_observer(self, *, mode: str, contract: Any, world: Any, max_rounds: int, budget: dict[str, Any] | None = None) -> Any | None:
         if self.output_dir is None:
             return None
         return LiveNexusStore(self.output_dir, mode=mode, contract=contract, world=world, max_rounds=max_rounds, budget=budget)
 
-    def _verify_project_population(self, snapshot: ProjectSnapshot, candidates: list[Any], *, include_tests: bool = False) -> list[ProjectVerificationSummary]:
-        return self.project_verification_service.verify_population(snapshot, candidates, include_tests=include_tests)
+    def _verify_project_population(self, snapshot: ProjectSnapshot, candidates: list[Any], *, include_tests: bool = False, contract: Any | None = None, applied_overlays: dict[str, Any] | None = None) -> list[ProjectVerificationSummary]:
+        verification_context = _verification_context(contract=contract, applied_overlays=applied_overlays)
+        allowed_patch_scope = [str(item) for item in getattr(contract, "allowed_patch_scope", []) or [] if str(item).strip()]
+        return self.project_verification_service.verify_population(snapshot, candidates, include_tests=include_tests, verification_context=verification_context, allowed_patch_scope=allowed_patch_scope)
 
-    def _persist(self, run: NexusRunResult, result: EvolutionLoopResult, *, contract: Any, world: Any, budget_history: list[dict[str, Any]], budget: EvolutionBudget | None = None) -> dict[str, str]:
-        return self.persistence_service.persist(run, result, contract=contract, world=world, budget_history=budget_history, budget=budget)
+    def _persist(self, run: NexusRunResult, result: EvolutionLoopResult, *, contract: Any, world: Any, budget_history: list[dict[str, Any]], budget: EvolutionBudget | None = None, runtime_options: dict[str, Any] | None = None) -> dict[str, str]:
+        return self.persistence_service.persist(run, result, contract=contract, world=world, budget_history=budget_history, budget=budget, runtime_options=runtime_options)
 
 
+
+
+def _enable_project_theory_advisory_pressure(policy: EvolutionPolicy) -> None:
+    metadata = policy.metadata if isinstance(policy.metadata, dict) else {}
+    theory = dict(metadata.get("theory") or {})
+    producers = dict(theory.get("producers") or {})
+    weights = dict(theory.get("weights") or {})
+    theory["enabled"] = True
+    for name in ("mdl", "boed", "geometry"):
+        producers[name] = True
+    for name, weight in {"mdl": 0.02, "boed": 0.015, "geometry": 0.015}.items():
+        weights.setdefault(name, weight)
+    theory["producers"] = producers
+    theory["weights"] = weights
+    metadata["theory"] = theory
+    policy.metadata = metadata
+
+
+def _enable_project_latent_exploration(contract: NexusObjectiveContract) -> None:
+    metadata = contract.metadata if isinstance(contract.metadata, dict) else {}
+    metadata["latent_objective_enabled"] = True
+    contract.metadata = metadata
 
 
 def _resolve_budget_width_from_policy(budget: EvolutionBudget, policy: EvolutionPolicy) -> None:
@@ -411,9 +500,18 @@ def _build_text_world_model(packet: TextInputPacket, *, model: NexusModelLike | 
     """Prefer a model-authored text world model; local extraction is a fallback."""
 
     if model is not None and hasattr(model, "build_text_world_model"):
+        exceptions = getattr(model, "fallback_exceptions", MODEL_BOUNDARY_ERRORS)
+        if not isinstance(exceptions, tuple) or not all(isinstance(item, type) and issubclass(item, Exception) for item in exceptions):
+            exceptions = MODEL_BOUNDARY_ERRORS
         try:
             raw = model.build_text_world_model(packet=packet)
-        except Exception:
+        except exceptions as exc:
+            record_fallback(
+                stage="text_world_model",
+                reason=exc.__class__.__name__,
+                detail=str(exc),
+                target=getattr(model, "identity", type(model).__name__),
+            )
             raw = None
         if isinstance(raw, TextWorldModel):
             return raw
@@ -483,8 +581,8 @@ def _sync_runtime_round_metadata(evolution: dict[str, Any], result: EvolutionLoo
 
 def _verification_plan_from_restored(restored: dict[str, Any], *, contract: NexusObjectiveContract, mode: str, model: Any | None) -> VerificationPlan:
     adaptive_state = dict(restored.get("adaptive_state") or {})
-    research = dict(adaptive_state.get("research_extensions") or {})
-    plan = dict(research.get("verification_plan") or restored.get("verification_plan") or {})
+    legacy_research = dict(adaptive_state.get("research_extensions") or {})
+    plan = dict(adaptive_state.get("verification_plan") or legacy_research.get("verification_plan") or restored.get("verification_plan") or {})
     if plan:
         return VerificationPlan.from_dict(plan)
     return VerificationSynthesizer(model=model).synthesize({"goal": getattr(contract, "normalized_goal", "") or contract.to_dict(), "mode": mode, "resynthesized_from_checkpoint": True})
@@ -494,6 +592,27 @@ def _contract_from_checkpoint(mode: str, data: dict[str, Any]) -> NexusObjective
     if mode == "project" or any(key in data for key in ["allowed_patch_scope", "implementation_files", "test_contracts"]):
         return NexusProjectObjectiveContract.from_dict(data)
     return NexusObjectiveContract.from_dict(data)
+
+
+def _verification_context(*, contract: Any | None, applied_overlays: dict[str, Any] | None = None) -> dict[str, Any]:
+    if contract is None:
+        return {}
+    context: dict[str, Any] = {}
+    if hasattr(contract, "contract_hash"):
+        context["verification_contract_hash"] = contract.contract_hash()
+    if hasattr(contract, "dynamic_artifact_contract_hash"):
+        context["verification_dynamic_artifact_contract_hash"] = contract.dynamic_artifact_contract_hash()
+    overlays = dict(applied_overlays or {})
+    if overlays:
+        context["applied_overlays"] = overlays
+    return context
+
+
+def _applied_overlays(config: dict[str, Any], contract: Any | None) -> dict[str, Any]:
+    if not config:
+        return {}
+    value = contract.dynamic_artifact_contract_hash() if hasattr(contract, "dynamic_artifact_contract_hash") else dict(config)
+    return {"artifact-policy": value}
 
 
 def _artifact_policy_config_from_adaptive_config(adaptive_config: dict[str, Any] | None) -> dict[str, Any]:
@@ -507,39 +626,6 @@ def _artifact_policy_config_from_adaptive_state(adaptive_state: dict[str, Any]) 
     config = state.get("config") if isinstance(state.get("config"), dict) else {}
     evidence = config.get("evidence") if isinstance(config.get("evidence"), dict) else {}
     return dict(evidence or {})
-
-
-def _rebase_population_contract_hashes(
-    population: Any,
-    *,
-    previous_contract_hash: str,
-    current_contract_hash: str,
-    previous_dynamic_artifact_contract_hash: str,
-    current_dynamic_artifact_contract_hash: str,
-) -> None:
-    """Keep resumed candidates aligned with a policy overlay applied in memory.
-
-    Historical checkpoint bytes are not rewritten.  Only restored candidates that
-    clearly point at the pre-overlay contract hash are rebased so future
-    verifier checks do not turn an approved ArtifactPolicy overlay into a stale
-    contract failure for the whole population.
-    """
-
-    if not previous_contract_hash or previous_contract_hash == current_contract_hash:
-        return
-    for candidate in getattr(population, "candidates", []) or []:
-        if getattr(candidate, "contract_hash", "") != previous_contract_hash:
-            continue
-        metadata = dict(getattr(candidate, "metadata", {}) or {})
-        metadata["contract_hash_overlay_rebased"] = {
-            "previous_contract_hash": previous_contract_hash,
-            "current_contract_hash": current_contract_hash,
-            "previous_dynamic_artifact_contract_hash": previous_dynamic_artifact_contract_hash,
-            "current_dynamic_artifact_contract_hash": current_dynamic_artifact_contract_hash,
-            "reason": "adaptive_artifact_policy_overlay_on_resume",
-        }
-        candidate.metadata = metadata
-        candidate.contract_hash = current_contract_hash
 
 
 def _world_from_checkpoint(mode: str, data: dict[str, Any]) -> Any:

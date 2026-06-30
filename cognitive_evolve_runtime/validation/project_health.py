@@ -28,7 +28,6 @@ CORE_REQUIRED_FILES = [
     "cognitive_evolve_runtime/nexus/evaluation.py",
     "cognitive_evolve_runtime/llm/litellm_provider.py",
     "cognitive_evolve_runtime/llm/provider_interface.py",
-    "cognitive_evolve_runtime/tools/verification_stack.py",
     "scripts/cogev.py",
     "pyproject.toml",
 ]

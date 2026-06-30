@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome, CandidateIdentity, CandidateState
+from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome, CandidateIdentity, CandidateState, candidate_from_dict
 from cognitive_evolve_runtime.candidates.project_candidate import PatchOperation, ProjectCandidateGenome
 from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy
 from cognitive_evolve_runtime.nexus.diagnosis import SearchDiagnosis
@@ -66,3 +66,26 @@ def test_project_candidate_policy_and_diagnosis_roundtrip() -> None:
     assert decoded.touched_files == ["pkg/module.py"]
     assert EvolutionPolicy.from_json(policy.to_json()).rarity_budget == 0.4
     assert SearchDiagnosis.from_json(diagnosis.to_json()).recommended_actions == ["core_extraction"]
+
+
+def test_nested_artifact_patch_set_hydrates_project_candidate() -> None:
+    decoded = candidate_from_dict(
+        {
+            "id": "P-nested",
+            "artifact_type": "project_patch",
+            "artifact": {
+                "patch_set": [
+                    {
+                        "path": "pkg/module.py",
+                        "operation": "replace",
+                        "old_text": "bad",
+                        "new_text": "good",
+                    }
+                ]
+            },
+        }
+    )
+
+    assert isinstance(decoded, ProjectCandidateGenome)
+    assert decoded.patch_set[0].path == "pkg/module.py"
+    assert decoded.touched_files == ["pkg/module.py"]

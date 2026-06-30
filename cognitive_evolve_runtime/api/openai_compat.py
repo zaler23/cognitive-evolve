@@ -54,7 +54,8 @@ def _resume_engine(*, output_dir: Path, model: str, max_rounds: int | None = Non
     from ..nexus.runtime import NexusRuntime
     from .profiles import _temporary_model_runtime
 
-    with llm_session(LLMSession()), _temporary_model_runtime(model):
+    llm_call_dir = output_dir / "llm-calls"
+    with llm_session(LLMSession(journal_dir=str(llm_call_dir), call_ledger_path=str(llm_call_dir / "llm-call-ledger.jsonl"))), _temporary_model_runtime(model):
         runtime = NexusRuntime.with_configured_llm(output_dir=output_dir)
         run = runtime.resume_from_checkpoint(max_rounds=max_rounds)
     data = run.to_dict()
@@ -167,7 +168,7 @@ def _install_health_and_model_routes(app: FastAPI) -> None:
                     "permission": [],
                     "cognitive_evolve": {
                         "runtime_path": "nexus",
-                        "completion_semantics": "one request triggers adaptive candidate evolution; safety checkpoints return needs_continuation, not solved",
+                        "completion_semantics": "one request triggers adaptive candidate evolution; completed means an answer was produced, not externally certified",
                         "streaming_semantics": "progress events and safe heartbeats first, final answer chunks after synthesis; not token-by-token model streaming",
                     },
                 }
@@ -293,7 +294,7 @@ def _install_job_routes(app: FastAPI) -> None:
         job = _get_job(job_id)
         if not job:
             raise HTTPException(status_code=404, detail="Unknown CognitiveEvolve job id.")
-        if job.get("status") in {"completed", "best_current_route", "failed", "cancelled", "needs_continuation", "route_incomplete", "failed_verification", "interrupted_checkpointed", "paused_quota"}:
+        if job.get("status") in {"completed", "failed", "cancelled", "needs_continuation", "failed_verification", "interrupted_checkpointed", "paused_quota"}:
             return JSONResponse(_job_public(job))
         _cancel_job_future(job_id)
         updated = _set_job(job_id, cancellation_requested=True, status="cancellation_requested")
@@ -305,7 +306,7 @@ def _install_job_routes(app: FastAPI) -> None:
         job = _get_job(job_id)
         if not job:
             raise HTTPException(status_code=404, detail="Unknown CognitiveEvolve job id.")
-        if job.get("status") not in {"completed", "best_current_route"}:
+        if not _job_has_result_payload(job):
             return JSONResponse(_job_public(job, include_answer=False), status_code=202)
         payload = _completion_payload(
             request_id=job_id,

@@ -15,12 +15,16 @@ from typing import Any
 
 from cognitive_evolve_runtime.durable import append_jsonl, stable_hash
 from cognitive_evolve_runtime.llm.journal import journal_dir
+from cognitive_evolve_runtime.llm.session import current_llm_session
 
 CALL_LEDGER_ENV = "COGEV_LLM_CALL_LEDGER"
 _LOCK = threading.RLock()
 
 
 def call_ledger_path() -> Path | None:
+    session_path = str(getattr(current_llm_session(), "call_ledger_path", None) or "").strip()
+    if session_path:
+        return Path(session_path).expanduser()
     configured = str(os.environ.get(CALL_LEDGER_ENV) or "").strip()
     if configured:
         return Path(configured).expanduser()

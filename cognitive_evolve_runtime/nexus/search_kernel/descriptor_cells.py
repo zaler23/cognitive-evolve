@@ -5,8 +5,10 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from cognitive_evolve_runtime.candidates.genome import CandidateGenome
+from cognitive_evolve_runtime.candidates.project_candidate import PatchOperation
 from cognitive_evolve_runtime.nexus._serde import coerce_dict
-from .fingerprints import normalize_token
+from cognitive_evolve_runtime.nexus.nextgen import ensure_nextgen_identity
+from .fingerprints import base_mechanism_family, normalize_token
 
 
 @dataclass(frozen=True)
@@ -51,6 +53,81 @@ def descriptor_cell(candidate: CandidateGenome) -> DescriptorCell:
 
 def descriptor_cell_key(candidate: CandidateGenome) -> str:
     return descriptor_cell(candidate).key()
+
+
+def behavior_descriptor(candidate: CandidateGenome) -> tuple[str, ...]:
+    """Grounded behavior descriptor for novelty and QD pressure."""
+
+    metadata = coerce_dict(candidate.metadata)
+    patch_result = coerce_dict(getattr(candidate, "patch_application_result", {}) or metadata.get("patch_result"))
+    nextgen = ensure_nextgen_identity(candidate)
+    family = _first_non_empty(nextgen.get("canonical_mechanism_family_id"), base_mechanism_family(candidate), "general")
+    paths = _candidate_paths(candidate, patch_result=patch_result, metadata=metadata)
+    applied = coerce_dict(patch_result).get("status") == "applied"
+    return tuple(
+        item
+        for item in (
+            _family_descriptor_token(family),
+            _path_bucket(paths.get("source", []), prefix="src"),
+            _path_bucket(paths.get("patch", []), prefix="patch"),
+            _path_bucket(paths.get("target", []), prefix="target"),
+            "applied" if applied else "not_applied",
+        )
+        if item
+    )
+
+
+def _family_descriptor_token(value: Any) -> str:
+    text = str(value or "").strip()
+    if "#m" in text:
+        return text[:80]
+    return normalize_token(text)[:40] or "general"
+
+
+def _candidate_paths(candidate: CandidateGenome, *, patch_result: dict[str, Any], metadata: dict[str, Any]) -> dict[str, list[str]]:
+    source: list[str] = []
+    patch: list[str] = []
+    target: list[str] = []
+    for binding in candidate.source_bindings:
+        if not isinstance(binding, dict):
+            continue
+        path = _path_token(binding.get("path") or binding.get("file") or binding.get("source_path"))
+        if path:
+            source.append(path)
+    for op in getattr(candidate, "patch_set", []) or []:
+        path = _path_token(op.path if isinstance(op, PatchOperation) else coerce_dict(op).get("path"))
+        if path:
+            patch.append(path)
+    for value in getattr(candidate, "touched_files", []) or []:
+        path = _path_token(value)
+        if path:
+            patch.append(path)
+    for value in patch_result.get("applied_files") or []:
+        path = _path_token(value)
+        if path:
+            patch.append(path)
+    for key in ("target_files", "target_paths", "affected_files"):
+        for value in metadata.get(key) or []:
+            path = _path_token(value)
+            if path:
+                target.append(path)
+    repair = coerce_dict(metadata.get("repair_required") or metadata.get("repair_seed"))
+    for value in repair.get("target_files") or repair.get("paths") or []:
+        path = _path_token(value)
+        if path:
+            target.append(path)
+    return {"source": list(dict.fromkeys(source))[:4], "patch": list(dict.fromkeys(patch))[:4], "target": list(dict.fromkeys(target))[:4]}
+
+
+def _path_bucket(paths: list[str], *, prefix: str) -> str:
+    if not paths:
+        return f"{prefix}:none"
+    return f"{prefix}:" + "+".join(normalize_token(path)[-48:] or "path" for path in paths[:3])
+
+
+def _path_token(value: Any) -> str:
+    text = str(value or "").strip().lstrip("./")
+    return text if text and ".." not in text.split("/") else ""
 
 
 def _evidence_state(candidate: CandidateGenome) -> str:
@@ -99,4 +176,4 @@ def _first_non_empty(*values: Any) -> str:
     return "general"
 
 
-__all__ = ["DescriptorCell", "descriptor_cell", "descriptor_cell_key"]
+__all__ = ["DescriptorCell", "behavior_descriptor", "descriptor_cell", "descriptor_cell_key"]

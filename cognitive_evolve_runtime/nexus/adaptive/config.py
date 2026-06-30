@@ -6,7 +6,6 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from cognitive_evolve_runtime.nexus._serde import coerce_dict
-from cognitive_evolve_runtime.nexus.adaptive.research import ResearchConfig
 
 
 @dataclass(frozen=True)
@@ -47,12 +46,10 @@ class AdaptiveConfig:
     spatial: SpatialAdaptiveConfig = field(default_factory=SpatialAdaptiveConfig)
     mdl: dict[str, Any] = field(default_factory=dict)
     elite_gate: dict[str, Any] = field(default_factory=dict)
-    research: ResearchConfig = field(default_factory=ResearchConfig)
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
         data["spatial"] = self.spatial.to_dict()
-        data["research"] = self.research.to_dict()
         return data
 
     @classmethod
@@ -77,8 +74,7 @@ class AdaptiveConfig:
         if evaluator_enabled:
             evaluator["enabled"] = True
         spatial = SpatialAdaptiveConfig.from_mapping(merged.get("spatial"))
-        research = ResearchConfig.from_mapping(merged.get("research"))
-        enabled = _bool(merged.get("enabled"), default=evaluator_enabled or spatial.enabled or research.enabled or _bool(merged.get("mdl", {}).get("enabled") if isinstance(merged.get("mdl"), dict) else None, default=False))
+        enabled = _bool(merged.get("enabled"), default=evaluator_enabled or spatial.enabled or _bool(merged.get("mdl", {}).get("enabled") if isinstance(merged.get("mdl"), dict) else None, default=False))
         return cls(
             enabled=enabled,
             evaluator=evaluator,
@@ -86,7 +82,6 @@ class AdaptiveConfig:
             spatial=spatial,
             mdl=coerce_dict(merged.get("mdl")),
             elite_gate=coerce_dict(merged.get("elite_gate")),
-            research=research,
         )
 
     @property
@@ -100,7 +95,6 @@ class AdaptiveConfig:
             "spatial_selection": self.enabled and self.spatial.enabled and self.spatial.mode in {"selection", "local_evaluation"},
             "mdl": self.enabled and _bool(self.mdl.get("enabled"), default=False),
             "elite_gate": self.enabled,
-            "research_extension_registry": self.enabled and self.research.enabled,
         }
 
 
@@ -161,4 +155,4 @@ def _int(value: Any, *, default: int = 0) -> int:
         return default
 
 
-__all__ = ["AdaptiveConfig", "SpatialAdaptiveConfig", "ResearchConfig"]
+__all__ = ["AdaptiveConfig", "SpatialAdaptiveConfig"]

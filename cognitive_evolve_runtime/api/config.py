@@ -55,7 +55,7 @@ PLACEHOLDER_SERVICE_API_KEYS = {
 
 MODEL_ROUND_CAPS = {
     # 0 means adaptive: the Nexus budget/profile sets a safety checkpoint, and
-    # completion still requires a stop/verifier signal. Operators may override
+    # answer-first completion can return candidate output without self-certification. Operators may override
     # per model with COGEV_MODEL_ROUND_CAP_<MODEL>=N for an explicit hard cap.
     "cognitive-evolve-one-shot": "0",
     "cognitive-evolve-one-shot-deep": "0",

@@ -1,9 +1,9 @@
-"""Strict final-answer gate for project/source-grounded candidates.
+"""Advisory final-answer telemetry for project/source-grounded candidates.
 
-This gate is deliberately about *final eligibility*, not search survival.  A
-hybrid/design candidate may remain useful as repair material, but a project
-update is not final unless its sources, symbols, evidence, and completion flags
-are concrete enough to re-verify locally.
+The final gate is advisory telemetry; it no longer blocks final answers on source bindings, evidence, or
+patch materialization.  In answer-first exploration mode those checks remain
+useful telemetry, but they never decide whether the runtime may return a final
+answer.  Validation and source review are explicitly user-owned after the run.
 """
 from __future__ import annotations
 
@@ -35,8 +35,8 @@ from cognitive_evolve_runtime.nexus.artifact_contract import (
 class FinalGateSummary:
     """Final-only project eligibility summary.
 
-    ``rank_eligible`` remains true so exploratory candidates are not killed just
-    because they are not yet publishable.
+    ``rank_eligible`` and ``final_eligible`` remain true for any non-empty
+    candidate.  Diagnostics are advisory notes only.
     """
 
     candidate_id: str
@@ -56,7 +56,6 @@ FINAL_BLOCKING_METADATA_FLAGS = (
     "final_answer_blocked_until_repaired",
     "final_answer_blocked_until_reverified",
     "final_answer_blocked_until_verified",
-    "search_seed_not_final",
 )
 
 NON_FINAL_ARTIFACT_TYPES = {"hybrid", "narrative", "design", "pseudo_code", "proposal", "analysis"}
@@ -140,11 +139,11 @@ def final_gate_summary(
     if source_required and source_bindings and not _evidence_covers_source_bindings(evidence_refs, source_bindings, root=root):
         diagnostics.append("evidence_ref_not_source_relevant")
 
-    final_eligible = not diagnostics
     return FinalGateSummary(
         candidate_id=candidate.id,
         required=required,
-        final_eligible=final_eligible,
+        rank_eligible=True,
+        final_eligible=True,
         diagnostics=list(dict.fromkeys(diagnostics)),
         missing_symbols=missing_symbols,
         evidence_refs_checked=len(evidence_refs),

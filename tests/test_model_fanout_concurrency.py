@@ -6,7 +6,9 @@ from typing import Any
 
 from cognitive_evolve_runtime.candidates.genome import CandidateGenome
 from cognitive_evolve_runtime.candidates.mutation import MutationEngine, MutationOperator, MutationPlan
+from cognitive_evolve_runtime.llm.env import LLMResponseError
 from cognitive_evolve_runtime.nexus.loop.offspring import _generate_offspring
+from cognitive_evolve_runtime.nexus.loop.offspring import _merge_plan_metadata_into_model_offspring
 from cognitive_evolve_runtime.nexus.loop.seeding import _generate_model_seed_batches
 from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy
 from cognitive_evolve_runtime.nexus.search_kernel.harvesting import CandidateHarvester, HarvestPolicy
@@ -86,6 +88,25 @@ class _NoveltyExhaustionSeedModel:
         ]
 
 
+class _PartialErrorSeedModel:
+    def __init__(self) -> None:
+        self.calls: list[int] = []
+
+    def seed_population(self, *, contract: Any, world: Any, policy: EvolutionPolicy) -> list[dict[str, Any]]:
+        batch = int((policy.metadata or {}).get("seed_batch_index") or 0)
+        self.calls.append(batch)
+        if batch == 1:
+            raise LLMResponseError("recoverable provider hiccup")
+        return [
+            {
+                "id": f"P{batch}",
+                "artifact": f"partial seed artifact {batch}",
+                "concise_claim": f"partial seed claim {batch}",
+                "core_mechanism": f"partial seed mechanism {batch}",
+            }
+        ]
+
+
 class _FanoutOffspringModel:
     def __init__(self, probe: _ConcurrencyProbe) -> None:
         self.probe = probe
@@ -156,7 +177,7 @@ def test_candidate_harvester_model_fanout_serial_fallback(monkeypatch) -> None:
     assert [candidate.id for candidate in result.accepted[:3]] == ["C0", "C1", "C2"]
 
 
-def test_seed_generation_decouples_batch_count_from_global_model_fanout(monkeypatch) -> None:
+def test_seed_generation_default_follows_global_model_fanout(monkeypatch) -> None:
     monkeypatch.setenv("COGEV_MODEL_FANOUT_CONCURRENCY", "3")
     monkeypatch.setenv("COGEV_NEXUS_SEED_MIN_BATCHES", "4")
     monkeypatch.setenv("COGEV_NEXUS_SEED_BATCH_LIMIT", "4")
@@ -171,9 +192,51 @@ def test_seed_generation_decouples_batch_count_from_global_model_fanout(monkeypa
     )
 
     assert error is None
+    assert probe.max_active > 1
+    assert rejected == []
+    assert [candidate.id for candidate in accepted[:4]] == ["S0", "S1", "S2", "S3"]
+
+
+def test_seed_generation_serial_override_still_disables_seed_fanout(monkeypatch) -> None:
+    monkeypatch.setenv("COGEV_MODEL_FANOUT_CONCURRENCY", "3")
+    monkeypatch.setenv("COGEV_NEXUS_SEED_MIN_BATCHES", "4")
+    monkeypatch.setenv("COGEV_NEXUS_SEED_BATCH_LIMIT", "4")
+    probe = _ConcurrencyProbe()
+
+    accepted, rejected, error = _generate_model_seed_batches(
+        model=_FanoutSeedModel(probe),
+        contract=_Contract(),
+        world=_World(),
+        policy=EvolutionPolicy(metadata={"seed_batch_concurrency": 1}),
+        target_size=4,
+    )
+
+    assert error is None
     assert probe.max_active == 1
     assert rejected == []
     assert [candidate.id for candidate in accepted[:4]] == ["S0", "S1", "S2", "S3"]
+
+
+def test_seed_generation_preserves_successful_batches_after_recoverable_batch_error(monkeypatch) -> None:
+    monkeypatch.setenv("COGEV_MODEL_FANOUT_CONCURRENCY", "4")
+    monkeypatch.setenv("COGEV_NEXUS_SEED_MIN_BATCHES", "4")
+    monkeypatch.setenv("COGEV_NEXUS_SEED_BATCH_LIMIT", "4")
+    model = _PartialErrorSeedModel()
+
+    accepted, rejected, error = _generate_model_seed_batches(
+        model=model,
+        contract=_Contract(),
+        world=_World(),
+        policy=EvolutionPolicy(),
+        target_size=4,
+    )
+
+    assert error is None
+    assert sorted(model.calls) == [0, 1, 2, 3]
+    assert [candidate.id for candidate in accepted] == ["P0", "P2", "P3"]
+    assert all("model_seed_error" not in candidate.metadata for candidate in accepted)
+    assert any(item.get("reason") == "recoverable_model_error" and item.get("batch") == 1 for item in rejected)
+    assert accepted[0].metadata["seed_harvest"]["failed_batch_ids"] == [1]
 
 
 def test_seed_generation_continues_past_target_until_novelty_exhaustion(monkeypatch) -> None:
@@ -241,3 +304,38 @@ def test_offspring_generation_uses_bounded_model_fanout(monkeypatch) -> None:
 
     assert probe.max_active > 1
     assert {"O0", "O1", "O2", "O3"}.issubset({candidate.id for candidate in offspring})
+
+
+def test_model_offspring_merges_edge_lineage_by_parent_or_plan_not_modulo_index() -> None:
+    parent_a = CandidateGenome(
+        id="PA",
+        edge_knowledge_seeds=["edge-a"],
+        inherited_genes=["gene-a"],
+        novelty_descriptors=["novel-a"],
+        niche_memberships=["niche-a"],
+    )
+    parent_b = CandidateGenome(
+        id="PB",
+        edge_knowledge_seeds=["edge-b"],
+        inherited_genes=["gene-b"],
+        novelty_descriptors=["novel-b"],
+        niche_memberships=["niche-b"],
+    )
+    plans = [
+        MutationPlan(operator=MutationOperator.DEEPEN, parent_ids=["PA"], metadata={"plan_id": "plan-a", "edge_knowledge_seeds": ["plan-edge-a"]}),
+        MutationPlan(operator=MutationOperator.REPAIR, parent_ids=["PB"], metadata={"plan_id": "plan-b", "niche_memberships": ["plan-niche-b"]}),
+    ]
+    child_b = CandidateGenome(id="CB", parent_ids=["PB"], metadata={"plan_id": "plan-b"}, novelty_descriptors=["child-novel"])
+    child_a = CandidateGenome(id="CA", metadata={"parent_id": "PA"})
+    child_unmapped = CandidateGenome(id="CU")
+
+    _merge_plan_metadata_into_model_offspring([child_b, child_a, child_unmapped], plans, [parent_a, parent_b])
+
+    assert child_b.edge_knowledge_seeds == ["edge-b"]
+    assert child_b.inherited_genes == ["gene-b"]
+    assert child_b.novelty_descriptors == ["child-novel", "novel-b"]
+    assert child_b.niche_memberships == ["plan-niche-b", "niche-b"]
+    assert child_a.edge_knowledge_seeds == ["plan-edge-a", "edge-a"]
+    assert child_a.inherited_genes == ["gene-a"]
+    assert child_unmapped.metadata["plan_lineage_unresolved"] is True
+    assert child_unmapped.edge_knowledge_seeds == []

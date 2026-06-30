@@ -8,6 +8,7 @@ from cognitive_evolve_runtime.outcomes import (
     LatentProblemState,
     annotate_candidates_with_latent_signals,
     ingest_latent_feedback,
+    latent_audit,
 )
 from cognitive_evolve_runtime.outcomes.latent_audit import (
     audit_latent_replay_bundle,
@@ -132,3 +133,32 @@ def test_no_latent_decision_traces_is_empty_pass() -> None:
     assert audit["failed"] == 0
     assert audit["trace_refs"] == []
     assert audit["failures"] == []
+
+
+def test_latent_replay_audit_caps_active_evidence_ids(monkeypatch) -> None:
+    candidate = CandidateGenome(
+        id="C",
+        metadata={
+            "latent_decision_trace": {
+                "latent_posterior_snapshot_hash": "hash-ok",
+                "latent_ledger_cursor": 1,
+            }
+        },
+    )
+
+    def fake_replay(_contract, _trace):
+        return {
+            "passed": True,
+            "actual_snapshot_hash": "hash-ok",
+            "latent_ledger_cursor": 1,
+            "active_evidence_ids": [f"evidence-{index}" for index in range(100)],
+        }
+
+    monkeypatch.setattr(latent_audit, "audit_latent_decision_replay", fake_replay)
+
+    audit = audit_latent_replay_bundle(_contract(), candidates=[candidate])
+    result = audit["results"][0]
+
+    assert result["active_evidence_id_count"] == 100
+    assert len(result["active_evidence_ids"]) == 32
+    assert result["active_evidence_ids_truncated"] is True

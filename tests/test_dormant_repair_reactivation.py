@@ -89,11 +89,11 @@ def test_recoverable_dormant_archive_seed_prevents_no_parents_available() -> Non
     child = population.candidates[0]
     assert child.parent_ids == ["archive-repair"]
     assert child.metadata["repair_seed"]["target_files"] == ["cognitive_evolve_runtime/nexus/loop.py"]
-    assert child.metadata["targeted_repair_lane"] is True
+    assert child.metadata["targeted_repair_lane"] is False
     assert archives.dormant_archive.candidates["archive-repair"]["metadata"]["repair_attempts"] == 1
 
 
-def test_dormant_recovery_rejects_narrative_only_source_free_candidate() -> None:
+def test_dormant_recovery_keeps_narrative_only_source_free_candidate_as_advisory() -> None:
     archives = ArchiveManager()
     archives.dormant_archive.add(
         CandidateGenome(
@@ -115,7 +115,8 @@ def test_dormant_recovery_rejects_narrative_only_source_free_candidate() -> None
         current_round=7,
     )
 
-    assert recovered == []
+    assert [candidate.id for candidate in recovered] == ["narrative-only"]
+    assert recovered[0].metadata["dormant_recovery_advisory"]["category"] == "terminal_narrative_or_source_free_final_claim"
 
 
 def test_recovery_requires_existing_project_target() -> None:
@@ -134,7 +135,7 @@ def test_recovery_requires_existing_project_target() -> None:
     assert verdict.category == "terminal_recovery_missing_existing_project_path"
 
 
-def test_repair_attempt_cap_tombstones_repeated_dormant_recovery() -> None:
+def test_repair_attempt_cap_is_soft_for_dormant_recovery() -> None:
     archives = ArchiveManager()
     exhausted = _repairable_candidate("exhausted-repair")
     exhausted.metadata["repair_attempts"] = 1
@@ -155,7 +156,47 @@ def test_repair_attempt_cap_tombstones_repeated_dormant_recovery() -> None:
         current_round=8,
     )
 
-    assert recovered == []
+    assert [candidate.id for candidate in recovered] == ["exhausted-repair"]
+    assert recovered[0].metadata["dormant_recovery_advisory"]["category"] == "terminal_repair_attempts_exhausted"
+
+
+def test_max_per_group_is_soft_group_hint_not_hard_cap() -> None:
+    archives = ArchiveManager()
+    first = _repairable_candidate("group-a")
+    second = _repairable_candidate("group-b")
+    first.lineage = ["shared-family", first.id]
+    second.lineage = ["shared-family", second.id]
+    archives.dormant_archive.add(first)
+    archives.dormant_archive.add(second)
+    policy = EvolutionPolicy(
+        metadata={
+            "eligibility_policy": {
+                "dormant_repair_reactivation": {
+                    "enabled": True,
+                    "max_repair_attempts": 3,
+                    "max_per_group": 1,
+                    "max_seeds": 3,
+                }
+            }
+        }
+    )
+
+    recovered = recover_repairable_dormant_seeds(
+        archives=archives,
+        diagnosis=_diagnosis(),
+        policy=policy,
+        limit=3,
+        current_round=10,
+    )
+
+    assert {candidate.id for candidate in recovered} == {"group-a", "group-b"}
+    hinted = [
+        candidate
+        for candidate in recovered
+        if candidate.metadata.get("candidate_budget_decision", {}).get("reason") == "soft_group_hint"
+    ]
+    assert len(hinted) == 1
+    assert hinted[0].metadata["candidate_budget_decision"]["hard_gate"] is False
 
 
 def test_repair_seed_prompt_view_exposes_concise_contract() -> None:
@@ -173,4 +214,4 @@ def test_repair_seed_prompt_view_exposes_concise_contract() -> None:
     view = candidate_prompt_view(recovered[0])
 
     assert view["repair_seed_contract"]["target_files"] == ["cognitive_evolve_runtime/nexus/loop.py"]
-    assert "narrative-only" in view["repair_seed_contract"]["contract"]
+    assert "answer-first exploration" in view["repair_seed_contract"]["contract"]

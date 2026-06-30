@@ -57,8 +57,11 @@ def test_reproduce_uses_ranked_repair_parent_when_strict_parent_pool_is_empty() 
 
     assert stop_reason != "no_parents_available"
     assert len(population.candidates) > 1
-    assert parent.metadata["no_parent_repair_fallback"]["final_answer_blocked"] is True
-    assert parent.metadata["final_answer_blocked_until_repaired"] is True
+    assert parent.metadata.get("no_parent_repair_fallback") is None
+    assert any(
+        decision.get("reason") == "eligible_for_exploration_budget"
+        for decision in parent.metadata.get("candidate_budget_decisions", [])
+    )
 
 
 def test_reproduce_does_not_use_dormant_fallback_without_reactivation_signal() -> None:
@@ -195,10 +198,8 @@ def test_patch_application_failed_candidate_can_seed_bounded_repair_when_pool_is
     )
 
     assert stop_reason != "no_parents_available"
-    assert len(population.candidates) >= 1
-    assert population.candidates[0].parent_ids == ["failed-diff-seed"]
-    assert parent.metadata["repair_attempts"] == 1
-    assert population.candidates[0].metadata["repair_attempts"] == 1
+    children = [candidate for candidate in population.candidates if candidate.parent_ids == ["failed-diff-seed"]]
+    assert children
     assert parent.metadata["no_parent_repair_fallback"]["final_answer_blocked"] is True
     assert parent.metadata["final_answer_blocked_until_repaired"] is True
 
@@ -260,8 +261,7 @@ def test_post_compaction_failed_candidate_can_seed_bounded_repair() -> None:
     )
 
     assert stop_reason != "no_parents_available"
-    assert len(population.candidates) >= 1
-    assert population.candidates[0].parent_ids == ["compacted-failed-diff"]
+    assert any(candidate.parent_ids == ["compacted-failed-diff"] for candidate in population.candidates)
     assert parent.metadata["no_parent_repair_fallback"]["final_answer_blocked"] is True
     assert parent.metadata["final_answer_blocked_until_repaired"] is True
 

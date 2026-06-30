@@ -1,16 +1,28 @@
-"""Final synthesis for Nexus runs."""
+"""Answer-first final synthesis for Nexus runs.
+
+This module has exactly one user-facing selection authority: choose the strongest
+non-structural answer candidate and surface its answer material. Verification,
+source binding, proof objects, and patch materialization are advisory telemetry;
+they must not create a second final authority; unverified material is surfaced as best_current_direction only.
+"""
 from __future__ import annotations
 
+import re
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from cognitive_evolve_runtime.archives.manager import ArchiveManager
 from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome, CandidatePopulation, candidate_from_dict
-from cognitive_evolve_runtime.nexus._serde import coerce_dict
 from cognitive_evolve_runtime.nexus.adaptive_signals import mean_percentile, observed_frontier_signal
-from cognitive_evolve_runtime.nexus.obligations import HARD_PROOF_FAILURES, requires_proof_progress
-from cognitive_evolve_runtime.nexus.protocols import NexusModelLike
 from cognitive_evolve_runtime.nexus.fallbacks import record_fallback
+from cognitive_evolve_runtime.nexus.protocols import NexusModelLike
+from cognitive_evolve_runtime.nexus.nextgen import (
+    bind_candidate_intent,
+    best_current_direction_payload,
+    candidate_verification_status,
+    select_best_current_direction,
+    structurally_blocked,
+)
 
 
 @dataclass
@@ -18,16 +30,16 @@ class SynthesizedResult:
     status: str
     final_answer: str
     best_candidate_id: str = ""
-    reference_candidate_id: str = ""
-    reference_note: str = ""
     best_auxiliary_candidate_id: str = ""
     archives_summary: dict[str, Any] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
     failure_analysis: str = ""
     completion_status: str = "completed"
     objective_solved: bool = False
+    answer_produced: bool = False
     continuation_available: bool = False
     closure_certificate: dict[str, Any] = field(default_factory=dict)
+    best_current_direction: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -43,107 +55,39 @@ class FinalSynthesizer:
         model_result = self._model_synthesis(population=population, archives=archives, contract=contract, world=world)
         if model_result is not None:
             return model_result
-        best = archives.best_answer_candidate(population.candidates)
+
         warnings: list[str] = []
         if self._model_fallback_warning:
             warnings.append(self._model_fallback_warning)
-        if best is not None and _is_unconverted_seed(best):
-            warnings.append("answer_archive_best_was_initial_search_seed_and_was_not_used_as_final")
-            best = None
+        best = _runtime_answer_candidate(archives, population.candidates)
         if best is None:
-            candidates = [c for c in population.candidates if archives.is_final_answer_eligible(c) and not _is_unconverted_seed(c)]
-            if candidates:
-                best = max(candidates, key=_answer_score)
-                warnings.append("no_elite_in_answer_archive_used_best_non_auxiliary_candidate")
+            best = _best_answer_candidate(population.candidates, contract=contract)
+            if best is not None:
+                warnings.append("answer_first_used_best_available_candidate")
+        if best is None:
+            best = select_best_current_direction(population.candidates, contract=contract)
+            if best is not None:
+                warnings.append("answer_first_used_best_current_direction")
         auxiliary = _best_auxiliary(archives, population=population)
         if best is None:
-            reference = _best_reference_candidate(population.candidates)
-            dormant_reference = _best_dormant_reference_candidate(population.candidates)
-            if self._model_fallback_warning and dormant_reference is not None and not _has_active_or_elite_candidate(population.candidates):
-                return SynthesizedResult(
-                    status="best_current_route",
-                    final_answer=_best_current_route_answer(dormant_reference),
-                    best_candidate_id=dormant_reference.id,
-                    reference_candidate_id=dormant_reference.id,
-                    reference_note=_reference_note(dormant_reference) + "; non_final_from_dormant_material",
-                    best_auxiliary_candidate_id=auxiliary.id if auxiliary else "",
-                    archives_summary=archives.summary(),
-                    warnings=warnings
-                    + [
-                        "model_synthesis_failed_local_dormant_reference_used",
-                        "best_current_route_not_claimed_optimal_or_solved",
-                        "final_answer_not_strict_global_optimum",
-                    ],
-                    failure_analysis=_best_current_failure_analysis(dormant_reference),
-                    objective_solved=False,
-                    continuation_available=True,
-                )
-            if requires_proof_progress(contract, world) and _proof_gate_blocked(population.candidates):
-                reference_answer = _reference_candidate_answer(reference) if reference is not None else ""
-                return SynthesizedResult(
-                    status="route_incomplete",
-                    final_answer=_join_reference_answer(
-                        (
-                            "No verifier-eligible proof candidate emerged. The run produced proof-route material, "
-                            "but candidates lacked concrete formal artifacts, obligation-ledger progress, or non-duplicate proof signatures."
-                        ),
-                        reference_answer,
-                    ),
-                    best_auxiliary_candidate_id=auxiliary.id if auxiliary else "",
-                    reference_candidate_id=reference.id if reference is not None else "",
-                    reference_note=_reference_note(reference) if reference is not None else "",
-                    archives_summary=archives.summary(),
-                    warnings=warnings
-                    + ["proof_progress_gate_blocked_final_synthesis"]
-                    + (["reference_candidate_displayed_as_non_final_material"] if reference is not None else []),
-                    failure_analysis=_proof_failure_analysis(population.candidates),
-                )
-            best_current = _best_current_route_candidate(population.candidates, contract=contract)
-            if best_current is not None:
-                return SynthesizedResult(
-                    status="best_current_route",
-                    final_answer=_best_current_route_answer(best_current),
-                    best_candidate_id=best_current.id,
-                    reference_candidate_id=best_current.id,
-                    reference_note=_reference_note(best_current),
-                    best_auxiliary_candidate_id=auxiliary.id if auxiliary else "",
-                    archives_summary=archives.summary(),
-                    warnings=warnings
-                    + [
-                        "best_current_route_not_claimed_optimal_or_solved",
-                        "final_answer_not_strict_global_optimum",
-                    ],
-                    failure_analysis=_best_current_failure_analysis(best_current),
-                    objective_solved=False,
-                    continuation_available=False,
-                )
-            seed_count = len([c for c in population.candidates if _is_unconverted_seed(c)])
-            detail = (
-                "No non-seed answer candidate emerged from the offline evolution loop. "
-                f"{seed_count} search seeds and archive records were persisted for resume/debugging."
-                if seed_count
-                else "No admissible answer candidate emerged from the offline evolution loop."
-            )
-            reference_answer = _reference_candidate_answer(reference) if reference is not None else ""
             return SynthesizedResult(
                 status="failure_report",
-                final_answer=_join_reference_answer(detail, reference_answer),
-                reference_candidate_id=reference.id if reference is not None else "",
-                reference_note=_reference_note(reference) if reference is not None else "",
+                final_answer="No displayable answer candidate emerged from the evolution loop.",
                 best_auxiliary_candidate_id=auxiliary.id if auxiliary else "",
                 archives_summary=archives.summary(),
-                warnings=warnings
-                + (["initial_search_seeds_were_not_returned_as_final_answers"] if seed_count else [])
-                + (["reference_candidate_displayed_as_non_final_material"] if reference is not None else []),
-                failure_analysis="Return stored failure lessons and archive hints for the next run.",
+                warnings=warnings,
+                failure_analysis="No non-structural candidate carried answer material.",
             )
         return SynthesizedResult(
             status="final_synthesis_local_fallback" if self._model_fallback_warning else "synthesized",
-            final_answer=str(best.artifact or best.concise_claim or best.core_mechanism),
+            final_answer=_candidate_answer_text(best),
             best_candidate_id=best.id,
             best_auxiliary_candidate_id=auxiliary.id if auxiliary else "",
             archives_summary=archives.summary(),
             warnings=warnings,
+            objective_solved=False,
+            answer_produced=True,
+            best_current_direction=best_current_direction_payload(best, route=_answer_route(best), contract=contract),
         )
 
     def _model_synthesis(self, *, population: CandidatePopulation, archives: ArchiveManager, contract: Any | None, world: Any | None) -> SynthesizedResult | None:
@@ -164,382 +108,257 @@ class FinalSynthesizer:
             record_fallback(stage="final_synthesis", reason="empty_final_answer")
             self._model_fallback_warning = "model_synthesis_local_fallback:empty_final_answer"
             return None
+
         warnings = [str(item) for item in raw.get("warnings", []) if item]
         candidate_by_id = {candidate.id: candidate for candidate in population.candidates}
-        requested_best_id = str(raw.get("best_candidate_id") or "").strip()
-        requested_reference_id = str(raw.get("reference_candidate_id") or raw.get("candidate_id") or "").strip()
-        runtime_best = _runtime_final_candidate(archives, population.candidates)
-        best_candidate_id = ""
-        reference_candidate: CandidateGenome | None = None
-
-        if requested_best_id:
-            candidate = candidate_by_id.get(requested_best_id)
-            if candidate is None:
-                self._model_fallback_warning = "model_synthesis_local_fallback:unknown_best_candidate_id"
+        requested_candidate_id = str(
+            raw.get("best_candidate_id")
+            or raw.get("candidate_id")
+            or ""
+        ).strip()
+        selected = _runtime_answer_candidate(archives, population.candidates)
+        if requested_candidate_id:
+            requested = candidate_by_id.get(requested_candidate_id)
+            if requested is None:
+                self._model_fallback_warning = "model_synthesis_local_fallback:unknown_candidate_id"
                 return None
-            if _is_runtime_final_candidate(candidate, archives):
-                best_candidate_id = candidate.id
-            elif _best_current_route_eligible(candidate):
-                reference_candidate = candidate
-                warnings.append("model_synthesis_requested_candidate_requires_external_review")
+            if not _answer_candidate_eligible(requested):
+                self._model_fallback_warning = "model_synthesis_local_fallback:ineligible_candidate_id"
+                return None
+            selected = requested
+        elif selected is None:
+            selected = _best_answer_candidate(population.candidates, contract=contract)
+            if selected is not None:
+                warnings.append("model_synthesis_without_candidate_id_used_best_answer_candidate")
             else:
-                self._model_fallback_warning = "model_synthesis_local_fallback:ineligible_best_candidate_id"
-                return None
-        elif runtime_best is not None:
-            best_candidate_id = runtime_best.id
-            warnings.append("model_synthesis_without_best_candidate_id_used_verified_runtime_candidate_context")
-        elif requested_reference_id and requested_reference_id in candidate_by_id and _best_current_route_eligible(candidate_by_id[requested_reference_id]):
-            reference_candidate = candidate_by_id[requested_reference_id]
-            warnings.append("model_synthesis_reference_candidate_requires_external_review")
-        else:
-            reference_candidate = _best_reference_candidate(population.candidates)
-            if reference_candidate is None:
-                self._model_fallback_warning = "model_synthesis_local_fallback:no_runtime_final_or_reference_candidate"
-                return None
-            warnings.append("model_synthesis_used_best_reference_candidate_for_external_review")
+                selected = select_best_current_direction(population.candidates, contract=contract)
+                if selected is not None:
+                    warnings.append("model_synthesis_without_candidate_id_used_best_current_direction")
 
-        if best_candidate_id:
-            return SynthesizedResult(
-                status=str(raw.get("status") or "model_synthesized"),
-                final_answer=final,
-                best_candidate_id=best_candidate_id,
-                best_auxiliary_candidate_id=str(raw.get("best_auxiliary_candidate_id") or ""),
-                archives_summary=archives.summary(),
-                warnings=warnings,
-                failure_analysis=str(raw.get("failure_analysis") or ""),
-            )
-
-        if reference_candidate is not None:
-            return SynthesizedResult(
-                status="best_current_route",
-                final_answer=_join_model_reference_answer(final, reference_candidate),
-                best_candidate_id="",
-                reference_candidate_id=reference_candidate.id,
-                reference_note=_reference_note(reference_candidate),
-                best_auxiliary_candidate_id=str(raw.get("best_auxiliary_candidate_id") or ""),
-                archives_summary=archives.summary(),
-                warnings=warnings
-                + [
-                    "model_synthesis_not_runtime_final_external_review_required",
-                    "best_current_route_not_claimed_optimal_or_solved",
-                ],
-                failure_analysis=str(raw.get("failure_analysis") or "") or _best_current_failure_analysis(reference_candidate),
-                objective_solved=False,
-                continuation_available=False,
-            )
-
-        self._model_fallback_warning = "model_synthesis_local_fallback:no_runtime_final_or_reference_candidate"
-        return None
+        selected_id = selected.id if selected is not None else ""
+        if selected is not None and ("intent_directness" in raw or "intent_alignment_rationale" in raw):
+            binding = bind_candidate_intent(selected, contract=contract)
+            if "intent_directness" in raw:
+                try:
+                    binding["direct_answer_score"] = max(0.0, min(1.0, float(raw.get("intent_directness") or 0.0)))
+                except (TypeError, ValueError):
+                    pass
+            if raw.get("intent_alignment_rationale"):
+                binding["alignment_rationale"] = str(raw.get("intent_alignment_rationale") or "")[:600]
+            selected.metadata["intent_binding"] = binding
+            selected.metadata.setdefault("nextgen", {})["intent_binding"] = dict(binding)
+        if selected is not None and _normalize_answer_text(final) != _normalize_answer_text(_candidate_answer_text(selected)):
+            if requested_candidate_id:
+                warnings.append("model_final_answer_unbound_to_candidate_artifact")
+                selected = None
+                selected_id = ""
+            else:
+                rebound = _candidate_bound_to_final_answer(final, population.candidates, contract=contract)
+                if rebound is not None:
+                    warnings.append("model_final_answer_rebound_to_candidate_artifact")
+                    selected = rebound
+                    selected_id = rebound.id
+                else:
+                    warnings.append("model_final_answer_unbound_to_candidate_artifact")
+                    selected = None
+                    selected_id = ""
+        return SynthesizedResult(
+            status=str(raw.get("status") or "model_synthesized"),
+            final_answer=final,
+            best_candidate_id=selected_id,
+            best_auxiliary_candidate_id=str(raw.get("best_auxiliary_candidate_id") or ""),
+            archives_summary=archives.summary(),
+            warnings=warnings,
+            failure_analysis=str(raw.get("failure_analysis") or ""),
+            objective_solved=False,
+            answer_produced=True,
+            best_current_direction=(
+                best_current_direction_payload(selected, route=_answer_route(selected), contract=contract)
+                if selected is not None
+                else _unbound_best_current_payload(final)
+            ),
+        )
 
 
 def synthesize_result(*, population: CandidatePopulation, archives: ArchiveManager, contract: Any | None = None, world: Any | None = None, model: NexusModelLike | None = None) -> SynthesizedResult:
     return FinalSynthesizer(model=model).synthesize(population=population, archives=archives, contract=contract, world=world)
 
 
-def _is_runtime_final_candidate(candidate: CandidateGenome, archives: ArchiveManager) -> bool:
-    return archives.is_final_answer_eligible(candidate) and not _is_unconverted_seed(candidate)
-
-
-def _runtime_final_candidate(archives: ArchiveManager, candidates: list[CandidateGenome]) -> CandidateGenome | None:
+def _runtime_answer_candidate(archives: ArchiveManager, candidates: list[CandidateGenome]) -> CandidateGenome | None:
     best = archives.best_answer_candidate(candidates)
-    if best is not None and _is_runtime_final_candidate(best, archives):
+    if best is not None and _answer_candidate_eligible(best):
         return best
-    eligible = [candidate for candidate in candidates if _is_runtime_final_candidate(candidate, archives)]
+    eligible = [candidate for candidate in candidates if archives.is_final_answer_eligible(candidate) and _answer_candidate_eligible(candidate)]
+    if eligible:
+        return max(eligible, key=lambda candidate: _answer_candidate_score(candidate, eligible))
+    return None
+
+
+def _best_answer_candidate(candidates: list[CandidateGenome], *, contract: Any | None = None) -> CandidateGenome | None:
+    eligible = [candidate for candidate in candidates if _final_answer_candidate_eligible(candidate)]
     if not eligible:
         return None
-    return max(eligible, key=_answer_score)
+    return max(eligible, key=lambda candidate: (candidate_verification_status(candidate) == "verified", _answer_candidate_score(candidate, eligible, contract=contract)))
 
 
-def _join_model_reference_answer(model_answer: str, candidate: CandidateGenome) -> str:
-    candidate_note = _reference_candidate_answer(candidate)
-    return (
-        f"{model_answer.strip()}"
-        "\n\n---\n\n"
-        "Candidate output prepared for external review — correctness is not project-certified. "
-        "Human review or an external verifier must judge correctness before treating this as solved. "
-        "\n\n"
-        f"{candidate_note}"
-    )
-
-
-def _is_unconverted_seed(candidate: CandidateGenome) -> bool:
-    return bool(candidate.metadata.get("search_seed_not_final")) and int(candidate.generation or 0) == 0
-
-
-def _answer_score(candidate: CandidateGenome) -> float:
-    scores = candidate.multihead_scores
-    if CandidateFate.normalize(candidate.current_fate) == CandidateFate.AUXILIARY.value:
-        return -1.0
-    axes = [
-        float(scores.get("objective_alignment", 0.0) or 0.0),
-        float(scores.get("answer_likelihood", 0.0) or 0.0),
-        float(scores.get("verifiability", 0.0) or 0.0),
-    ]
-    return sum(axes) / len(axes)
-
-
-def _best_current_route_candidate(candidates: list[CandidateGenome], *, contract: Any | None = None) -> CandidateGenome | None:
-    if not _contract_allows_best_current_route(contract):
-        return None
-    viable = [candidate for candidate in candidates if _best_current_route_eligible(candidate)]
-    if not viable:
-        return None
-    return max(viable, key=lambda candidate: _best_current_route_score(candidate, viable))
-
-
-def _best_reference_candidate(candidates: list[CandidateGenome]) -> CandidateGenome | None:
-    """Select useful non-final material for display without relaxing final gates."""
-
-    viable = [candidate for candidate in candidates if _best_current_route_eligible(candidate)]
-    if not viable:
-        return None
-    return max(viable, key=lambda candidate: (_reference_score(candidate, viable), candidate.id))
-
-
-def _best_dormant_reference_candidate(candidates: list[CandidateGenome]) -> CandidateGenome | None:
-    viable = [
-        candidate
-        for candidate in candidates
-        if CandidateFate.normalize(getattr(candidate, "current_fate", "")) == CandidateFate.DORMANT.value
-        and _best_current_route_eligible(candidate)
-    ]
-    if not viable:
-        return None
-    return max(viable, key=lambda candidate: (_reference_score(candidate, viable), candidate.id))
-
-
-def _has_active_or_elite_candidate(candidates: list[CandidateGenome]) -> bool:
-    return any(
-        CandidateFate.normalize(getattr(candidate, "current_fate", ""))
-        in {CandidateFate.ACTIVE.value, CandidateFate.ELITE.value, CandidateFate.INCUBATING.value}
-        for candidate in candidates
-    )
-
-
-def _best_current_route_eligible(candidate: CandidateGenome) -> bool:
-    if _is_unconverted_seed(candidate):
+def _final_answer_candidate_eligible(candidate: CandidateGenome) -> bool:
+    if not _answer_candidate_eligible(candidate):
         return False
     fate = CandidateFate.normalize(getattr(candidate, "current_fate", ""))
     if fate in {CandidateFate.CULLED.value, CandidateFate.FAILED.value}:
         return False
     metadata = candidate.metadata if isinstance(candidate.metadata, dict) else {}
-    if metadata.get("hard_reject_reason") or metadata.get("terminal_reject_reason"):
+    if metadata.get("terminal_failure") or metadata.get("terminal_reject_reason"):
         return False
-    if str(metadata.get("dormant_kind") or "") in {"hard_reject", "duplicate"}:
-        return False
-    result = getattr(candidate, "verification_result", {}) or {}
-    if isinstance(result, dict) and result.get("passed") is False:
-        diagnostics = {str(item) for item in result.get("diagnostics", []) if item}
-        if diagnostics.intersection({"patch_no_effect", "patch_sandbox_failed", "project_offspring_failed_sandbox_verification"}):
-            return False
-    return bool(str(candidate.artifact or candidate.concise_claim or candidate.core_mechanism).strip())
+    return True
+
+def _answer_candidate_eligible(candidate: CandidateGenome) -> bool:
+    return not structurally_blocked(candidate) and bool(_candidate_answer_text(candidate).strip())
 
 
-def _best_current_route_score(candidate: CandidateGenome, context: list[CandidateGenome] | None = None) -> float:
+def _answer_route(candidate: CandidateGenome) -> str:
+    return "final" if candidate_verification_status(candidate) == "verified" else "best_current"
+
+
+def _candidate_answer_text(candidate: CandidateGenome) -> str:
+    return str(candidate.artifact or candidate.concise_claim or candidate.core_mechanism or "")
+
+
+def _unbound_best_current_payload(final_answer: str) -> dict[str, Any]:
+    text = str(final_answer or "").strip()
+    return {
+        "candidate_id": "",
+        "route": "best_current",
+        "mechanism_summary": text[:600],
+        "candidate_main_claim": text[:600],
+        "supporting_claims": [],
+        "intent_alignment_rationale": "model final answer was not bound to a displayable candidate artifact",
+        "direct_answer_score": 0.0,
+        "why_best": "unbound model final answer; no candidate artifact may override it",
+        "verification_status": "unverified",
+        "blocked_from_verified_claim_reason": "answer_unbound_to_candidate_artifact",
+    }
+
+
+def _candidate_bound_to_final_answer(final_answer: str, candidates: list[CandidateGenome], *, contract: Any | None = None) -> CandidateGenome | None:
+    """Find a candidate explicitly described by model final text.
+
+    The matcher is intentionally open-text: it looks for candidate-authored
+    claims and artifact strings inside the final answer.  It does not classify
+    mechanism domains, and it does not let archive/display fallbacks silently
+    replace an unbound model answer.
+    """
+
+    final = str(final_answer or "").strip()
+    if not final:
+        return None
+    final_lower = final.lower()
+    id_matches = [candidate for candidate in candidates if _answer_candidate_eligible(candidate) and candidate.id and candidate.id.lower() in final_lower]
+    if id_matches:
+        return max(id_matches, key=lambda candidate: (len(candidate.id), candidate.id))
+    focus_text = "\n".join(_final_answer_binding_focus_texts(final)).lower()
+    exact_matches: list[tuple[int, str, CandidateGenome]] = []
+    for candidate in candidates:
+        if not _answer_candidate_eligible(candidate):
+            continue
+        for text in _candidate_binding_texts(candidate):
+            text_norm = _normalize_answer_text(text)
+            if len(text_norm) >= 12 and text_norm in focus_text:
+                exact_matches.append((len(text_norm), candidate.id, candidate))
+    if exact_matches:
+        return max(exact_matches, key=lambda item: (item[0], item[1]))[2]
+    return None
+
+
+def _final_answer_binding_focus_texts(final_answer: str) -> list[str]:
+    text = str(final_answer or "")
+    matches = list(re.finditer(r"best\\s+current\\s+direction\\s*:\\s*", text, flags=re.IGNORECASE))
+    focused: list[str] = []
+    for match in matches:
+        tail = text[match.end() : match.end() + 900]
+        stop = re.search(r"(?:\\n\\s*\\n|\\n\\s*[-*#]|\\.(?:\\s+[A-Z]|\\s*$))", tail)
+        focused.append(tail[: stop.end() if stop else len(tail)].strip())
+    return focused[:3] or [text[:900]]
+
+
+def _candidate_binding_texts(candidate: CandidateGenome) -> list[str]:
+    values: list[str] = [
+        str(candidate.concise_claim or ""),
+        str(candidate.core_mechanism or ""),
+        _candidate_answer_text(candidate),
+    ]
+    values.extend(_artifact_binding_texts(candidate.artifact))
+    return [value for value in values if value.strip()]
+
+
+def _artifact_binding_texts(value: Any, *, depth: int = 0) -> list[str]:
+    if depth > 4:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, (int, float, bool)) or value is None:
+        return []
+    texts: list[str] = []
+    if isinstance(value, dict):
+        for key, item in value.items():
+            key_text = str(key or "")
+            if isinstance(item, (str, int, float, bool)):
+                if any(part in key_text.lower() for part in ("direction", "claim", "mechanism", "winner", "rationale", "summary", "verdict")):
+                    texts.append(str(item))
+            else:
+                texts.extend(_artifact_binding_texts(item, depth=depth + 1))
+    elif isinstance(value, list):
+        for item in value[:24]:
+            texts.extend(_artifact_binding_texts(item, depth=depth + 1))
+    return texts
+
+
+def _answer_candidate_score(candidate: CandidateGenome, context: list[CandidateGenome] | None = None, *, contract: Any | None = None) -> float:
     context = context or [candidate]
+    scores = candidate.multihead_scores
+    if CandidateFate.normalize(candidate.current_fate) == CandidateFate.AUXILIARY.value:
+        return -1.0
     quality_signal = mean_percentile(
         candidate,
         context,
         ["objective_alignment", "answer_likelihood", "verifiability", "core_mechanism_strength"],
     )
-    diversity_signal = 1.0 if observed_frontier_signal(candidate, context) else mean_percentile(candidate, context, ["novelty", "rarity"])
-    evidence_items = [
-        bool(candidate.evidence_refs),
-        bool(candidate.source_bindings),
-        bool(candidate.formal_artifacts),
-        bool(candidate.evidence_delta),
-        bool(candidate.obligation_delta),
+    direct_axes = [
+        float(scores.get("objective_alignment", 0.0) or 0.0),
+        float(scores.get("answer_likelihood", 0.0) or 0.0),
+        float(scores.get("core_mechanism_strength", 0.0) or 0.0),
     ]
-    evidence_signal = sum(1 for item in evidence_items if item) / max(1, len(evidence_items))
+    direct_signal = sum(direct_axes) / len(direct_axes)
+    diversity_signal = 1.0 if observed_frontier_signal(candidate, context) else mean_percentile(candidate, context, ["novelty", "rarity"])
+    answer_signal = max(bounded_answer_signal(candidate), best_current_direction_payload(candidate, contract=contract).get("direct_answer_score", 0.0))
     latent_signal = max(
         0.0,
         min(
             1.0,
-            float(candidate.multihead_scores.get("latent_reproductive_signal", 0.0) or 0.0)
-            + float(candidate.multihead_scores.get("latent_expected_utility", 0.0) or 0.0) / 2,
+            float(scores.get("latent_reproductive_signal", 0.0) or 0.0)
+            + float(scores.get("latent_expected_utility", 0.0) or 0.0) / 2,
         ),
     )
-    uncertainty_items = len(candidate.failure_lessons + candidate.missing_parts)
-    uncertainty_penalty = uncertainty_items / max(1, uncertainty_items + len(context))
-    return (quality_signal + diversity_signal + evidence_signal + latent_signal) / 4 - uncertainty_penalty
+    return (quality_signal + direct_signal + diversity_signal + answer_signal + latent_signal) / 5
 
 
-def _reference_score(candidate: CandidateGenome, context: list[CandidateGenome] | None = None) -> float:
-    """Score non-final follow-up material by reproducible repair value.
+def bounded_answer_signal(candidate: CandidateGenome) -> float:
+    """Return an answer-content signal without requiring verifier/source proof."""
 
-    This is deliberately not a second ranking authority for winners.  It only
-    orders reference material after final gates have already declined to claim a
-    solved answer, so source-bound and evidence-backed repair candidates are
-    displayed ahead of high-scoring but hallucinated proposals.
-    """
-
-    diagnostics = _diagnostic_tokens(candidate)
-    rank_eligible = _verification_flag(candidate, "rank_eligible")
-    final_eligible = _verification_flag(candidate, "final_eligible")
-    source_bound = bool(candidate.source_bindings)
-    evidence_bound = bool(candidate.evidence_refs or candidate.evidence_delta or candidate.obligation_delta)
-    formal_bound = bool(candidate.formal_artifacts or candidate.proof_obligations)
-    repair_ready = _repair_ready(candidate, diagnostics)
-    value = _best_current_route_score(candidate, context)
-    value += float(candidate.multihead_scores.get("latent_reproductive_signal", 0.0) or 0.0) / 2
-    evidence_components = [rank_eligible is True, source_bound, evidence_bound, formal_bound, repair_ready, final_eligible is True]
-    value += sum(1 for item in evidence_components if item) / max(1, len(evidence_components))
-    value -= _reference_diagnostic_penalty(diagnostics)
-    return value
-
-
-def _verification_flag(candidate: CandidateGenome, key: str) -> bool | None:
-    result = getattr(candidate, "verification_result", {}) or {}
-    if isinstance(result, dict) and isinstance(result.get(key), bool):
-        return bool(result.get(key))
-    return None
-
-
-def _repair_ready(candidate: CandidateGenome, diagnostics: set[str]) -> bool:
-    metadata = candidate.metadata if isinstance(candidate.metadata, dict) else {}
-    if isinstance(metadata.get("repair_required"), dict):
-        return True
-    if diagnostics.intersection({"unified_patch_failed", "malformed patch", "patch_no_effect", "source_binding_missing_symbol"}):
-        return bool(candidate.source_bindings or candidate.evidence_refs)
-    return False
-
-
-def _diagnostic_tokens(candidate: CandidateGenome) -> set[str]:
-    tokens: set[str] = set()
-    result = getattr(candidate, "verification_result", {}) or {}
-    if isinstance(result, dict):
-        tokens.update(str(item) for item in result.get("diagnostics", []) or [] if item)
-        for section in ("final_gate", "proof_progress", "evidence_obligation"):
-            payload = result.get(section)
-            if isinstance(payload, dict):
-                tokens.update(str(item) for item in payload.get("diagnostics", []) or [] if item)
-    metadata = candidate.metadata if isinstance(candidate.metadata, dict) else {}
-    for key in ("hard_reject_reason", "terminal_reject_reason"):
-        value = metadata.get(key)
-        if value:
-            tokens.add(str(value))
-    tokens.update(str(item) for item in candidate.failure_lessons if item)
-    return tokens
-
-
-def _reference_diagnostic_penalty(diagnostics: set[str]) -> float:
-    joined = " ".join(sorted(diagnostics)).lower()
-    hard_tokens = (
-        "seed_note_only_patch",
-        "documentation_only_patch",
-        "runtime_code_change_absent",
-        "source_binding_missing_path",
-        "source_binding_missing_symbol",
-        "patch_target_missing",
-    )
-    softer_tokens = (
-        "patch_no_effect",
-        "unified_patch_failed",
-        "malformed patch",
-        "unexpected end of file",
-        "evidence_ref_not_source_relevant",
-        "obligation_delta_absent",
-        "evidence_ref_absent",
-    )
-    matched_hard = [token for token in hard_tokens if token in joined]
-    matched_soft = [token for token in softer_tokens if token in joined]
-    if not matched_hard and not matched_soft:
+    text = _candidate_answer_text(candidate)
+    if not text.strip():
         return 0.0
-    return (len(matched_hard) / max(1, len(hard_tokens))) + (len(matched_soft) / max(1, len(hard_tokens) + len(softer_tokens)))
-
-
-def _best_current_route_answer(candidate: CandidateGenome) -> str:
-    body = str(candidate.artifact or candidate.concise_claim or candidate.core_mechanism)
-    lines = [
-        "Candidate result / best current route only — not externally validated, not a guaranteed optimum, and not a solved proof:",
-        f"Candidate: {candidate.id}",
-        body,
-    ]
-    unresolved = _candidate_blockers(candidate)
-    if unresolved:
-        lines.append("\nRemaining uncertainty / external-validation gaps:")
-        lines.extend(f"- {item}" for item in unresolved)
-    return "\n".join(lines)
-
-
-def _reference_candidate_answer(candidate: CandidateGenome | None) -> str:
-    if candidate is None:
-        return ""
-    body = str(candidate.artifact or candidate.concise_claim or candidate.core_mechanism)
-    lines = [
-        "Candidate retained for follow-up — correctness has not been externally validated and must not be treated as solved or merge-ready:",
-        f"Candidate: {candidate.id}",
-        body,
-    ]
-    blockers = _candidate_blockers(candidate)
-    if blockers:
-        lines.append("\nOpen validation notes:")
-        lines.extend(f"- {item}" for item in blockers)
-    return "\n".join(lines)
-
-
-def _join_reference_answer(primary: str, reference_answer: str) -> str:
-    if not reference_answer:
-        return primary
-    return f"{primary}\n\n---\n\n{reference_answer}"
-
-
-def _reference_note(candidate: CandidateGenome | None) -> str:
-    if candidate is None:
-        return ""
-    blockers = _candidate_blockers(candidate)
-    return "candidate_output_external_validation_required" + (": " + "; ".join(blockers[:4]) if blockers else "")
-
-
-def _candidate_blockers(candidate: CandidateGenome) -> list[str]:
-    result = getattr(candidate, "verification_result", {}) or {}
-    items: list[str] = []
-    if isinstance(result, dict):
-        items.extend(str(item) for item in result.get("diagnostics", []) or [] if item)
-        for section in ("final_gate", "proof_progress", "evidence_obligation"):
-            payload = result.get(section)
-            if isinstance(payload, dict):
-                items.extend(str(item) for item in payload.get("diagnostics", []) or [] if item)
-        if result.get("passed") is False:
-            items.append("verification_result_failed")
-        if result.get("final_eligible") is False:
-            items.append("external_validation_not_completed")
-    metadata = candidate.metadata if isinstance(candidate.metadata, dict) else {}
-    for key in (
-        "final_answer_blocked_until_repaired",
-        "final_answer_blocked_until_reverified",
-        "final_answer_blocked_until_verified",
-        "hard_reject_reason",
-        "terminal_reject_reason",
-    ):
-        value = metadata.get(key)
-        if value:
-            items.append(key if value is True else f"{key}:{value}")
-    items.extend(str(item) for item in candidate.missing_parts if item)
-    items.extend(str(item) for item in candidate.uncertainty_notes if item)
-    items.extend(str(item) for item in candidate.failure_lessons if item)
-    return list(dict.fromkeys(items))[:8]
-
-
-def _best_current_failure_analysis(candidate: CandidateGenome) -> str:
-    gaps = list(dict.fromkeys([str(item) for item in candidate.missing_parts + candidate.failure_lessons if item]))[:8]
-    if not gaps:
-        return "The task type permits a best-current route because no absolute optimum is required; objective_solved remains false."
-    return "Best-current route retained with unresolved gaps: " + "; ".join(gaps)
-
-
-def _contract_allows_best_current_route(contract: Any | None) -> bool:
-    """Use the model/contract outcome policy, not a hard-coded task boundary."""
-
-    if isinstance(contract, dict):
-        policy = coerce_dict(contract.get("outcome_policy"))
-    else:
-        policy = coerce_dict(getattr(contract, "outcome_policy", {}))
-    if policy.get("accepts_best_current_route") is False:
-        return False
-    if policy.get("requires_strict_optimum") is True or policy.get("requires_verified_solution") is True:
-        return False
-    return True
+    length_signal = min(1.0, len(text.strip()) / 800.0)
+    mechanism_signal = 1.0 if str(candidate.core_mechanism or "").strip() else 0.0
+    novelty_signal = max(
+        0.0,
+        min(
+            1.0,
+            float(candidate.multihead_scores.get("novelty", 0.0) or 0.0)
+            + float(candidate.multihead_scores.get("rarity", 0.0) or 0.0) / 2,
+        ),
+    )
+    return max(length_signal, mechanism_signal * 0.8, novelty_signal)
 
 
 def _best_auxiliary(archives: ArchiveManager, *, population: CandidatePopulation | None = None) -> CandidateGenome | None:
@@ -555,37 +374,8 @@ def _best_auxiliary(archives: ArchiveManager, *, population: CandidatePopulation
     return max(candidates, key=lambda c: c.multihead_scores.get("auxiliary_value", 0.0))
 
 
-def _proof_gate_blocked(candidates: list[CandidateGenome]) -> bool:
-    for candidate in candidates:
-        result = getattr(candidate, "verification_result", {}) or {}
-        if not isinstance(result, dict):
-            continue
-        diagnostics = set(str(item) for item in result.get("diagnostics", []) if item)
-        proof = result.get("proof_progress")
-        if isinstance(proof, dict):
-            diagnostics.update(str(item) for item in proof.get("diagnostics", []) if item)
-        if diagnostics.intersection(HARD_PROOF_FAILURES):
-            return True
-    return False
-
-
-def _proof_failure_analysis(candidates: list[CandidateGenome]) -> str:
-    counts: dict[str, int] = {}
-    for candidate in candidates:
-        result = getattr(candidate, "verification_result", {}) or {}
-        if not isinstance(result, dict):
-            continue
-        diagnostics = list(result.get("diagnostics", []) or [])
-        proof = result.get("proof_progress")
-        if isinstance(proof, dict):
-            diagnostics.extend(proof.get("diagnostics", []) or [])
-        for item in diagnostics:
-            if item in HARD_PROOF_FAILURES:
-                counts[str(item)] = counts.get(str(item), 0) + 1
-    if not counts:
-        return "Proof-progress gate blocked synthesis, but no detailed diagnostic survived serialization."
-    parts = [f"{key}: {value}" for key, value in sorted(counts.items())]
-    return "Proof-progress gate diagnostics: " + "; ".join(parts)
-
-
 __all__ = ["SynthesizedResult", "FinalSynthesizer", "synthesize_result"]
+
+
+def _normalize_answer_text(value: Any) -> str:
+    return " ".join(str(value or "").split()).strip().lower()

@@ -10,8 +10,18 @@ from cognitive_evolve_runtime.archives.manager import ArchiveManager
 from cognitive_evolve_runtime.candidates.genome import CandidatePopulation
 from cognitive_evolve_runtime.durable.file_lock import atomic_write_json
 from cognitive_evolve_runtime.llm.call_ledger import ledger_summary
-from cognitive_evolve_runtime.nexus._serde import coerce_dict, utc_now
-from cognitive_evolve_runtime.persistence.checkpoint_profile import apply_checkpoint_profile_to_history, apply_checkpoint_profile_to_population, checkpoint_profile_from_env
+from cognitive_evolve_runtime.llm.session import current_llm_session
+from cognitive_evolve_runtime.core.serialization import coerce_dict, utc_now
+from cognitive_evolve_runtime.persistence.checkpoint_profile import (
+    apply_checkpoint_profile_to_archives,
+    apply_checkpoint_profile_to_history,
+    apply_checkpoint_profile_to_population,
+    checkpoint_profile_from_env,
+    hydrate_checkpoint_archives,
+)
+
+LATENT_LEDGER_METADATA_KEY = "latent_ledger"
+LATENT_LEDGER_REF_KEYS = ("latent_ledger_ref", "latent_ledger_sidecar")
 
 
 @dataclass
@@ -39,6 +49,7 @@ class NexusCheckpoint:
     checkpoint_profile: dict[str, Any] = field(default_factory=dict)
     call_ledger_summary: dict[str, Any] = field(default_factory=dict)
     fabric: dict[str, Any] = field(default_factory=dict)
+    runtime_options: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=utc_now)
 
     def to_dict(self) -> dict[str, Any]:
@@ -70,6 +81,7 @@ class NexusCheckpoint:
             checkpoint_profile=coerce_dict(data.get("checkpoint_profile")) or {"name": "full", "legacy_checkpoint": True},
             call_ledger_summary=coerce_dict(data.get("call_ledger_summary")),
             fabric=coerce_dict(data.get("fabric")),
+            runtime_options=coerce_dict(data.get("runtime_options")),
             created_at=str(data.get("created_at") or utc_now()),
         )
 
@@ -110,10 +122,14 @@ class CheckpointStore:
                 if isinstance(item, dict)
             ],
         )
+        contract = _hydrate_latent_ledger_sidecar(checkpoint.contract, base_dir=self.path.parent)
+        checkpoint.contract = contract
+        population = CandidatePopulation.from_dict(checkpoint.population)
+        archives_payload = hydrate_checkpoint_archives(checkpoint.archives, checkpoint.population)
         return {
             "checkpoint": checkpoint,
-            "population": CandidatePopulation.from_dict(checkpoint.population),
-            "archives": ArchiveManager.from_dict(checkpoint.archives),
+            "population": population,
+            "archives": ArchiveManager.from_dict(archives_payload),
             "policy": EvolutionPolicy.from_dict(checkpoint.policy) if checkpoint.policy else EvolutionPolicy(),
             "diagnosis": SearchDiagnosis.from_dict(checkpoint.diagnosis) if checkpoint.diagnosis else SearchDiagnosis(),
             "budget_history": list(checkpoint.budget_history),
@@ -129,7 +145,8 @@ class CheckpointStore:
             "checkpoint_profile": dict(checkpoint.checkpoint_profile),
             "call_ledger_summary": dict(checkpoint.call_ledger_summary),
             "fabric": dict(checkpoint.fabric),
-            "contract": checkpoint.contract,
+            "runtime_options": dict(checkpoint.runtime_options),
+            "contract": contract,
             "world": checkpoint.world,
             "mode": checkpoint.mode,
         }
@@ -158,6 +175,7 @@ class CheckpointStore:
         graded_output: dict[str, Any] | None = None,
         search_kernel: dict[str, Any] | None = None,
         fabric: dict[str, Any] | None = None,
+        runtime_options: dict[str, Any] | None = None,
         allow_progress_round_repair: bool = False,
     ) -> NexusCheckpoint:
         checkpoint = build_checkpoint_state(
@@ -182,6 +200,7 @@ class CheckpointStore:
             graded_output=graded_output,
             search_kernel=search_kernel,
             fabric=fabric,
+            runtime_options=runtime_options,
             allow_progress_round_repair=allow_progress_round_repair,
         )
         self.save(checkpoint, allow_progress_round_repair=allow_progress_round_repair)
@@ -211,20 +230,22 @@ def build_checkpoint_state(
     graded_output: dict[str, Any] | None = None,
     search_kernel: dict[str, Any] | None = None,
     fabric: dict[str, Any] | None = None,
+    runtime_options: dict[str, Any] | None = None,
     allow_progress_round_repair: bool = False,
 ) -> NexusCheckpoint:
     profile = checkpoint_profile_from_env()
     population_payload = apply_checkpoint_profile_to_population(population.to_dict(), profile)
+    archive_payload = apply_checkpoint_profile_to_archives(archives.to_dict(), population_payload, profile)
     budget_history_payload = apply_checkpoint_profile_to_history(budget_history or [], profile)
     checkpoint = NexusCheckpoint(
         round=round,
         max_rounds=max_rounds,
         population=population_payload,
-        archives=archives.to_dict(),
+        archives=archive_payload,
         policy=policy.to_dict() if hasattr(policy, "to_dict") else coerce_dict(policy),
         diagnosis=diagnosis.to_dict() if hasattr(diagnosis, "to_dict") else coerce_dict(diagnosis),
         progress_event=progress_event or {},
-        contract=contract.to_dict() if hasattr(contract, "to_dict") else coerce_dict(contract),
+        contract=contract_payload_for_persistence(contract),
         world=world.to_dict() if hasattr(world, "to_dict") else coerce_dict(world),
         mode=mode,
         budget_history=budget_history_payload,
@@ -232,12 +253,13 @@ def build_checkpoint_state(
         adaptive_state=coerce_dict(adaptive_state),
         trace_state=coerce_dict(trace_state),
         tension_map=coerce_dict(tension_map),
-        cost_ledger=coerce_dict(cost_ledger),
+        cost_ledger=_checkpoint_cost_ledger(cost_ledger),
         concept_snapshots=coerce_dict(concept_snapshots),
         verification_plan=coerce_dict(verification_plan),
         graded_output=coerce_dict(graded_output),
         search_kernel=coerce_dict(search_kernel),
         fabric=coerce_dict(fabric),
+        runtime_options=coerce_dict(runtime_options),
         checkpoint_profile=profile.to_dict(),
         call_ledger_summary=ledger_summary(),
     )
@@ -247,6 +269,90 @@ def build_checkpoint_state(
         if event_round is not None and int(event_round) != checkpoint.round:
             raise ValueError("checkpoint round and progress event round differ")
     return checkpoint
+
+
+def contract_payload_for_persistence(contract: Any | None) -> dict[str, Any]:
+    """Return a checkpoint/result-safe contract payload.
+
+    Restore hydrates ``metadata.latent_ledger`` from the sidecar ref when needed,
+    but persistence must not re-embed the hydrated ledger after a resume or final
+    snapshot write.
+    """
+
+    payload = contract.to_dict() if hasattr(contract, "to_dict") else coerce_dict(contract)
+    metadata = coerce_dict(payload.get("metadata"))
+    if any(metadata.get(key) for key in LATENT_LEDGER_REF_KEYS):
+        metadata.pop(LATENT_LEDGER_METADATA_KEY, None)
+        payload["metadata"] = metadata
+    return payload
+
+
+def _checkpoint_cost_ledger(cost_ledger: Any | None) -> dict[str, Any]:
+    """Keep provider billing telemetry in its own checkpoint namespace.
+
+    The adaptive research-extension cost ledger is a separate accounting
+    surface.  LLM provider costs are session-scoped and must not be merged into
+    that extension payload, especially when parallel Nexus runs share a Python
+    process.
+    """
+
+    payload = coerce_dict(cost_ledger)
+    session = current_llm_session()
+    events = session.snapshot()
+    total = session.total_estimated_cost_usd()
+    if events or total:
+        provider = coerce_dict(payload.get("llm_provider"))
+        provider["estimated_cost_usd"] = total
+        provider["event_count"] = len(events)
+        provider["source"] = "llm_session"
+        payload["llm_provider"] = provider
+    return payload
+
+
+def _hydrate_latent_ledger_sidecar(contract: dict[str, Any], *, base_dir: Path) -> dict[str, Any]:
+    """Hydrate sidecar-only latent ledger refs during checkpoint restore.
+
+    Legacy checkpoints may still embed ``metadata.latent_ledger``; those remain
+    untouched.  New checkpoints store only a ref/hash/cursor and are hydrated
+    here for runtime consumers that expect contract metadata to contain the
+    materialized ledger after restore.
+    """
+
+    payload = coerce_dict(contract)
+    metadata = coerce_dict(payload.get("metadata"))
+    if not metadata or metadata.get("latent_ledger"):
+        return payload
+    ref = coerce_dict(metadata.get("latent_ledger_ref") or metadata.get("latent_ledger_sidecar"))
+    raw_path = str(ref.get("path") or ref.get("latent_ledger_cache_path") or "").strip()
+    if not raw_path:
+        return payload
+    sidecar_path = Path(raw_path)
+    if not sidecar_path.is_absolute():
+        sidecar_path = base_dir / sidecar_path
+    try:
+        sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        diagnostics = list(metadata.get("latent_ledger_restore_diagnostics") or [])
+        diagnostics.append("latent_ledger_sidecar_unreadable")
+        metadata["latent_ledger_restore_diagnostics"] = diagnostics
+        payload["metadata"] = metadata
+        return payload
+    if not isinstance(sidecar, dict):
+        return payload
+    expected_hash = str(ref.get("sha256") or ref.get("ledger_hash") or "")
+    if expected_hash:
+        from cognitive_evolve_runtime.core.serialization import stable_hash
+
+        actual_hash = stable_hash(sidecar)
+        if actual_hash != expected_hash:
+            diagnostics = list(metadata.get("latent_ledger_restore_diagnostics") or [])
+            diagnostics.append("latent_ledger_sidecar_hash_mismatch")
+            metadata["latent_ledger_restore_diagnostics"] = diagnostics
+            payload["metadata"] = metadata
+            return payload
+    metadata["latent_ledger"] = sidecar
+    payload["metadata"] = metadata
+    return payload
 
 
 def _repair_progress_event_round(checkpoint: NexusCheckpoint) -> NexusCheckpoint:
@@ -284,4 +390,4 @@ def _repair_progress_event_round(checkpoint: NexusCheckpoint) -> NexusCheckpoint
     return NexusCheckpoint.from_dict(data)
 
 
-__all__ = ["CheckpointStore", "NexusCheckpoint", "build_checkpoint_state"]
+__all__ = ["CheckpointStore", "NexusCheckpoint", "build_checkpoint_state", "contract_payload_for_persistence"]

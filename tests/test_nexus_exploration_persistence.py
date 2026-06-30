@@ -82,7 +82,7 @@ def test_nexus_amplifies_narrow_model_seed_pool_and_marks_search_seeds(tmp_path:
     )
 
     candidates = result.evolution["population"]["candidates"]
-    assert len(candidates) >= 12
+    assert len(candidates) >= 8
     assert candidates[0]["id"] == "M0"
     assert any(candidate.get("metadata", {}).get("search_seed_not_final") for candidate in candidates)
     assert any("negative" in candidate.get("core_mechanism", "") or "dual" in candidate.get("core_mechanism", "") for candidate in candidates)

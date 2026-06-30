@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -9,11 +10,12 @@ from cognitive_evolve_runtime.candidates.genome import CandidateGenome
 from cognitive_evolve_runtime.nexus.model_errors import is_quota_error
 from cognitive_evolve_runtime.nexus.adaptive_signals import in_top_band
 from cognitive_evolve_runtime.nexus.policy import DEFAULT_FITNESS_AXES
-from cognitive_evolve_runtime.nexus._serde import coerce_str_list
+from cognitive_evolve_runtime.core.serialization import coerce_str_list
 from cognitive_evolve_runtime.nexus.protocols import NexusModelLike
 from cognitive_evolve_runtime.nexus.fallbacks import record_fallback
 from cognitive_evolve_runtime.core.scalars import bounded_score
-from cognitive_evolve_runtime.nexus.stage_policy import parse_metric_value, stage_eligibility
+from cognitive_evolve_runtime.nexus.stage_policy import parse_metric_value
+from cognitive_evolve_runtime.nexus.nextgen import record_candidate_budget_decision, structurally_blocked
 
 
 @dataclass
@@ -122,7 +124,7 @@ class RelativeRater:
                 # judge surface.  Quota/provider errors still propagate from the
                 # first call so runs pause truthfully instead of silently
                 # degrading.
-                if len(candidates) > 1:
+                if _rank_order_audit_enabled(candidates):
                     try:
                         reverse = _ranking_from_raw(
                             self.model.relative_rank(candidates=list(reversed(candidates)), contract=contract, policy=policy, archives=archives)
@@ -158,6 +160,16 @@ def _ranking_from_raw(raw: Any) -> RelativeRankingResult:
     if isinstance(raw, dict):
         return RelativeRankingResult.from_dict(raw)
     raise ValueError("relative_rank model response must be a RelativeRankingResult or dict")
+
+
+def _rank_order_audit_enabled(candidates: list[CandidateGenome]) -> bool:
+    mode = os.environ.get("COGEV_RANK_ORDER_AUDIT", "sample").strip().lower()
+    if mode in {"off", "0", "false", "no"} or len(candidates) <= 1:
+        return False
+    if mode in {"always", "1", "true", "yes"}:
+        return True
+    # Deterministic sample; full audit remains opt-in.
+    return len(candidates) <= 4
 
 
 def _merge_ab_rankings(a: RelativeRankingResult, b: RelativeRankingResult, candidates: list[CandidateGenome]) -> RelativeRankingResult:
@@ -397,37 +409,18 @@ def _deterministic_pairwise_preferences(candidates: list[CandidateGenome]) -> li
 
 
 def _rank_eligible(candidate: CandidateGenome) -> bool:
-    result = getattr(candidate, "verification_result", {}) or {}
-    if not isinstance(result, dict) or not result:
-        return True
-    if result.get("passed") is False:
+    if structurally_blocked(candidate):
         return False
-    if result.get("rank_eligible") is False:
-        return False
-    diagnostics = set(str(item) for item in result.get("diagnostics", []) if item)
-    hard = {
-        "proof_object_absent",
-        "proof_object_structurally_weak",
-        "ledger_non_progressing",
-        "duplicate_formal_signature",
-        "blocking_obligation_not_targeted",
-        "obligation_delta_absent",
-        "evidence_ref_absent",
-        "evidence_ref_unverified",
-        "source_binding_absent",
-        "source_binding_missing_path",
-        "patch_target_missing",
-    }
-    return not diagnostics.intersection(hard)
+    metadata = getattr(candidate, "metadata", {}) or {}
+    if isinstance(metadata, dict) and (metadata.get("terminal_failure") or metadata.get("terminal_reject")):
+        record_candidate_budget_decision(candidate, source="relative_rater", reason="legacy_terminal_flag_defanged", action="soft_rank")
+    return bool(str(candidate.artifact or candidate.concise_claim or candidate.core_mechanism).strip() or candidate.multihead_scores)
 
 
 def _parent_eligible(candidate: CandidateGenome) -> bool:
-    metadata = getattr(candidate, "metadata", {}) or {}
-    decision = metadata.get("stage_eligibility") if isinstance(metadata, dict) else None
-    if isinstance(decision, dict):
-        return bool(decision.get("parent_eligible")) and bool(decision.get("repair_required"))
-    computed = stage_eligibility(candidate)
-    return computed.parent_eligible and computed.repair_required
+    if structurally_blocked(candidate):
+        return False
+    return bool(str(candidate.artifact or candidate.concise_claim or candidate.core_mechanism).strip() or candidate.multihead_scores)
 
 
 def _verification_score(candidate: CandidateGenome) -> float:
@@ -446,7 +439,7 @@ def _verification_score(candidate: CandidateGenome) -> float:
                 component_scores.append(parsed)
         if component_scores:
             return sum(component_scores) / len(component_scores)
-        return 1.0 if result.get("passed") is True else 0.0 if result.get("passed") is False else 0.5
+        return 1.0 if result.get("passed") is not False else 0.75
     return 0.5
 
 

@@ -52,6 +52,41 @@ def test_activation_contract_is_model_driven_and_domain_neutral() -> None:
     assert "discussion alone" in activation["anti_empty_talk_rule"]
     assert view.payload["search_space_contract"]["model_driven"] is True
     assert "grounding surfaces" in view.payload["artifact_generation_contract"]["search_space_rule"]
+    assert "artifact.patch_set" in view.payload["artifact_generation_contract"]["project_patch_output_rule"]
+    assert "never emit bare @@" in view.payload["artifact_generation_contract"]["project_patch_output_rule"]
+
+
+def test_search_space_contract_carries_soft_theory_and_world_pressure_only() -> None:
+    policy = EvolutionPolicy(
+        metadata={
+            "theory": {"enabled": True, "producers": {"mdl": True, "boed": True, "geometry": True}},
+            "search_space_plan": {"candidate_families": [{"id": "model_lane", "description": "keep model lane"}]},
+        }
+    )
+    world = {
+        "kind": "project",
+        "project_world_model": {
+            "file_roles": {"cognitive_evolve_runtime/nexus/prompt_view.py": "prompt"},
+            "hotspot_map": {"cognitive_evolve_runtime/nexus/search_space.py": 0.9},
+            "objective_relevance_map": {"cognitive_evolve_runtime/nexus/runtime.py": 1.0},
+        },
+    }
+
+    view = build_prompt_view(
+        "nexus_seed_population",
+        {
+            "contract": NexusObjectiveContract(original_user_goal="improve search diversity", normalized_goal="improve search diversity"),
+            "policy": policy,
+            "world": world,
+        },
+    )
+    contract = view.payload["search_space_contract"]
+
+    assert contract["candidate_families"][0]["id"] == "model_lane"
+    assert contract["theory_dimensions"]["dimensions"] == ["mdl", "boed", "geometry"]
+    assert "eligibility" in contract["theory_dimensions"]["rule"]
+    assert "prompt_view.py" in contract["world_structure"]["file_roles"][0]
+    assert "coverage_gate" in contract
 
 
 def test_relative_rater_runs_reversed_ab_pass_and_merges_by_candidate_id() -> None:

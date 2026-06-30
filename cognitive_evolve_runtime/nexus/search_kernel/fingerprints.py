@@ -103,6 +103,25 @@ def candidate_fingerprint(candidate: CandidateGenome) -> CandidateFingerprint:
     )
 
 
+
+def base_mechanism_family(candidate: CandidateGenome) -> str:
+    metadata = coerce_dict(candidate.metadata)
+    search_space = coerce_dict(getattr(candidate, "search_space", None) or metadata.get("search_space"))
+    for value in (
+        search_space.get("family_id"),
+        search_space.get("plane_id"),
+        candidate.niche_memberships[0] if candidate.niche_memberships else "",
+        candidate.novelty_descriptors[0] if candidate.novelty_descriptors else "",
+        candidate.core_mechanism,
+        candidate.artifact_type,
+        candidate.lineage[0] if candidate.lineage else candidate.id,
+    ):
+        token = normalize_token(value)
+        if token:
+            return token[:80]
+    return "general"
+
+
 def candidate_semantic_signature(candidate: CandidateGenome) -> str:
     mechanism = normalize_token(candidate.core_mechanism or "")
     claim = normalize_text(candidate.concise_claim or "")
@@ -232,6 +251,7 @@ def _stable_json(value: Any) -> str:
 
 __all__ = [
     "CandidateFingerprint",
+    "base_mechanism_family",
     "candidate_descriptor_tokens",
     "candidate_fingerprint",
     "candidate_semantic_signature",

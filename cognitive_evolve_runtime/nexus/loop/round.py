@@ -1,9 +1,9 @@
 """Nexus evolution loop skeleton with deterministic fake-model support."""
 from __future__ import annotations
 
+import math
 import os
 import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import asdict, dataclass, field
 from typing import Any, Callable
 
@@ -24,6 +24,7 @@ from cognitive_evolve_runtime.nexus.diagnosis import PolicyUpdater, SearchDiagno
 from cognitive_evolve_runtime.nexus.generation_plan import GenerationPlan, apply_generation_plan, assert_stage_ready, build_generation_plan, expected_generation_plan_id
 from cognitive_evolve_runtime.nexus.honesty_control import compute_honesty_control_signal
 from cognitive_evolve_runtime.nexus.model_errors import is_quota_error
+from cognitive_evolve_runtime.nexus.nextgen import ensure_nextgen_identity
 from cognitive_evolve_runtime.nexus.obligations import candidate_obligation_delta, candidate_source_bindings
 from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy
 from cognitive_evolve_runtime.nexus.population_vitality import vitality_snapshot
@@ -55,7 +56,6 @@ from cognitive_evolve_runtime.nexus.reproduction import (
     sync_repair_parent_attempts_to_dormant_archive,
     verify_offspring,
 )
-from cognitive_evolve_runtime.tools.verification_stack import NexusVerifierStack
 from cognitive_evolve_runtime.verification.cache import check_with_cache
 from cognitive_evolve_runtime.verification.factory import verifier_from_plan
 from cognitive_evolve_runtime.verification.information_gain import population_information_gain_report
@@ -65,8 +65,6 @@ from cognitive_evolve_runtime.verification.types import VerificationPlan, Verifi
 from cognitive_evolve_runtime.theory import TheoryConfig, TheoryLayer, build_population_representation
 from cognitive_evolve_runtime.nexus._shared import MODEL_BOUNDARY_ERRORS, positive_int
 from cognitive_evolve_runtime.nexus.v23_theory_config import CACrossoverConfig, V23TheoryRuntimeConfig
-from cognitive_evolve_runtime.llm.env import env_int
-from cognitive_evolve_runtime.llm.governor import llm_governor
 from cognitive_evolve_runtime.llm.retry import provider_error_category
 from cognitive_evolve_runtime.ranking.multihead_elo import MultiHeadElo
 from cognitive_evolve_runtime.ranking.parent_selection import ParentSelector
@@ -76,8 +74,6 @@ from .budget import EvolutionBudget
 from .offspring import _best_auxiliary_id, _generate_offspring, _plan_mutations
 from .policy_directives import _attach_policy_directives_to_plans, _critique_actions
 from .stage_helpers import _eligibility_policy, _error_progress_event, _theory_config_from_policy
-
-_VERIFY_MAX_WORKERS_ENV = "COGEV_VERIFY_CONCURRENCY"
 
 @dataclass
 class RoundEvaluation:
@@ -114,7 +110,6 @@ class EvolutionRound:
         self.mutation_planner = MutationPlanner()
         self.mutation_engine = MutationEngine()
         self.critique_engine = CritiqueEngine(model=model)
-        self.verifier_stack = NexusVerifierStack()
         self.evaluator_runner = ExternalEvaluatorRunner()
         self.stop_decider = StopDecisionEngine()
         self.theory_layer = TheoryLayer()
@@ -329,44 +324,13 @@ class EvolutionRound:
         self.critique_engine.apply(candidates=population.candidates, critiques=critiques)
         for candidate in population.candidates:
             try:
-                annotate_candidate_source_bindings(candidate)
+                annotate_candidate_source_bindings(candidate, project_root=getattr(archives, "project_root", None) or None)
             except Exception:
                 if isinstance(candidate.metadata, dict):
                     candidate.metadata.setdefault("source_binding_manifest", {"binding_class": "no_binding", "admission_route": "repair_only", "diagnostics": ["source_binding_annotation_failed"]})
-        blocking_obligation_ids = [
-            str(item)
-            for item in (policy.metadata or {}).get("blocked_or_overexplored_obligations", [])
-            if item
-        ]
         verification_results: list[Any] = []
-        max_workers = env_int(_VERIFY_MAX_WORKERS_ENV, llm_governor()._max_concurrent())
-
-        def _run_stack() -> list[Any]:
-            return list(
-                self.verifier_stack.verify_population(
-                    population.candidates,
-                    contract=contract,
-                    blocking_obligation_ids=blocking_obligation_ids,
-                    current_round=current_round,
-                    round_limit=self.budget.round_limit,
-                )
-            )
-
-        def _run_synthesized() -> list[Any]:
-            return list(self._run_synthesized_verifier(population.candidates, current_round=current_round))
-
-        def _run_obligations() -> list[Any]:
-            return list(self._run_verification_obligations(population.candidates, current_round=current_round, policy=policy, contract=contract))
-
-        if max_workers <= 1:
-            verification_results.extend(_run_stack())
-            verification_results.extend(_run_synthesized())
-            verification_results.extend(_run_obligations())
-        else:
-            with ThreadPoolExecutor(max_workers=min(3, max_workers)) as pool:
-                futures = [pool.submit(fn) for fn in (_run_stack, _run_synthesized, _run_obligations)]
-                for fut in as_completed(futures):
-                    verification_results.extend(fut.result())
+        verification_results.extend(self._run_synthesized_verifier(population.candidates, current_round=current_round))
+        verification_results.extend(self._run_verification_obligations(population.candidates, current_round=current_round, policy=policy, contract=contract))
         ingest_latent_feedback(
             contract=contract,
             critiques=critiques,
@@ -468,6 +432,7 @@ class EvolutionRound:
         critiques: list[CandidateCritique],
         offspring_verifier: Callable[[list[CandidateGenome]], list[Any]] | None,
         repair_parent_candidates: list[CandidateGenome] | None = None,
+        provided_context: dict[str, Any] | None = None,
     ) -> tuple[str, list[dict[str, Any]], dict[str, Any]]:
         plan = GenerationPlan.from_dict(self.last_generation_plan) if self.last_generation_plan else None
         completed_stage_ops = list(self.last_completed_stage_ops or self.last_generation_plan.get("completed_stage_ops") or [])
@@ -502,7 +467,7 @@ class EvolutionRound:
         if plan is not None:
             assert_stage_ready(plan, "plan_mutations", completed_stage_ops)
         self._sync_model_context_controls()
-        plans = _plan_mutations(model=self.model, mutation_planner=self.mutation_planner, parents=parents, actions=actions, archives=archives, diagnosis=diagnosis, policy=policy)
+        plans = _plan_mutations(model=self.model, mutation_planner=self.mutation_planner, parents=parents, actions=actions, archives=archives, diagnosis=diagnosis, policy=policy, provided_context=provided_context)
         plans, latent_exploration_plan = apply_latent_exploration_to_mutation_plans(plans, contract, exploration=latent_exploration_plan)
         plans = self._apply_search_pressure_to_plans(plans, parents=parents)
         plans = self._apply_candidate_transforms_to_plans(plans, parents=parents)
@@ -528,11 +493,15 @@ class EvolutionRound:
             world=world,
             rankings=rankings,
             diagnosis=diagnosis,
+            provided_context=provided_context,
         )
         offspring = dedupe_offspring_against_population(offspring, population)
         activation_map = _cell_activation_map(parents=parents, plans=plans, offspring=offspring)
         if activation_map:
             self.adaptive.record_cell_activation_map(activation_map, round_index=current_round, history_limit=v23_config.ca_crossover.activation_history_limit)
+        canonical_metrics = _canonical_family_metrics([*population.candidates, *offspring])
+        if canonical_metrics:
+            self.adaptive.record_canonical_family_metrics(canonical_metrics, round_index=current_round)
         if plan is not None:
             completed_stage_ops.append("generate_offspring")
             self.last_generation_plan["offspring_ids"] = [candidate.id for candidate in offspring]
@@ -728,7 +697,7 @@ class EvolutionRound:
         for source in (
             self._theory_advisory_features(policy=policy, candidates=candidates, current_round=current_round),
             evidence_advisory_features(candidates),
-            self.adaptive.research_advisory_features(candidates=candidates, policy=policy),
+            self.adaptive.selection_advisory_features(candidates=candidates, policy=policy),
         ):
             for candidate_id, feature in (source or {}).items():
                 current = dict(combined.get(candidate_id) or {})
@@ -885,6 +854,7 @@ class EvolutionRound:
         world: Any,
         rankings: RelativeRankingResult,
         diagnosis: SearchDiagnosis,
+        provided_context: dict[str, Any] | None = None,
     ) -> list[CandidateGenome]:
         sync_repair_parent_attempts_to_dormant_archive(archives, parents)
         v23_config = V23TheoryRuntimeConfig.from_runtime_context(policy=policy, contract=contract, branch_factor=self.budget.branch_factor, population_size=len(population.candidates))
@@ -898,6 +868,7 @@ class EvolutionRound:
             policy=policy,
             candidate_pool=population.candidates,
             ca_config=v23_config.ca_crossover,
+            provided_context=provided_context,
         )
         for child in offspring:
             metadata = child.metadata if isinstance(child.metadata, dict) else {}
@@ -988,6 +959,55 @@ def _parent_for_plan_id(plan: MutationPlan, parents: list[CandidateGenome], inde
     if parents:
         return parents[index % len(parents)]
     return None
+
+
+def _canonical_family_metrics(candidates: list[CandidateGenome]) -> dict[str, Any]:
+    if not candidates:
+        return {}
+    family_counts: dict[str, int] = {}
+    bin_keys: set[str] = set()
+    novelty_term_counts: list[tuple[str, int]] = []
+    migration_samples = 0
+    migration_changed = 0
+    for candidate in candidates:
+        meta = ensure_nextgen_identity(candidate)
+        family = str(meta.get("canonical_mechanism_family_id") or candidate.id)
+        family_counts[family] = family_counts.get(family, 0) + 1
+        bin_keys.add(candidate_bin_key(candidate))
+        novelty_terms = {str(item) for item in [*candidate.novelty_descriptors, *candidate.niche_memberships] if str(item or "").strip()}
+        novelty_term_counts.append((family, len(novelty_terms)))
+        migration = meta.get("canonical_mechanism_migration") if isinstance(meta.get("canonical_mechanism_migration"), dict) else {}
+        if migration:
+            migration_samples += 1
+            if str(migration.get("from_canonical_mechanism_family_id") or "") != str(migration.get("to_canonical_mechanism_family_id") or ""):
+                migration_changed += 1
+    total = sum(family_counts.values())
+    probabilities = [count / max(1, total) for count in family_counts.values()]
+    entropy = -sum(p * math.log(p, 2) for p in probabilities if p > 0.0)
+    top_count = max(family_counts.values()) if family_counts else 0
+    # Divide by the final family size so the ratio does not depend on iteration order.
+    ratios = sorted(count / max(1, family_counts[family]) for family, count in novelty_term_counts)
+    return {
+        "population_count": total,
+        "canonical_family_entropy": round(entropy, 6),
+        "max_canonical_family_share": round(top_count / max(1, total), 6),
+        "top_canonical_family_count": top_count,
+        "distinct_canonical_family_count": len(family_counts),
+        "canonical_family_count_to_population_count": round(len(family_counts) / max(1, total), 6),
+        "candidate_bin_count": len(bin_keys),
+        "candidate_bin_count_to_canonical_family_count": round(len(bin_keys) / max(1, len(family_counts)), 6),
+        "same_declared_changed_canonical_share": round(migration_changed / max(1, migration_samples), 6),
+        "same_declared_changed_canonical_sample_count": migration_samples,
+        "novelty_to_canonical_family_ratio_p50": round(_percentile(ratios, 0.50), 6),
+        "novelty_to_canonical_family_ratio_p95": round(_percentile(ratios, 0.95), 6),
+    }
+
+
+def _percentile(values: list[float], quantile: float) -> float:
+    if not values:
+        return 0.0
+    index = min(len(values) - 1, max(0, math.ceil(float(quantile or 0.0) * len(values)) - 1))
+    return float(values[index])
 
 
 def _cell_activation_map(*, parents: list[CandidateGenome], plans: list[MutationPlan], offspring: list[CandidateGenome]) -> dict[str, Any]:

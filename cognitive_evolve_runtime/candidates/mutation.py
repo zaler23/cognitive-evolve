@@ -6,7 +6,7 @@ from typing import Any
 
 from .genome import CandidateGenome
 from .project_candidate import PatchOperation, ProjectCandidateGenome
-from cognitive_evolve_runtime.nexus._serde import coerce_dict, coerce_str_list
+from cognitive_evolve_runtime.core.serialization import coerce_dict, coerce_str_list
 
 
 class MutationOperator:
@@ -298,10 +298,8 @@ def _action_to_operator(action: str) -> str:
 
 
 def _remove_scaffold_terms(text: str) -> str:
-    stripped = str(text or "")
-    for token in ["router", "validator", "framework", "classification layer", "scaffold"]:
-        stripped = stripped.replace(token, "").replace(token.title(), "")
-    return " ".join(stripped.split()) or "core mechanism needs reconstruction"
+    stripped = " ".join(str(text or "").split())
+    return stripped or "core mechanism needs reconstruction"
 
 
 def _apply_candidate_transform_artifact(artifact: Any, plan: MutationPlan) -> Any | None:

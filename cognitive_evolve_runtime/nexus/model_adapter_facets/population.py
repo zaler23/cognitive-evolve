@@ -27,9 +27,12 @@ from cognitive_evolve_runtime.nexus.model_adapter_schemas import (
 
 
 class PopulationFacet:
-    def seed_population(self, *, contract: Any, world: Any, policy: Any) -> list[dict[str, Any]]:
+    def seed_population(self, *, contract: Any, world: Any, policy: Any, provided_context: dict[str, Any] | None = None) -> list[dict[str, Any]]:
         schema = _candidate_population_schema()
-        data = self._call("nexus_seed_population", {"contract": contract, "world": world, "policy": policy}, schema)
+        payload = {"contract": contract, "world": world, "policy": policy}
+        if provided_context:
+            payload["source_context"] = provided_context
+        data = self._call("nexus_seed_population", payload, schema)
         return [dict(item) for item in data.get("candidates", []) if isinstance(item, dict)]
 
 

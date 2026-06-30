@@ -5,7 +5,9 @@ from cognitive_evolve_runtime.candidates.genome import CandidateGenome
 from cognitive_evolve_runtime.candidates.mutation import MutationEngine, MutationOperator, MutationPlan
 from cognitive_evolve_runtime.contracts.objective_contract import NexusObjectiveContract
 from cognitive_evolve_runtime.nexus.loop.offspring import _generate_offspring
-from cognitive_evolve_runtime.nexus.loop.round import _cell_activation_map
+from cognitive_evolve_runtime.nexus.adaptive.config import AdaptiveConfig
+from cognitive_evolve_runtime.nexus.adaptive import AdaptiveRuntimeController
+from cognitive_evolve_runtime.nexus.loop.round import _canonical_family_metrics, _cell_activation_map
 from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy
 from cognitive_evolve_runtime.nexus.v23_theory_config import CACrossoverConfig
 
@@ -84,6 +86,36 @@ def test_crossover_plan_deterministic_fallback_generates_two_parent_child() -> N
     assert len(offspring) == 1
     assert offspring[0].parent_ids == ["P", "Q"]
     assert offspring[0].metadata["ca_crossover"]["parent_ids"] == ["P", "Q"]
+
+
+
+
+def test_canonical_family_metrics_report_collapse_and_dispersion() -> None:
+    candidates = [
+        _candidate("A1", "alpha repair", niche="alpha"),
+        _candidate("A2", "alpha repair", niche="alpha"),
+        _candidate("B1", "beta repair", niche="beta"),
+    ]
+    candidates[0].metadata["nextgen"] = {"canonical_mechanism_family_id": "old", "canonical_mechanism_family_version": "old"}
+
+    metrics = _canonical_family_metrics(candidates)
+
+    assert metrics["population_count"] == 3
+    assert metrics["distinct_canonical_family_count"] >= 2
+    assert metrics["max_canonical_family_share"] < 1.0
+    assert metrics["candidate_bin_count_to_canonical_family_count"] >= 1.0
+    assert metrics["same_declared_changed_canonical_sample_count"] == 1
+    assert metrics["novelty_to_canonical_family_ratio_p95"] >= metrics["novelty_to_canonical_family_ratio_p50"]
+
+
+def test_adaptive_controller_records_canonical_family_metrics_event() -> None:
+    controller = AdaptiveRuntimeController(config=AdaptiveConfig())
+
+    controller.record_canonical_family_metrics({"canonical_family_entropy": 1.5, "population_count": 3}, round_index=2)
+
+    assert controller.state.metrics["canonical_family_entropy"] == 1.5
+    assert controller.state.events[-1]["type"] == "canonical_family_metrics"
+    assert controller.state.events[-1]["round"] == 2
 
 
 def test_cell_activation_map_records_parent_and_offspring_cells() -> None:

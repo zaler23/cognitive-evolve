@@ -137,7 +137,7 @@ def test_requires_verified_solution_blocks_solved_without_m5_certificate() -> No
     contract = NexusObjectiveContract(
         original_user_goal="verified result",
         normalized_goal="verified result",
-        outcome_policy={"requires_verified_solution": True, "accepts_best_current_route": False},
+        outcome_policy={"requires_verified_solution": True, "accepts_answer_first_output": False},
     )
     budget = EvolutionBudget(max_rounds=1)
     budget.stop_reason = "objective_solved"
@@ -152,10 +152,11 @@ def test_requires_verified_solution_blocks_solved_without_m5_certificate() -> No
         contract=contract,
     )
 
-    assert completion == "solved"
+    assert completion == "completed"
+    assert certificate["answer_produced"] is True
     assert certificate["objective_solved"] is False
     assert certificate["improvement_verified"] is False
-    assert "missing_verified_improvement_certificate" in certificate["critical_failures"]
+    assert certificate["critical_failures"] == []
 
 
 def test_verified_m5_certificate_is_exposed_in_closure_certificate() -> None:
@@ -163,7 +164,7 @@ def test_verified_m5_certificate_is_exposed_in_closure_certificate() -> None:
     contract = NexusObjectiveContract(
         original_user_goal="verified result",
         normalized_goal="verified result",
-        outcome_policy={"requires_verified_solution": True, "accepts_best_current_route": False},
+        outcome_policy={"requires_verified_solution": True, "accepts_answer_first_output": False},
     )
     budget = EvolutionBudget(max_rounds=1)
     budget.stop_reason = "objective_solved"
@@ -179,7 +180,8 @@ def test_verified_m5_certificate_is_exposed_in_closure_certificate() -> None:
         improvement_certificate=m5,
     )
 
-    assert certificate["objective_solved"] is True
+    assert certificate["answer_produced"] is True
+    assert certificate["objective_solved"] is False
     assert certificate["improvement_verified"] is True
     assert certificate["improvement_certificate_hash"] == m5.certificate_hash()
     assert certificate["baseline_id"] == "baseline"
@@ -187,7 +189,7 @@ def test_verified_m5_certificate_is_exposed_in_closure_certificate() -> None:
     assert certificate["aggregate_lcb"] > 0.0
 
 
-def test_stop_decision_blocks_solved_when_latent_space_unresolved() -> None:
+def test_stop_decision_does_not_block_answer_on_latent_space_unresolved() -> None:
     state = LatentProblemState(
         intents=(
             IntentHypothesis(id="clarity", statement="make it clear", posterior=0.5),
@@ -207,7 +209,7 @@ def test_stop_decision_blocks_solved_when_latent_space_unresolved() -> None:
         contract=contract,
     )
 
-    assert reason == "latent_problem_space_needs_continuation"
+    assert reason == "objective_solved"
 
 
 def test_stop_decision_allows_solved_when_latent_converged_and_verified() -> None:
