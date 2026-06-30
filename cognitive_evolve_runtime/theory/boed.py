@@ -23,7 +23,7 @@ def produce_boed_signals(population: PopulationRepresentation) -> tuple[TheorySi
                 target_id=candidate.candidate_id,
                 value=plan_value,
                 confidence=0.5,
-                provenance=("boed:expected_information_gain",),
+                provenance=("boed:heuristic_plan_value",),
                 meta={"uncertainty_mass": uncertainty, "novelty_mass": novelty, "evidence_gap": evidence_gap},
             )
         )
