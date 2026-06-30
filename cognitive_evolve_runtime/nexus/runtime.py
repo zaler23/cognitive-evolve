@@ -35,6 +35,7 @@ from cognitive_evolve_runtime.nexus.fallbacks import capture_fallback_events, re
 from cognitive_evolve_runtime.nexus.runtime_options import option_bool, resolve_runtime_options, restore_runtime_options
 from cognitive_evolve_runtime.nexus.runtime_services import NexusPersistenceService, NexusProjectVerificationService
 from cognitive_evolve_runtime.nexus._shared import MODEL_BOUNDARY_ERRORS, positive_int
+from cognitive_evolve_runtime.nexus.stop_reasons import normalize_external_review_stop_reason
 from cognitive_evolve_runtime.persistence.checkpoint import CheckpointStore, contract_payload_for_persistence
 
 
@@ -381,6 +382,14 @@ class NexusRuntime:
             else:
                 provided_context = dict(restored.get("provided_context") or {})
             budget_data = dict(getattr(checkpoint, "budget", {}) or {})
+            terminal_stop = normalize_external_review_stop_reason(budget_data.get("stop_reason"))
+            resume_does_not_extend = max_rounds is None or int(max_rounds) <= int(checkpoint.max_rounds or 0)
+            if terminal_stop and resume_does_not_extend:
+                run_result_path = self.output_dir / "run-result.json"
+                if not run_result_path.exists():
+                    raise FileNotFoundError(f"terminal checkpoint resume requires persisted run-result.json: {run_result_path}")
+                payload = json.loads(run_result_path.read_text(encoding="utf-8"))
+                return NexusRunResult(**payload)
             adaptive_resume = bool(budget_data.get("adaptive"))
             if max_rounds is not None:
                 target_rounds = max(int(max_rounds), int(checkpoint.round or 0) + 1)

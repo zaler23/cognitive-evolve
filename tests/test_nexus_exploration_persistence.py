@@ -6,10 +6,13 @@ from typing import Any
 
 import pytest
 
-from cognitive_evolve_runtime.candidates.genome import CandidateGenome
+from cognitive_evolve_runtime.archives.manager import ArchiveManager
+from cognitive_evolve_runtime.candidates.genome import CandidateGenome, CandidatePopulation
+from cognitive_evolve_runtime.contracts.objective_contract import NexusObjectiveContract
 from cognitive_evolve_runtime.engine.orchestrator import EngineOrchestrator
 from cognitive_evolve_runtime.llm.env import LLMResponseError
-from cognitive_evolve_runtime.nexus.runtime import NexusRuntime
+from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy
+from cognitive_evolve_runtime.nexus.runtime import NexusRunResult, NexusRuntime
 from cognitive_evolve_runtime.persistence.checkpoint import CheckpointStore
 
 
@@ -77,6 +80,55 @@ class DiagnoseInterruptsSecondRoundModel(NarrowSeedModel):
         return super().diagnose_search_state(**_)
 
 
+def _write_resume_fixture(
+    out: Path,
+    *,
+    stop_reason: str,
+    checkpoint_round: int = 1,
+    checkpoint_max_rounds: int = 2,
+    phase: str = "terminal",
+    write_run_result: bool = True,
+) -> dict[str, Any]:
+    contract = NexusObjectiveContract(original_user_goal="resume goal", normalized_goal="resume goal")
+    policy = EvolutionPolicy()
+    world = {"kind": "text", "goal_summary": "resume goal"}
+    population = CandidatePopulation(
+        [
+            CandidateGenome(
+                id="C0",
+                artifact="persisted answer",
+                concise_claim="persisted answer",
+                core_mechanism="fixture",
+                multihead_scores={"objective_alignment": 0.9, "answer_likelihood": 0.9},
+            )
+        ]
+    )
+    CheckpointStore(out / "checkpoint.json").save_state(
+        round=checkpoint_round,
+        max_rounds=checkpoint_max_rounds,
+        population=population,
+        archives=ArchiveManager(),
+        policy=policy,
+        contract=contract,
+        world=world,
+        mode="text",
+        progress_event={"type": "evolution_progress", "round": checkpoint_round, "max_rounds": checkpoint_max_rounds, "phase": phase},
+        budget={"current_round": checkpoint_round, "max_rounds": checkpoint_max_rounds, "stop_reason": stop_reason},
+        verification_plan={"verifier_id": "noop", "strength": "NONE", "modality": "none", "verifier_fingerprint": "fixture"},
+    )
+    payload = NexusRunResult(
+        mode="text",
+        contract=contract.to_dict(),
+        policy=policy.to_dict(),
+        world=world,
+        evolution={"synthesis": {"final_answer": "persisted answer"}, "stop_reason": stop_reason, "persisted": True},
+        artifacts={"run_result": str(out / "run-result.json")},
+    ).to_dict()
+    if write_run_result:
+        (out / "run-result.json").write_text(json.dumps(payload), encoding="utf-8")
+    return payload
+
+
 def test_post_seeding_checkpoint_survives_verification_synthesizer_failure(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     def fail_synthesize(self: object, *_args: Any, **_kwargs: Any) -> object:
         raise LLMResponseError("verification synthesize failed after seed")
@@ -106,6 +158,76 @@ def test_post_seeding_checkpoint_survives_verification_synthesizer_failure(monke
         assert checkpoint["archives"]["archive_schema"]
         assert len(checkpoint["population"]["candidates"]) >= 3
         assert len(restored["population"].candidates) >= 3
+
+
+def test_terminal_resume_reuses_persisted_run_result_without_evolving(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    calls: list[bool] = []
+    payload = _write_resume_fixture(tmp_path, stop_reason="candidate_ready_for_external_review")
+
+    def fail_evolve_once(**_: Any) -> None:
+        calls.append(True)
+        pytest.fail("terminal resume should not call evolve_once")
+
+    monkeypatch.setattr("cognitive_evolve_runtime.nexus.runtime.evolve_once", fail_evolve_once)
+
+    resumed = NexusRuntime(output_dir=tmp_path).resume_from_checkpoint(max_rounds=2)
+
+    assert calls == []
+    assert resumed.to_dict() == payload
+
+
+def test_terminal_resume_extending_rounds_enters_evolve_once(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    calls: list[int] = []
+    _write_resume_fixture(tmp_path, stop_reason="candidate_ready_for_external_review")
+
+    class ReachedEvolveOnce(Exception):
+        pass
+
+    def stop_at_evolve_once(**kwargs: Any) -> None:
+        calls.append(kwargs["budget"].max_rounds)
+        raise ReachedEvolveOnce
+
+    monkeypatch.setattr("cognitive_evolve_runtime.nexus.runtime.evolve_once", stop_at_evolve_once)
+
+    with pytest.raises(ReachedEvolveOnce):
+        NexusRuntime(output_dir=tmp_path).resume_from_checkpoint(max_rounds=3)
+
+    assert calls == [3]
+
+
+def test_post_seeding_resume_does_not_use_terminal_short_circuit(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    calls: list[int] = []
+    _write_resume_fixture(tmp_path, stop_reason="", checkpoint_round=0, phase="post_seeding")
+
+    class ReachedEvolveOnce(Exception):
+        pass
+
+    def stop_at_evolve_once(**kwargs: Any) -> None:
+        calls.append(kwargs["budget"].current_round)
+        raise ReachedEvolveOnce
+
+    monkeypatch.setattr("cognitive_evolve_runtime.nexus.runtime.evolve_once", stop_at_evolve_once)
+
+    with pytest.raises(ReachedEvolveOnce):
+        NexusRuntime(output_dir=tmp_path).resume_from_checkpoint(max_rounds=2)
+
+    assert calls == [0]
+
+
+def test_terminal_resume_requires_persisted_run_result(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    calls: list[bool] = []
+    _write_resume_fixture(tmp_path, stop_reason="candidate_ready_for_external_review", write_run_result=False)
+
+    def fail_evolve_once(**_: Any) -> None:
+        calls.append(True)
+        pytest.fail("terminal resume should fail closed before evolve_once")
+
+    monkeypatch.setattr("cognitive_evolve_runtime.nexus.runtime.evolve_once", fail_evolve_once)
+
+    with pytest.raises(FileNotFoundError, match="terminal checkpoint resume requires persisted run-result.json"):
+        NexusRuntime(output_dir=tmp_path).resume_from_checkpoint()
+
+    assert calls == []
 
 
 def test_nexus_amplifies_narrow_model_seed_pool_and_marks_search_seeds(tmp_path: Path) -> None:
