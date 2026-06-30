@@ -38,8 +38,9 @@ Options:
   --branch-factor N            default: 4
   --initial-candidates N       default: 16
   --min-rounds-before-stop N   default: 8
-  --require-upstream-health    require --upstream-health-url before model calls
-  --upstream-health-url URL    operator-supplied upstream health endpoint
+  --require-upstream-health    force upstream health gating even without a URL (fails fast)
+  --upstream-health-url URL    operator-supplied upstream health endpoint; setting it
+                               (or COGEV_UPSTREAM_HEALTH_URL) auto-enables health gating
   --dry-run                    print the launch plan without starting services/runner
   -h, --help                   show this help
 HELP
@@ -109,6 +110,12 @@ if [[ "$RESUME" == "true" ]]; then
 fi
 if [[ "$INCLUDE_TESTS" == "true" ]]; then
   runner_args+=(--include-tests)
+fi
+# A configured upstream health URL (flag or COGEV_UPSTREAM_HEALTH_URL) auto-enables
+# gating; an empty URL never blocks the run. Explicit --require-upstream-health
+# without a URL still fails fast below.
+if [[ -n "$UPSTREAM_HEALTH_URL" ]]; then
+  REQUIRE_UPSTREAM_HEALTH="true"
 fi
 if [[ "$REQUIRE_UPSTREAM_HEALTH" == "true" ]]; then
   runner_args+=(--require-upstream-health --upstream-health-url "$UPSTREAM_HEALTH_URL")
