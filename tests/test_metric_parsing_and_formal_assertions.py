@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from cognitive_evolve_runtime.candidates.genome import CandidateGenome
 from cognitive_evolve_runtime.nexus.obligations import candidate_formal_artifacts, looks_like_formal_artifact
-from cognitive_evolve_runtime.nexus.stage_policy import parse_metric_value, stage_eligibility
+from cognitive_evolve_runtime.nexus.stage_policy import parse_metric_value, stage_eligibility, stage_for_round
 from cognitive_evolve_runtime.ranking.relative_rater import _coerce_score, _verification_score
 
 
@@ -32,6 +32,13 @@ def test_relative_rater_uses_robust_metric_parser_for_nested_scores() -> None:
     assert _coerce_score("1.5e-05-2") is None
     assert _verification_score(candidate) == 0.9
     assert stage_eligibility(candidate).stage in {"early", "middle", "late", "final"}
+
+
+def test_stage_fractions_drive_four_phases_else_middle_fallback() -> None:
+    policy = {"stage_fractions": {"early_until": 0.25, "middle_until": 0.5, "late_until": 0.75}}
+
+    assert [stage_for_round(round_, 100, policy) for round_ in (10, 30, 60, 90)] == ["early", "middle", "late", "final"]
+    assert [stage_for_round(round_, 100, {}) for round_ in (0, 1, 99, 100)] == ["early", "middle", "middle", "final"]
 
 
 def test_assertion_set_formal_artifact_is_structurally_checkable() -> None:
