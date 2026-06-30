@@ -60,6 +60,7 @@ def assess_seed_coverage(
     status = "broad" if broad_enough else "thin"
     if accepted_count == 0:
         status = "empty"
+    undercovered_family_signals = _undercovered_family_signals(families)
     return {
         "schema": "seed_coverage.v1",
         "candidate_count": accepted_count,
@@ -83,7 +84,8 @@ def assess_seed_coverage(
         "needs_more_seed_reason": "coverage_thin" if status != "broad" and stop_reason != "fatal_model_error" else "",
         "needs_target_perturb": status != "broad" or top1_share >= 0.35 or top3_share >= 0.60,
         "reasons": _coverage_reasons(status=status, top1_share=top1_share, top3_share=top3_share, duplicate_excess=exact_duplicate_excess),
-        "undercovered_family_signals": _undercovered_family_signals(families),
+        "undercovered_family_signals": undercovered_family_signals,
+        "novelty_debt": _novelty_debt(families, accepted_count=accepted_count, family_floor=family_floor, undercovered_family_signals=undercovered_family_signals),
         "fingerprint": stable_hash({"families": families.most_common(), "accepted_count": accepted_count}),
         "policy": "descriptive_only_no_seed_cap_gate",
     }
@@ -209,6 +211,39 @@ def _undercovered_family_signals(families: Counter[str]) -> list[dict[str, Any]]
         return []
     medianish = sorted(families.values())[len(families) // 2]
     return [{"family": family, "count": count, "reason": "singleton_or_below_median"} for family, count in families.items() if count <= max(1, medianish)][:16]
+
+
+def _novelty_debt(
+    families: Counter[str],
+    *,
+    accepted_count: int,
+    family_floor: int,
+    undercovered_family_signals: list[dict[str, Any]],
+) -> dict[str, Any]:
+    overrepresented = []
+    for family, count in families.most_common(16):
+        share = count / max(1, accepted_count)
+        if share >= 0.35:
+            overrepresented.append(
+                {
+                    "family": family,
+                    "count": count,
+                    "share": round(share, 4),
+                    "excess_share": round(share - 0.35, 4),
+                    "reason": "top_family_concentration",
+                }
+            )
+    missing_family_count = max(0, int(family_floor or 0) - len(families))
+    score = round(sum(item["excess_share"] for item in overrepresented) + missing_family_count / max(1, family_floor), 4)
+    return {
+        "schema": "seed_coverage.novelty_debt.v1",
+        "status": "watch" if score > 0 else "clear",
+        "score": score,
+        "overrepresented_families": overrepresented,
+        "missing_family_count": missing_family_count,
+        "undercovered_family_signals": list(undercovered_family_signals[:16]) if missing_family_count else [],
+        "policy": "advisory_metadata_only_no_gate",
+    }
 
 
 def _positive_int(value: Any) -> int | None:

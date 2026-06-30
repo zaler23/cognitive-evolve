@@ -56,6 +56,24 @@ def test_seed_coverage_reports_broad_and_thin_without_fixed_taxonomy() -> None:
     assert concentrated["needs_target_perturb"] is True
 
 
+def test_seed_coverage_novelty_debt_is_advisory_metadata_only() -> None:
+    concentrated = assess_seed_coverage(
+        [_candidate(f"C{i}", "same") for i in range(20)],
+        harvest_summary={"stopped_reason": "fatal_model_error"},
+    )
+    debt = concentrated["novelty_debt"]
+
+    assert debt["status"] == "watch"
+    assert debt["overrepresented_families"][0]["family"] == "same"
+    assert debt["overrepresented_families"][0]["excess_share"] > 0
+    assert debt["missing_family_count"] > 0
+    assert debt["undercovered_family_signals"]
+    assert debt["policy"] == "advisory_metadata_only_no_gate"
+    assert concentrated["status"] == "thin"
+    assert concentrated["needs_more_seed"] is False
+    assert concentrated["needs_more_seed_reason"] == ""
+
+
 def test_target_perturb_seed_judgment_recommends_only_after_stuck_round() -> None:
     candidates = [_candidate(f"C{i}", "same") for i in range(10)]
     diagnosis = {"stagnation_type": "SemanticLooping"}
