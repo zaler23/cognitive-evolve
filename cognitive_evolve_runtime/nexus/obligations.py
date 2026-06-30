@@ -1,4 +1,4 @@
-"""Proof/progress obligation utilities for hard open-ended tasks.
+"""Proof/progress obligation utilities; Chinese placeholders support multilingual tasks.
 
 This module is intentionally deterministic.  It does not try to prove the
 theorem; it enforces a runtime invariant: for proof-like objectives, narrative

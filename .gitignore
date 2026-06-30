@@ -51,3 +51,9 @@ htmlcov/
 package-lock.json
 build/
 dist/
+*.tmp
+*.bak
+*~
+*.swp
+.idea/
+.vscode/

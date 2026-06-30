@@ -1,4 +1,4 @@
-"""AI-driven contract synthesizer with deterministic guardrails.
+"""AI-driven contract synthesizer; Chinese needles support multilingual constructive tasks.
 
 This module intentionally avoids domain-pack routing.  It converts a task into a
 contract describing what success, progress, drift, evidence, and abstention mean.

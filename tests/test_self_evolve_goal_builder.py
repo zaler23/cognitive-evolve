@@ -8,7 +8,7 @@ from pathlib import Path
 
 def test_build_self_evolve_goal_composes_preamble_and_markdown_inputs(tmp_path: Path) -> None:
     preamble = tmp_path / "goal-preamble.md"
-    preamble.write_text("# 探索版目标\n允许结构化设计候选。", encoding="utf-8")
+    preamble.write_text("# Exploration goal\nStructured design candidates are allowed.", encoding="utf-8")
     input_zip = tmp_path / "input.zip"
     with zipfile.ZipFile(input_zip, "w") as archive:
         archive.writestr("00-context.md", "# Context\nA")
@@ -36,7 +36,7 @@ def test_build_self_evolve_goal_composes_preamble_and_markdown_inputs(tmp_path: 
 
     assert str(output) in completed.stdout
     text = output.read_text(encoding="utf-8")
-    assert text.startswith("# 探索版目标")
+    assert text.startswith("# Exploration goal")
     assert "## 00-context.md" in text
     assert "## 06-plan.md" in text
     assert "not included by default" not in text

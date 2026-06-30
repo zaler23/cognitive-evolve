@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Routing, scenario, and project-scope trigger terms."""
+"""Routing, scenario, and project-scope trigger terms; Chinese entries are multilingual input triggers."""
 from __future__ import annotations
 
 

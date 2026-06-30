@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Capability taxonomy and scenario trigger constants."""
+"""Capability taxonomy and scenario triggers; Chinese entries are multilingual input tokens."""
 from __future__ import annotations
 
 

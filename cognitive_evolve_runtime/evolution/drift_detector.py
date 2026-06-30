@@ -1,4 +1,4 @@
-"""Semantic drift and attractor detection."""
+"""Semantic drift detection; Chinese terms support multilingual drift signals."""
 from __future__ import annotations
 
 from typing import Any

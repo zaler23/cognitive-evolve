@@ -1,4 +1,4 @@
-"""Runtime bridge between Nexus evolution and M5/M5.1 outcome kernels.
+"""Runtime bridge between Nexus evolution and M5/M5.1 outcome kernels; Chinese markers are multilingual triggers.
 
 The outcome kernels are intentionally domain-neutral.  This bridge keeps their
 runtime integration small: contracts can carry latent objective state, candidate

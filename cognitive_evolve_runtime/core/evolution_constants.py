@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Evolution scoring constants and seed candidate content."""
+"""Evolution scoring constants; Chinese objective keywords are multilingual input tokens."""
 from __future__ import annotations
 
 

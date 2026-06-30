@@ -1,4 +1,4 @@
-"""Source-binding lineage analysis for project patch candidates.
+"""Source-binding lineage analysis; Chinese intent tokens support multilingual patch candidates.
 
 The gate answers one narrow question: does the proposed patch/test/source
 reality support the candidate's declared path+symbol binding?  It is deliberately

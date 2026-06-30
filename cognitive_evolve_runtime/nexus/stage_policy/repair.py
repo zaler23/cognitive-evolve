@@ -1,4 +1,4 @@
-"""Repair requirement and hard-reject helpers for stage policy."""
+"""Repair and hard-reject helpers; Chinese negation/final tokens support multilingual inputs."""
 from __future__ import annotations
 
 from typing import Any

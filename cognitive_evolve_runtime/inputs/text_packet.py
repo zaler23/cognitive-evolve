@@ -1,4 +1,4 @@
-"""Text input packet and text world model for Nexus runtime."""
+"""Text input packet and world model; Chinese markers support multilingual inputs."""
 from __future__ import annotations
 
 import json

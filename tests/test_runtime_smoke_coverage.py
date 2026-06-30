@@ -18,7 +18,7 @@ def test_fixture_backed_runtime_run_writes_valid_artifacts(tmp_path, monkeypatch
     monkeypatch.setenv("COGEV_LLM_FIXTURE", str(fixture))
     monkeypatch.setenv("COGEV_RUNTIME_ROOT", str(tmp_path / "runtime-root"))
 
-    rc = runtime_run(str(task_dir), "agent系统 演化 调优 架构 冲突", activate_all=True, rounds=2)
+    rc = runtime_run(str(task_dir), "agent system evolution tuning architecture conflict", activate_all=True, rounds=2)
 
     assert rc == 0
     state = json.loads((task_dir / "runtime-state.json").read_text(encoding="utf-8"))

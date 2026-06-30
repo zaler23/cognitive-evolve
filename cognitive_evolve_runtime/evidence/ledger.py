@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Source and claim ledger for evidence-bound tasks."""
+"""Source and claim ledger for evidence-bound tasks; Chinese terms support multilingual claim detection."""
 from __future__ import annotations
 
 import hashlib
