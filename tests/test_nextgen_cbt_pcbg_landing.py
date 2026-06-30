@@ -446,13 +446,14 @@ def test_seed_reservoir_soft_retains_low_relevance_and_duplicates() -> None:
     assert duplicate.metadata["candidate_budget_decision"]["action"] == "soft_reservoir"
 
 
-def test_duplicate_offspring_is_soft_retained_with_budget_trace() -> None:
+def test_duplicate_offspring_is_hard_excluded_with_budget_trace() -> None:
     parent = CandidateGenome(id="p", artifact="same", concise_claim="same", core_mechanism="same")
     child = CandidateGenome(id="c", parent_ids=["p"], artifact="same", concise_claim="same", core_mechanism="same")
 
     kept = dedupe_offspring_against_population([child], CandidatePopulation([parent]))
 
-    assert kept == [child]
+    assert kept == []
+    assert child.metadata["candidate_budget_decision"]["action"] == "hard_exclude"
     assert child.metadata["candidate_budget_decision"]["reason"] == "duplicate_semantic_signature"
     assert "productive_child_observation" in child.metadata["nextgen"]
 
