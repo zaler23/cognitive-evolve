@@ -36,6 +36,7 @@ def test_boed_is_bounded_and_does_not_prune_candidates() -> None:
 
     assert {signal.target_id for signal in signals} == {"a", "b"}
     assert all(0.0 <= signal.value <= 1.0 for signal in signals)
+    assert {signal.provenance for signal in signals} == {("boed:heuristic_plan_value",)}
 
 
 def test_observer_consumes_completed_snapshots_only_and_emits_advisory_namespace_ready_signals() -> None:

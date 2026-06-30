@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from cognitive_evolve_runtime.archives.manager import ArchiveManager
 from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome
-from cognitive_evolve_runtime.candidates.mutation import MutationEngine, MutationPlanner
+from cognitive_evolve_runtime.candidates.mutation import MutationEngine, MutationOperator, MutationPlanner
 from cognitive_evolve_runtime.contracts.objective_contract import NexusObjectiveContract
 from cognitive_evolve_runtime.nexus.diagnosis import PolicyUpdater, SearchDiagnosis, SearchStateDiagnoser
 from cognitive_evolve_runtime.nexus.exploration import action_palette_for_round
@@ -25,6 +25,39 @@ def test_stagnation_diagnosis_generates_action_for_auxiliary_collapse() -> None:
     assert diagnosis.stagnation_type == "AuxiliaryCollapse"
     assert {"core_extraction", "rare_inject"} & set(diagnosis.recommended_actions)
     assert updated.mutation_operators
+
+
+def test_shadow_action_palette_bandit_records_raw_action_advisory_without_changing_round_robin() -> None:
+    parents = [
+        CandidateGenome(id=f"P{index}", current_fate=fate, multihead_scores={"latent_reproductive_signal": signal})
+        for index, (fate, signal) in enumerate(
+            [
+                (CandidateFate.ACTIVE.value, 0.6),
+                (CandidateFate.ELITE.value, 0.8),
+                (CandidateFate.INCUBATING.value, 0.4),
+                (CandidateFate.DORMANT.value, 0.3),
+                (CandidateFate.FAILED.value, 0.2),
+            ]
+        )
+    ]
+    actions = ["repair_schema", "repair_behavior", "formal_equation", "instantiate_lemma", "rare_probe"]
+
+    plans = MutationPlanner().plan_from_actions(parents, actions)
+
+    assert len(plans) == len(parents)
+    assert [plan.operator for plan in plans] == [
+        MutationOperator.REPAIR,
+        MutationOperator.REPAIR,
+        MutationOperator.INSTANTIATE_FORMAL_ARTIFACT,
+        MutationOperator.INSTANTIATE_FORMAL_ARTIFACT,
+        MutationOperator.RARE_INJECT,
+    ]
+    telemetry = plans[0].metadata["shadow_action_palette_bandit"]
+    assert telemetry["advisory_only"] is True
+    assert telemetry["arm_count"] == 5
+    assert len(telemetry["allocation"]) == 5
+    assert len({plan.operator for plan in plans}) == 3
+    assert {plan.metadata["raw_policy_action"] for plan in plans} == set(actions)
 
 
 def test_failed_elite_frontier_triggers_verification_bottleneck() -> None:

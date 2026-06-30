@@ -1,6 +1,7 @@
 """Runtime controller for the adaptive evidence control plane."""
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidatePopulation
@@ -125,6 +126,10 @@ class AdaptiveRuntimeController:
             return None
         requirements = dict(self.config.evidence or {})
         base = self.challenge_memory.compile_search_pressure(parent_id=parent_id, scope=scope, artifact_requirements=requirements)
+        if base is not None:
+            overlap = _challenge_candidate_overlap(base, parent=parent, candidates=candidates or [])
+            if overlap:
+                base.metadata["challenge_candidate_overlap"] = overlap
         return base
 
     def record_contract_artifact_policy_conflicts(self, *, contract: Any | None) -> None:
@@ -354,6 +359,44 @@ def _attach_auto_resolved_schema_challenges(candidate: Any, challenge_ids: list[
     scores = dict(getattr(candidate, "multihead_scores", {}) or {})
     scores["challenge_resolution"] = bounded_score(state.get("challenge_resolution", 0.0))
     candidate.multihead_scores = scores
+
+
+def _challenge_candidate_overlap(pressure: SearchPressure, *, parent: Any | None, candidates: list[Any]) -> dict[str, Any]:
+    challenge_terms = _overlap_terms(
+        " ".join([*(str(item.get("summary") or item.get("challenge_id") or "") for item in pressure.success_criteria), pressure.mutation_instruction])
+    )
+    selected = [item for item in [parent, *list(candidates or [])] if item is not None]
+    if not challenge_terms or not selected:
+        return {}
+    matches: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for candidate in selected:
+        candidate_id = str(getattr(candidate, "id", "") or "")
+        if not candidate_id or candidate_id in seen:
+            continue
+        seen.add(candidate_id)
+        shared = sorted(challenge_terms & _candidate_overlap_terms(candidate))
+        matches.append({"candidate_id": candidate_id, "shared_terms": shared[:12], "overlap_score": bounded_score(len(shared) / max(1, len(challenge_terms)))})
+    return {"schema": "challenge-candidate-overlap/v1", "advisory_only": True, "matches": matches}
+
+
+def _candidate_overlap_terms(candidate: Any) -> set[str]:
+    return _overlap_terms(
+        " ".join(
+            str(value or "")
+            for value in (
+                getattr(candidate, "id", ""),
+                getattr(candidate, "artifact_type", ""),
+                getattr(candidate, "concise_claim", ""),
+                getattr(candidate, "core_mechanism", ""),
+                getattr(candidate, "artifact", ""),
+            )
+        )
+    )
+
+
+def _overlap_terms(value: Any) -> set[str]:
+    return {item.lower() for item in re.findall(r"[\w\-]{3,}", str(value or ""), flags=re.UNICODE)}
 
 
 def _int_or_default(value: Any, default: int) -> int:

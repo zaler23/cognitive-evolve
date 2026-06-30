@@ -4,9 +4,11 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
-from .genome import CandidateGenome
+from .genome import CandidateFate, CandidateGenome
 from .project_candidate import PatchOperation, ProjectCandidateGenome
 from cognitive_evolve_runtime.core.serialization import coerce_dict, coerce_str_list
+from cognitive_evolve_runtime.core.scalars import bounded_score
+from cognitive_evolve_runtime.theory.bandit import OperatorArmStats, suggest_budget_allocation
 
 
 class MutationOperator:
@@ -257,16 +259,21 @@ class MutationEngine:
 class MutationPlanner:
     def plan_from_actions(self, parents: list[CandidateGenome], actions: list[str], rarity_seeds: list[str] | None = None) -> list[MutationPlan]:
         seeds = list(rarity_seeds or [])
+        shadow_bandit = _shadow_action_palette_bandit(parents, actions)
         plans: list[MutationPlan] = []
         for index, parent in enumerate(parents):
             action = actions[index % len(actions)] if actions else MutationOperator.DEEPEN
             operator = _action_to_operator(action)
+            metadata = {"raw_policy_action": str(action or "")} if actions else {}
+            if shadow_bandit:
+                metadata["shadow_action_palette_bandit"] = shadow_bandit
             plans.append(
                 MutationPlan(
                     operator=operator,
                     parent_ids=[parent.id],
                     instruction=f"Apply {operator} according to the current EvolutionPolicy.",
                     rarity_seed=seeds[index % len(seeds)] if seeds and operator == MutationOperator.RARE_INJECT else "",
+                    metadata=metadata,
                 )
             )
         return plans
@@ -295,6 +302,42 @@ def _action_to_operator(action: str) -> str:
     if "repair" in normalized:
         return MutationOperator.REPAIR
     return normalized.title().replace("_", "") if normalized.title().replace("_", "") in MutationOperator.ALL else MutationOperator.DEEPEN
+
+
+def _shadow_action_palette_bandit(parents: list[CandidateGenome], actions: list[str]) -> dict[str, Any]:
+    if not parents or not actions:
+        return {}
+    raw: dict[str, dict[str, Any]] = {}
+    for index, parent in enumerate(parents):
+        action = str(actions[index % len(actions)] or MutationOperator.DEEPEN)
+        fate = CandidateFate.normalize(getattr(parent, "current_fate", ""))
+        current = raw.setdefault(action, {"pulls": 0, "reward_sum": 0.0, "risk_sum": 0.0, "fates": {}})
+        current["pulls"] += 1
+        current["reward_sum"] += _shadow_action_reward(parent, fate)
+        current["risk_sum"] += 1.0 if fate in {CandidateFate.CULLED.value, CandidateFate.FAILED.value} else 0.0
+        current["fates"][fate] = current["fates"].get(fate, 0) + 1
+    arms = tuple(
+        OperatorArmStats(arm_id=arm_id, pulls=int(data["pulls"]), reward_sum=float(data["reward_sum"]), risk_sum=float(data["risk_sum"]))
+        for arm_id, data in sorted(raw.items())
+    )
+    return {
+        "schema": "shadow-action-palette-bandit/v1",
+        "advisory_only": True,
+        "arm_count": len(arms),
+        "arms": [arm.to_dict() | {"fates": dict(raw[arm.arm_id]["fates"])} for arm in arms],
+        "allocation": [item.to_dict() for item in suggest_budget_allocation(arms)],
+    }
+
+
+def _shadow_action_reward(parent: CandidateGenome, fate: str) -> float:
+    signal = bounded_score(coerce_dict(getattr(parent, "multihead_scores", {})).get("latent_reproductive_signal", 0.0))
+    if fate == CandidateFate.ELITE.value:
+        return max(signal, 1.0)
+    if fate in {CandidateFate.ACTIVE.value, CandidateFate.INCUBATING.value}:
+        return max(signal, 0.5)
+    if fate == CandidateFate.DORMANT.value:
+        return max(signal, 0.25)
+    return signal
 
 
 def _remove_scaffold_terms(text: str) -> str:
