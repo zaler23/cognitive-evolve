@@ -1,0 +1,14 @@
+{
+  "only": ["py", "toml", "md", "yaml", "yml", "json"],
+  "exclude": [
+    ".venv",
+    ".pytest_cache",
+    "__pycache__",
+    "*.pyc",
+    "htmlcov",
+    "build",
+    "dist",
+    "*.egg-info"
+  ],
+  "depth": 4
+}

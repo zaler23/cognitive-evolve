@@ -1,0 +1,24 @@
+# Provider Matrix — CognitiveEvolve 2.0
+
+CognitiveEvolve requires an explicit model provider for production model calls. The runtime never silently replaces a failed production provider with local heuristics or fixture responses.
+
+| Provider mode | Intended use | Required configuration | Status |
+|---|---|---|---|
+| `litellm` | Production model calls | `COGEV_LLM_PROVIDER=litellm`, `COGEV_LLM_MODEL`, `COGEV_LLM_API_KEY`; optional `COGEV_LLM_API_BASE` and `COGEV_LLM_REASONING_EFFORT` | Supported |
+| `direct_http` | Production through a compatible `/v1/chat/completions` endpoint without LiteLLM request shaping | `COGEV_LLM_PROVIDER=direct_http`, `COGEV_LLM_MODEL`, `COGEV_LLM_API_BASE`; optional `COGEV_LLM_API_KEY` and `COGEV_LLM_REASONING_EFFORT` | Supported |
+| `fixture` | Deterministic tests only | `COGEV_LLM_PROVIDER=fixture`, `COGEV_LLM_FIXTURE=tests/fixtures/llm_fixture.json` | Test-only |
+| Missing/failed provider | Error path | No valid provider configuration or exhausted retries | Explicit failure / partial state |
+
+The public provider boundary is `LLMProviderInterface`; implementations must remain generic provider adapters, not private application relays. Provider-facing concurrency and budget settings are controlled by `COGEV_LLM_MAX_CONCURRENT`, `COGEV_LLM_RPM`, `COGEV_LLM_TPM`, and stage-budget settings. Nexus model batch fan-out is controlled by `COGEV_MODEL_FANOUT_CONCURRENCY`; when unset it follows the shared LLM governor and therefore cannot exceed `COGEV_LLM_MAX_CONCURRENT`. Set `COGEV_MODEL_FANOUT_CONCURRENCY=1` for deterministic serial model-call debugging.
+
+## Profile-aware routing
+
+Nexus calls can attach a public `model_profile_id`. The profile id
+separates breaker state, idempotency, journals, ledgers, telemetry, and cost
+accounting while keeping top-level `provider` and `model` fields readable.
+Seed exploration may use an ensemble of seed adapters; non-seed roles remain
+single-profile unless a caller explicitly supplies a different route.
+
+Profile records must contain only public routing coordinates and environment
+variable names for credentials. Do not store credential values, private relay
+details, or machine-specific paths in source-controlled config or docs.

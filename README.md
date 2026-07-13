@@ -1,0 +1,290 @@
+# CognitiveEvolve
+
+CognitiveEvolve `2.0.0` is a source-installable **unresolved-problem attack engine** built around the Nexus runtime. It searches, runs preliminary checks, checkpoints, and ranks candidate directions; its HTTP API is OpenAI-shaped for client compatibility, not semantically identical to a raw provider chat endpoint.
+
+## Project status
+
+CognitiveEvolve is a **source-installable beta / engineering preview**. Users
+can clone the repository, install it from source, run the CLI, and serve the
+OpenAI-shaped API locally. The project does not yet promise a packaged
+public installer, PyPI release, hosted service, or one-click production
+deployment.
+
+Text, research, and project inputs enter one runtime pipeline:
+
+```text
+Input Packet
+  → World Model
+  → Objective Contract
+  → Evolution Policy
+  → CandidateGenome / ProjectCandidateGenome population
+  → Preliminary validation and tool feedback
+  → Evaluator-authoritative ranking + archives
+  → Parent selection + direct semantic artifact evolution
+  → Final answer, patch, report, or structured failure analysis
+```
+
+The platform fixes evolution mechanics: snapshots, file hashes, candidate lineage, archive fates, local tool protocol, isolated temporary patch copies, persistence, checkpoint replay, and progress events. These copies are not a security sandbox. The model decides task semantics through structured objective contracts, policies, seeds, and concrete offspring. Every model-backed reproduction round uses one runtime-authored lineage envelope and one direct offspring call. With a configured evaluator, the envelope carries bounded observed feedback and asks for complete evaluator-visible artifacts; without one, it permits concrete exploratory progress. Critique, diagnosis, and policy may still be model-driven, but reproduction does not pay for a separate mutation-planning call or let a planning response override runtime branch allocation.
+
+## Runtime architecture
+
+The runtime source of truth is:
+
+```text
+cognitive_evolve_runtime/nexus/runtime.py       # NexusRuntime, the single execution authority
+cognitive_evolve_runtime/nexus/loop/            # structured evolution loop package
+cognitive_evolve_runtime/nexus/difficulty_estimator.py # model/task difficulty and round-budget estimation
+cognitive_evolve_runtime/nexus/policy.py        # EvolutionPolicy and policy updates
+cognitive_evolve_runtime/nexus/diagnosis.py     # stagnation/control diagnosis
+cognitive_evolve_runtime/nexus/model_adapter.py # public adapter facade only
+cognitive_evolve_runtime/nexus/model_adapter_core.py    # transport, prompt-view, schema validation core
+cognitive_evolve_runtime/nexus/model_adapter_schemas.py # structured response schemas
+cognitive_evolve_runtime/nexus/model_adapter_repair.py  # deterministic schema repair
+cognitive_evolve_runtime/nexus/stage_policy/    # stage eligibility package
+cognitive_evolve_runtime/nexus/state.py         # runtime-state projections
+```
+
+Shared foundations:
+
+```text
+cognitive_evolve_runtime/candidates/     # CandidateGenome, ProjectCandidateGenome, mutation, crossover, patch merge
+cognitive_evolve_runtime/archives/       # ArchiveManager facade, archive registry, constraints, and fate-specific archives
+cognitive_evolve_runtime/ranking/        # RelativeRater, multihead Elo, parent selection, novelty, lineage saturation
+cognitive_evolve_runtime/inputs/         # text packets, project snapshots, project maps, context selection
+cognitive_evolve_runtime/tools/          # verifier environment, tool runner, patch sandbox, feedback
+cognitive_evolve_runtime/persistence/    # population/archives/event/checkpoint/verification stores
+cognitive_evolve_runtime/events/         # event bus and progress event schemas
+cognitive_evolve_runtime/contracts/      # objective contract definitions
+cognitive_evolve_runtime/evidence/       # evidence planning and ledger
+cognitive_evolve_runtime/durable/        # file locks and atomic writes
+```
+
+There are no alternate runtime, ranking, archive, or candidate-search packages. New development should extend the modules above. Third-party systems can be integrated only through provider/tool/adapter boundaries; they are not declared or selected as replacement runtimes.
+
+## Install
+
+```bash
+python3 -m pip install -e .
+```
+
+## Fixture-first quickstart
+
+Start with the hermetic fixture path before any real model provider:
+
+```bash
+python3 scripts/cogev.py doctor --scope core
+python3 scripts/cogev.py config init --profile fixture --print
+export COGEV_LLM_PROVIDER=fixture
+export COGEV_LLM_FIXTURE="$PWD/tests/fixtures/llm_fixture.json"
+python3 scripts/cogev.py llm status
+python3 scripts/cogev.py run "find three bold candidate directions for a hard open problem"
+```
+
+Real provider runs are opt-in. Verification labels are advisory unless an
+external/user-owned verifier confirms the answer; CognitiveEvolve's default job
+is to explore high-ceiling candidate mechanisms.
+
+For real model use, configure a generic provider explicitly. Runtime code talks to `llm.provider_interface.LLMProviderInterface`; supported modes are `litellm`, `direct_http` for OpenAI-compatible `/v1/chat/completions`, and deterministic `fixture` for tests. Tests default to hermetic mode and never read user-home `.env` files.
+
+Advanced runs may route seed exploration and later ranking/synthesis through
+different public provider profiles. A profile is just a public id plus provider,
+model, limits, and an environment-variable name for the credential; sensitive
+values stay outside source control. `COGEV_LLM_MODEL` configures a single-profile
+run.
+
+```dotenv
+COGEV_LLM_PROVIDER=litellm
+COGEV_LLM_MODEL=provider/model-id
+COGEV_LLM_REASONING_EFFORT=high  # optional; must be supported by the selected model
+COGEV_LLM_API_BASE=https://your-provider.example/v1
+COGEV_LLM_API_KEY=<upstream-provider-key>
+COGEV_SERVER_API_KEY=<frontend-service-key>
+```
+
+To create a deployment config without committing secrets:
+
+```bash
+python3 scripts/cogev.py config init --profile local --output .env
+python3 scripts/cogev.py config init --profile production --output /secure/path/cogev.env
+python3 scripts/cogev.py config init --profile fixture --print
+```
+
+Generated `.env` files are ignored by Git. Only `.env.example`, `.env.production.example`, and `.env.fixture.example` belong in source control.
+
+## CLI
+
+```bash
+python3 scripts/cogev.py config init --profile local --output .env
+python3 scripts/cogev.py llm status
+python3 scripts/cogev.py route "your task"
+python3 scripts/cogev.py enhance "your task"
+python3 scripts/cogev.py run "your task"
+python3 scripts/cogev.py runtime run <task_dir> --all
+python3 scripts/cogev.py runtime run <task_dir> --rounds 3
+python3 scripts/cogev.py runtime status <task_dir>
+python3 scripts/cogev.py attack problem.yaml --budget 3 --out ./attack-out
+python3 scripts/cogev.py attack --resume ./attack-out --budget 6
+python3 scripts/cogev.py eval run <task_dir>
+python3 scripts/cogev.py optimize run <task_dir>
+python3 scripts/cogev.py doctor --scope all
+```
+
+The runtime command has no runtime selector; it always invokes `NexusRuntime`.
+
+## OpenAI-shaped API
+
+```bash
+python3 scripts/cogev.py api status
+python3 scripts/cogev.py api serve
+```
+
+For local development, `scripts/start-cognitive-evolve-api.sh` can prepare an
+isolated virtual environment outside the source tree and start the API. The
+launcher installs the project non-editably into that external environment so it
+does not create `.venv/` or `*.egg-info/` inside the repository. By default it
+refuses to stop another process already listening on the service port; set
+`COGEV_STOP_EXISTING_PORT=1` only when you intentionally want the launcher to
+stop that listener first.
+
+Frontend configuration:
+
+```text
+Base URL: http://127.0.0.1:8765/v1
+API Key:  <COGEV_SERVER_API_KEY>
+Model:    cognitive-evolve-one-shot-deep
+```
+
+For long frontend runs, prefer `/v1/cogev/jobs` over holding one chat-completions request open. Jobs can be resumed with `POST /v1/cogev/jobs/{id}/resume` when a Nexus checkpoint exists. Streaming chat completions emit progress metadata while Nexus writes durable progress and checkpoint artifacts. API model tiers select adaptive Nexus policies rather than fixed round/candidate counts. `cognitive-evolve-one-shot-exhaustive` activates an exhaustive policy with safety checkpoints, one width-bounded model seed batch by default, and wider mutation branching. Reaching a safety checkpoint returns a completed answer-first candidate output when answer material exists; explicit interruption/quota/operator continuation remains separate metadata. `candidate_ready_for_external_review` and `diminishing_returns_checkpoint` also produce reviewable candidate output, not a correctness claim. `answer_produced` is distinct from `objective_solved`, which is not self-certified by the project. API calls bind Nexus to the configured generic LLM adapter; deterministic generation is available only in explicit offline mode where no model is configured.
+
+Compatibility boundary: `/v1/chat/completions` is OpenAI-shaped, not
+token-semantic identical. A single request may run adaptive multi-round
+candidate evolution before a best-current/needs-continuation artifact,
+and streaming sends progress, heartbeat, and final-answer chunks rather than
+raw provider token deltas.
+
+Security defaults: the API refuses to serve on a non-loopback host with
+`COGEV_SERVER_REQUIRE_AUTH=false` unless `COGEV_ALLOW_INSECURE_BIND=1` is set
+explicitly. CORS defaults to localhost origins; wildcard origins disable
+credentials.
+
+## Runtime artifacts
+
+A task run writes Nexus artifacts under the task directory:
+
+```text
+runtime-state.json
+nexus-runtime/run-result.json
+nexus-runtime/external-review-bundle.json  # only when the final projection is bound to a candidate
+nexus-runtime/final-answer.md
+nexus-runtime/population.json
+nexus-runtime/archives.json
+nexus-runtime/checkpoint.json
+nexus-runtime/events.jsonl
+nexus-runtime/candidate-journal.jsonl
+nexus-runtime/rounds/round-*.json
+nexus-runtime/adaptive/adaptive-state.json
+nexus-runtime/adaptive/final-certificate.json
+nexus-runtime/adaptive/final-projection.json
+nexus-runtime/adaptive/spatial-topology.json
+nexus-runtime/challenge-memory.json
+nexus-runtime/challenge-events.jsonl
+nexus-runtime/nexus-runtime-self-check.json
+nexus-runtime/nexus-runtime-self-check.md
+evaluations/native-eval-report.json
+evaluations/native-eval-report.md
+```
+
+Progress events distinguish pipeline progress from evolution progress. Checkpoints contain mode, contract, world, policy, diagnosis, population, archives, budget history, and round state so Nexus runs can resume from saved state. Live persistence writes after ranking/critique, after mutation, on interruption, and at final synthesis; initial exploration seeds are marked as seeds, final output is reviewable best-current answer material, and producer-owned artifacts always keep `objective_solved=false`.
+
+When the final projection is bound to a concrete candidate,
+`external-review-bundle.json` is a content-addressed, export-only input for an
+independent reviewer. It binds the candidate, contract, input identity,
+preliminary checks, limitations, replay recipe, and usage provenance. An
+unbound synthesis answer does not produce a misleading bundle; `run-result.json`
+records why the export is unavailable. The project does not import a verdict or
+turn the integrity hash into a correctness claim.
+
+Fallbacks are auditable runtime events, not silent logger-only behavior.
+`run-result.json` stores `evolution.fallback_events` and
+`evolution.fallback_event_count`; `nexus-runtime/events.jsonl` stores the same
+sanitized fallback event summaries. These summaries redact local paths and
+secret-shaped text and do not include long prompts or provider credentials.
+
+The optional Adaptive Evidence Layer is disabled unless configured by
+environment, `.cogev/config.yaml`, or a task-local `task.yaml`. Its public
+surface is evidence-oriented: `ArtifactPolicy`, `EvidenceRecord`,
+`ChallengeMemory`, `SearchPressure`, optional external evaluator feedback,
+observe/advisory spatial telemetry, checkpointable adaptive state, clean final
+projection, and a `final-certificate` artifact whose authority is preliminary
+and advisory only.
+
+The Evidence Control Plane keeps search and finality separate. Artifact policy
+decides whether a candidate may be probed or finalized; evidence records update
+search value and repair value; challenge memory turns failures and boundaries
+into search pressure for the next mutation round. A configured evaluator is a
+producer-owned preliminary signal, while model self-claims such as "verified"
+never solve the objective. Machine-artifact tasks can
+set `adaptive.evidence.machine_artifact_required=true`; natural-language
+fallback artifacts may then be probed but are not final-eligible until re-emitted
+as clean machine-readable artifacts. The runtime turns configured artifact
+policy into both a bounded prompt hint and the Nexus dynamic artifact contract,
+so model-backed mutation and verifier gates see the same exact `artifact_type`,
+required fields, forbidden aliases, and optional domain vocabulary. If a resumed
+checkpoint lacks that binding, the overlay is applied in memory for future
+rounds and recorded in metadata without rewriting stored snapshots.
+Artifact normalization, semantic-drift diagnostics, and
+score-component diagnostics become challenge-memory cases rather than final
+claims. The final projection emits a best-current candidate when one is
+available, preserves structured machine artifacts instead of string-wrapping
+them, and always keeps producer-owned `objective_solved=false`.
+
+Evaluator-visible artifact identity is also the hard phenotype key for
+deduplication and diversity accounting. Different claims or mechanism labels do
+not make byte-identical artifacts diverse. A bare model response may be ingested
+as the exact task artifact only when it satisfies an explicit artifact schema,
+or when a frozen task and one evaluator-led selected-parent envelope make the
+next external probe authoritative. Frozen text alone is not a schema. The
+runtime never fabricates artifact content from prose. Direct offspring prompts
+carry exact selected-parent artifacts and bounded evaluator metrics/diagnostics;
+mechanism labels are not a substitute for measured behavioral diversity.
+
+Adaptive research extensions are implemented as an internal registry under
+`AdaptiveRuntimeController`, not as a second runtime or a parallel research
+control plane. Extensions emit `ResearchSignal` objects that are applied through
+one deterministic applicator with explicit modes: `observe` keeps only metrics
+and warnings, `advisory` allows search pressure and parent-selection advisory
+without writing extension evidence, and `active` is the only mode that may write
+extension evidence records or blocking final-gate directives. Extensions never
+own candidate fate, challenge truth, archive state, or final solved authority.
+Spatial research selection reuses the existing adaptive spatial population
+state, so there is only one candidate-coordinate authority. The optional
+research snapshot is consolidated under `nexus-runtime/research/` as
+`research-state.json`, `research-events.jsonl`, and `research-metrics.json`.
+
+Research extension authority boundaries are fixed: `NexusRuntime` orchestrates,
+`AdaptiveRuntimeController` owns adaptive/research entry, `ArchiveManager` owns
+candidate fate, `ChallengeMemory` owns challenge relations, `EvidenceRecord`
+helpers own candidate evidence, `ParentSelector` consumes advisory, and
+`FinalProjection` owns user-facing output. Pattern memory, immune/necropsy,
+budget backpressure, MDL compression, parameter sweep, chaos, BFT quorum,
+context pruning, and contract refinement are advisory or gate-directive
+extensions only; none can silently mutate the objective contract or mark an
+objective solved. Correctness and final acceptance remain external.
+
+## Testing and validation
+
+```bash
+python3 -m pip install -e ".[test]"
+PYTHONDONTWRITEBYTECODE=1 python -m pytest -q -p no:cacheprovider
+python3 scripts/cogev.py doctor --scope all
+```
+
+Hermetic tests stay provider-free. Real provider smoke coverage is opt-in:
+
+```bash
+COGEV_RUN_LLM_TESTS=1 python -m pytest -q tests/test_llm_opt_in_integration.py
+```
+
+### Nexus prompt budget
+
+Nexus persists full evolution state locally, but sends compressed prompt views to the configured model. Use `COGEV_NEXUS_PROMPT_MAX_CHARS` for ordinary calls and `COGEV_NEXUS_LONG_CONTEXT_MAX_CHARS` for long-context calls. Prompt-view accounting is written to `nexus-runtime/run-result.json` under `evolution.prompt_view_metadata`.

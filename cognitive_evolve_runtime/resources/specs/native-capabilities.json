@@ -1,0 +1,119 @@
+{
+  "schema_version": "2.0",
+  "runtime_architecture": "nexus",
+  "source": "cognitive_evolve_runtime.nexus.semantics.DEFAULT_CAPABILITIES and core capability constants",
+  "default_capabilities": [
+    "local_execution",
+    "project_governance",
+    "task_scoping",
+    "tool_boundary",
+    "durable_execution",
+    "cognitive_search",
+    "independent_review",
+    "user_cognition",
+    "observability"
+  ],
+  "required_capabilities": [
+    "local_execution",
+    "project_governance",
+    "workflow_packets",
+    "task_scoping",
+    "cognitive_search",
+    "evolution_loop",
+    "independent_review",
+    "user_cognition",
+    "tool_boundary",
+    "evaluation_runner",
+    "prompt_optimizer",
+    "durable_execution",
+    "observability"
+  ],
+  "native_runtime_capabilities": [
+    "tool_boundary",
+    "durable_execution",
+    "cognitive_search",
+    "evolution_loop",
+    "independent_review",
+    "user_cognition",
+    "observability"
+  ],
+  "projected_runtime_capabilities": [
+    "workflow_packets",
+    "evaluation_runner",
+    "prompt_optimizer"
+  ],
+  "mandatory_ai_backend_capabilities": [
+    "durable_execution",
+    "cognitive_search",
+    "evolution_loop",
+    "independent_review",
+    "observability"
+  ],
+  "capabilities": [
+    {
+      "id": "local_execution",
+      "kind": "source_boundary",
+      "description": "Local command and filesystem execution under explicit task scope."
+    },
+    {
+      "id": "project_governance",
+      "kind": "source_boundary",
+      "description": "Project rules, contributor notes, release and runtime boundary governance."
+    },
+    {
+      "id": "workflow_packets",
+      "kind": "artifact_boundary",
+      "description": "Task skeleton files and runtime-state artifacts."
+    },
+    {
+      "id": "task_scoping",
+      "kind": "semantic_boundary",
+      "description": "One-shot task intake and objective scoping."
+    },
+    {
+      "id": "cognitive_search",
+      "kind": "nexus_core",
+      "description": "Candidate search, diagnosis, mutation, crossover, and synthesis."
+    },
+    {
+      "id": "evolution_loop",
+      "kind": "nexus_core",
+      "description": "Round lifecycle and adaptive stop/checkpoint semantics."
+    },
+    {
+      "id": "independent_review",
+      "kind": "nexus_core",
+      "description": "Critique, verifier feedback, and final-gate review."
+    },
+    {
+      "id": "user_cognition",
+      "kind": "semantic_boundary",
+      "description": "User objective preservation and cognitive-load aware outputs."
+    },
+    {
+      "id": "tool_boundary",
+      "kind": "adapter_boundary",
+      "description": "Local verification/tool adapters without alternate runtime authority."
+    },
+    {
+      "id": "evaluation_runner",
+      "kind": "artifact_boundary",
+      "description": "Nexus-native post-run validation reports."
+    },
+    {
+      "id": "prompt_optimizer",
+      "kind": "artifact_boundary",
+      "description": "Nexus-native prompt variant artifacts."
+    },
+    {
+      "id": "durable_execution",
+      "kind": "nexus_core",
+      "description": "Event logs, checkpoints, snapshots, and idempotent persistence."
+    },
+    {
+      "id": "observability",
+      "kind": "nexus_core",
+      "description": "Progress events, fallback events, LLM telemetry, and runtime reports."
+    }
+  ]
+}

@@ -1,0 +1,43 @@
+name: Design review
+description: Propose architecture, adapter, eval, prompt, memory, or workflow changes
+title: "[Design]: "
+labels: ["design", "needs-review"]
+body:
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: What decision needs review?
+    validations:
+      required: true
+  - type: textarea
+    id: contract
+    attributes:
+      label: Problem contract
+      description: Goal, non-goals, constraints, assumptions, and unknowns.
+    validations:
+      required: true
+  - type: textarea
+    id: candidates
+    attributes:
+      label: Candidate options
+      description: List 2-3 options and tradeoffs.
+    validations:
+      required: true
+  - type: textarea
+    id: risks
+    attributes:
+      label: Risks and complexity budget
+    validations:
+      required: true
+  - type: textarea
+    id: validation
+    attributes:
+      label: Validation plan
+    validations:
+      required: true
+  - type: textarea
+    id: checkmodel
+    attributes:
+      label: Review needs
+      description: Note whether CheckModel or independent review is needed.

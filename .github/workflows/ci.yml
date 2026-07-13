@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  push:
+    branches: ["main", "master"]
+  pull_request:
+    branches: ["main", "master"]
+
+permissions:
+  contents: read
+
+jobs:
+  core:
+    name: Core validation
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+    env:
+      COGEV_LLM_PROVIDER: fixture
+      COGEV_LLM_FIXTURE: ${{ github.workspace }}/tests/fixtures/llm_fixture.json
+      PYTHONDONTWRITEBYTECODE: "1"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Prepare CI paths
+        run: |
+          echo "COGEV_RUNTIME_ROOT=$RUNNER_TEMP/cognitive-evolve-runtime" >> "$GITHUB_ENV"
+          echo "PYTHONPYCACHEPREFIX=$RUNNER_TEMP/pycache" >> "$GITHUB_ENV"
+
+      - name: Install package
+        run: python -m pip install -U pip && python -m pip install ".[test]"
+
+      - name: Smoke installed wheel outside source tree
+        run: |
+          python -m pip wheel --no-deps . --wheel-dir "$RUNNER_TEMP/wheel"
+          python -m venv --system-site-packages "$RUNNER_TEMP/wheel-smoke"
+          "$RUNNER_TEMP/wheel-smoke/bin/python" -m pip install --force-reinstall --no-deps "$RUNNER_TEMP/wheel"/*.whl
+          cd "$RUNNER_TEMP"
+          COGEV_RUNTIME_ROOT="$RUNNER_TEMP/wheel-smoke-runtime" \
+            "$RUNNER_TEMP/wheel-smoke/bin/cogev" new --type smoke --slug installed-wheel --no-enhance
+          COGEV_RUNTIME_ROOT="$RUNNER_TEMP/wheel-smoke-runtime" \
+            "$RUNNER_TEMP/wheel-smoke/bin/cogev" doctor --scope core
+
+      - name: Prepare standalone runtime root
+        run: mkdir -p "$COGEV_RUNTIME_ROOT/.cogev/tasks"
+
+      - name: Compile Python sources
+        run: python -B -m compileall -q cognitive_evolve_runtime scripts tests
+
+      - name: Shellcheck scripts
+        run: shellcheck scripts/*.sh
+
+      - name: Clean generated source-tree artifacts before tests
+        run: |
+          rm -rf .pytest_cache .coverage coverage.xml htmlcov build dist *.egg-info
+          find . -name '__pycache__' -type d -prune -exec rm -rf {} +
+          find . \( -name '*.pyc' -o -name '*.pyo' -o -name '*.log' \) -delete
+
+      - name: Run tests
+        run: python -B -m pytest -q -p no:cacheprovider --cov=cognitive_evolve_runtime --cov-report=term --cov-fail-under=80
+
+      - name: Package sanity
+        run: bash scripts/package_clean.sh
+
+      - name: Run core doctor
+        run: python scripts/cogev.py doctor --scope core
+
+      - name: Seed native runtime task
+        run: |
+          TASK_DIR="$COGEV_RUNTIME_ROOT/.cogev/tasks/ci-core-smoke"
+          python scripts/cogev.py enhance --path "$TASK_DIR" "CI runtime smoke validation"
+          ln -sfn ci-core-smoke "$COGEV_RUNTIME_ROOT/.cogev/tasks/latest"
+          printf '%s\n' ci-core-smoke > "$COGEV_RUNTIME_ROOT/.cogev/tasks/LATEST.txt"
+          if ! python scripts/cogev.py runtime run --all --rounds 2 "$TASK_DIR"; then
+            cat "$TASK_DIR/nexus-runtime/nexus-runtime-self-check.json"
+            exit 1
+          fi
+
+      - name: Run runtime doctor
+        run: python scripts/cogev.py doctor --scope runtime

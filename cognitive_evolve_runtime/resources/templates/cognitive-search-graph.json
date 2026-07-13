@@ -1,0 +1,97 @@
+{
+  "schema_version": "2.0",
+  "runtime_architecture": "nexus",
+  "status": "reference_template",
+  "description": "Nexus cognitive-search graph template for task skeletons and source doctor validation.",
+  "nodes": [
+    {
+      "id": "input_packet",
+      "label": "Input Packet",
+      "authority": "platform"
+    },
+    {
+      "id": "world_model",
+      "label": "World Model",
+      "authority": "model_structured_by_platform"
+    },
+    {
+      "id": "objective_contract",
+      "label": "Objective Contract",
+      "authority": "model_structured_by_platform"
+    },
+    {
+      "id": "evolution_policy",
+      "label": "Evolution Policy",
+      "authority": "model_structured_by_platform"
+    },
+    {
+      "id": "candidate_population",
+      "label": "CandidateGenome Population",
+      "authority": "nexus"
+    },
+    {
+      "id": "verification",
+      "label": "Local Verification and Tool Feedback",
+      "authority": "platform"
+    },
+    {
+      "id": "relative_ranking",
+      "label": "Relative Ranking and Multihead Scores",
+      "authority": "nexus"
+    },
+    {
+      "id": "archives",
+      "label": "Archives and Diagnosis",
+      "authority": "nexus"
+    },
+    {
+      "id": "synthesis",
+      "label": "Final Synthesis or Structured Failure",
+      "authority": "nexus"
+    }
+  ],
+  "edges": [
+    [
+      "input_packet",
+      "world_model"
+    ],
+    [
+      "world_model",
+      "objective_contract"
+    ],
+    [
+      "objective_contract",
+      "evolution_policy"
+    ],
+    [
+      "evolution_policy",
+      "candidate_population"
+    ],
+    [
+      "candidate_population",
+      "verification"
+    ],
+    [
+      "verification",
+      "relative_ranking"
+    ],
+    [
+      "relative_ranking",
+      "archives"
+    ],
+    [
+      "archives",
+      "candidate_population"
+    ],
+    [
+      "archives",
+      "synthesis"
+    ]
+  ],
+  "guardrails": [
+    "NexusRuntime is the only execution authority.",
+    "No runtime selector or alternate runtime backend.",
+    "Fixtures are test-only; production model calls require explicit provider configuration.",
+    "Source tree stores templates/specs only; runtime artifacts belong under COGEV_RUNTIME_ROOT or explicit task roots."
+  ]
+}

@@ -1,0 +1,47 @@
+{
+  "schema_version": "2.0",
+  "suite": "runtime-validation",
+  "runtime_architecture": "nexus",
+  "checks": [
+    {
+      "id": "runtime_state_exists",
+      "description": "runtime-state.json exists"
+    },
+    {
+      "id": "runtime_contract_version",
+      "description": "runtime state uses the current Nexus contract"
+    },
+    {
+      "id": "nexus_runtime_path",
+      "description": "Nexus is the only runtime path"
+    },
+    {
+      "id": "single_runtime",
+      "description": "single Nexus runtime is enforced"
+    },
+    {
+      "id": "nexus_run_result_exists",
+      "description": "nexus-runtime/run-result.json exists"
+    },
+    {
+      "id": "nexus_population_exists",
+      "description": "Nexus population contains candidate genomes"
+    },
+    {
+      "id": "nexus_checkpoint_exists",
+      "description": "Nexus checkpoint exists"
+    },
+    {
+      "id": "nexus_events_exist",
+      "description": "Nexus event log exists"
+    },
+    {
+      "id": "final_answer_exists",
+      "description": "Nexus final answer artifact exists"
+    },
+    {
+      "id": "progress_matches_checkpoint",
+      "description": "checkpoint round matches runtime progress"
+    }
+  ]
+}
