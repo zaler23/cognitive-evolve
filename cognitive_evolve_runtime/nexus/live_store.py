@@ -10,6 +10,7 @@ from typing import Any
 
 from cognitive_evolve_runtime.archives.manager import ArchiveManager
 from cognitive_evolve_runtime.candidates.genome import CandidatePopulation
+from cognitive_evolve_runtime.core.serialization import json_ready
 from cognitive_evolve_runtime.durable.file_lock import _fsync_dir, atomic_write_json, file_lock
 from cognitive_evolve_runtime.nexus._serde import coerce_dict, stable_hash, utc_now
 from cognitive_evolve_runtime.nexus.seed_coverage import SEED_RESERVOIR_SIDECAR_PAYLOAD_KEY, persist_seed_reservoir_sidecar
@@ -185,15 +186,19 @@ class LiveNexusStore:
             }
             for candidate in population.candidates
         )
+        frozen_writes = tuple(
+            SnapshotWrite(item.relative_path, item.kind, _freeze_json_object(item.payload), sort_keys=item.sort_keys)
+            for item in snapshot_writes
+        )
         return FrozenLiveUpdate(
             phase=phase,
             round_index=round_index,
-            snapshot_writes=snapshot_writes,
-            round_snapshot=snapshot,
-            journal_rows=journal_rows,
-            event={"type": "nexus_live_checkpoint", "round": round_index, "phase": phase, "error": error, "population_size": len(population.candidates), "monitor_state": monitor_state},
-            latent_metadata=latent_metadata,
-            checkpoint_failure=checkpoint_failure,
+            snapshot_writes=frozen_writes,
+            round_snapshot=_freeze_json_object(snapshot),
+            journal_rows=tuple(_freeze_json_object(row) for row in journal_rows),
+            event=_freeze_json_object({"type": "nexus_live_checkpoint", "round": round_index, "phase": phase, "error": error, "population_size": len(population.candidates), "monitor_state": monitor_state}),
+            latent_metadata=_freeze_json_object(latent_metadata),
+            checkpoint_failure=_freeze_json_object(checkpoint_failure) if checkpoint_failure is not None else None,
         )
 
     def write(self, batch: FrozenLiveUpdate) -> None:
@@ -278,6 +283,13 @@ class LiveNexusStore:
 
 def _safe_phase(value: str) -> str:
     return "".join(ch if ch.isalnum() or ch in {"-", "_"} else "-" for ch in value)[:80] or "state"
+
+
+def _freeze_json_object(value: Any) -> dict[str, Any]:
+    frozen = json_ready(value)
+    if not isinstance(frozen, dict):
+        raise TypeError("live persistence payload must serialize to a JSON object")
+    return frozen
 
 
 def _contract_metadata(contract: Any | None) -> dict[str, Any]:
