@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 from cognitive_evolve_runtime.candidates.genome import CandidateGenome
+from cognitive_evolve_runtime.ranking.text_vector import lexical_similarity
 from .descriptor_cells import descriptor_cell_key
-from .fingerprints import candidate_fingerprint
+from .fingerprints import candidate_fingerprint, candidate_materialized_artifact
 
 
 def similarity(left: CandidateGenome, right: CandidateGenome) -> float:
@@ -28,8 +29,17 @@ def similarity(left: CandidateGenome, right: CandidateGenome) -> float:
         score += 0.05
     l_tokens = set(lf.descriptor_tokens)
     r_tokens = set(rf.descriptor_tokens)
+    surface_signals: list[float] = []
     if l_tokens or r_tokens:
-        score += 0.10 * (len(l_tokens & r_tokens) / max(1, len(l_tokens | r_tokens)))
+        surface_signals.append(len(l_tokens & r_tokens) / max(1, len(l_tokens | r_tokens)))
+    left_artifact = candidate_materialized_artifact(left)
+    right_artifact = candidate_materialized_artifact(right)
+    if left_artifact or right_artifact:
+        surface_signals.append(lexical_similarity(left_artifact, right_artifact))
+    if surface_signals:
+        # Lexical similarity grounds the existing soft descriptor component; it
+        # never enters exact/AST/phenotype dedupe.
+        score += 0.10 * (sum(surface_signals) / len(surface_signals))
     return max(0.0, min(1.0, score))
 
 

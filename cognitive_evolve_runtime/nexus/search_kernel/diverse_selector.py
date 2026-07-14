@@ -27,6 +27,7 @@ def select_diverse(
     *,
     limit: int,
     quality_fn: Callable[[CandidateGenome], float] | None = None,
+    tier_fn: Callable[[CandidateGenome], tuple[Any, ...]] | None = None,
     archives: Any | None = None,
     advisory_features: Mapping[str, Any] | None = None,
     eligibility_policy: Mapping[str, Any] | None = None,
@@ -50,6 +51,7 @@ def select_diverse(
     while remaining and len(selected) < target:
         best: CandidateGenome | None = None
         best_score = float("-inf")
+        best_tier: tuple[Any, ...] | None = None
         for candidate in remaining:
             reason = _constraint_reason(candidate, selected, max_per_lineage=max_per_lineage, max_per_cell=max_per_cell)
             if reason:
@@ -60,9 +62,14 @@ def select_diverse(
             score = mmr_score(quality=q, relevance=rel, max_similarity=max_sim)
             if _is_sparse_directive_target(candidate, archives):
                 score += 0.08
-            if score > best_score or (score == best_score and candidate.id < (best.id if best else "~")):
+            tier = tier_fn(candidate) if tier_fn is not None else ()
+            if best_tier is None or tier > best_tier or (
+                tier == best_tier
+                and (score > best_score or (score == best_score and candidate.id < (best.id if best else "~")))
+            ):
                 best = candidate
                 best_score = score
+                best_tier = tier
         if best is None:
             break
         selected.append(best)
@@ -73,7 +80,12 @@ def select_diverse(
         trace.lane_counts[f"lineage:{lineage}"] = trace.lane_counts.get(f"lineage:{lineage}", 0) + 1
         remaining = [candidate for candidate in remaining if candidate.id != best.id]
     if len(selected) < target:
-        for candidate in remaining:
+        fallback = sorted(
+            remaining,
+            key=lambda candidate: ((tier_fn(candidate) if tier_fn is not None else ()), candidate.id),
+            reverse=True,
+        )
+        for candidate in fallback:
             if len(selected) >= target:
                 break
             if candidate.id in {item.id for item in selected}:

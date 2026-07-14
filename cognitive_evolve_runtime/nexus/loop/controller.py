@@ -30,6 +30,7 @@ from cognitive_evolve_runtime.nexus._shared import MODEL_BOUNDARY_ERRORS
 from cognitive_evolve_runtime.llm.retry import provider_error_category
 
 from .budget import EvolutionBudget, EvolutionLoopResult
+from .adaptive_stop import candidate_quality_key
 from .closure import _attach_latent_replay_audit_to_closure, _closure_certificate, _completion_status_for_budget, _join_interruption_reference, _model_boundary_interruption_policy, _selected_improvement_certificate
 from .round import EvolutionRound, RoundEvaluation
 from .stage_helpers import _error_progress_event, _notify_observer, _raise_if_cancelled
@@ -193,10 +194,15 @@ class EvolutionLoopController:
                 for candidate in self.population.candidates
             ],
         )
+        best_candidate = next(
+            (candidate for candidate in self.population.candidates if candidate.id == evaluation.rankings.best_final_answer_id),
+            None,
+        )
         self.budget.history.append(
             {
                 "round": current_round,
                 "ranking": evaluation.rankings.to_dict(),
+                "best_quality_key": candidate_quality_key(best_candidate),
                 "diagnosis": self.diagnosis.to_dict(),
                 "grounded_information_gain": dict(getattr(self.diagnosis, "grounded_information_gain", {}) or {}),
                 "critiques": [critique.to_dict() for critique in evaluation.critiques],

@@ -5,7 +5,7 @@ from .env import *
 from .env import _env_float, _env_int, _looks_like_placeholder_secret
 from .governor import ThrottledLLMGovernor, estimate_request_tokens as _estimate_request_tokens, llm_governor, llm_governor_status
 from .reporting import llm_status_cli, write_llm_runtime_report
-from .session import EVENTS, LLMSession, current_llm_session, llm_session, reset_llm_events
+from .session import EVENTS, LLMSession, current_llm_session, llm_session, logical_llm_call, reset_llm_events
 from .json_tools import bounded_prompt_for_provider as _bounded_prompt_for_provider, extract_json_from_text as _extract_json_from_text, usage_dict as _usage_dict
 from .fixtures import load_fixture_response as _load_fixture_response
 from .transport import litellm_provider_kwargs as _litellm_provider_kwargs, llm_json

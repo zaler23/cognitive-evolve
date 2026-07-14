@@ -399,6 +399,7 @@ def test_patch_sandbox_enforces_allowed_patch_scope(tmp_path: Path) -> None:
     assert result.status == "failed"
     assert "outside allowed_patch_scope" in " ".join(result.diagnostics)
     assert (source / "docs" / "note.md").read_text(encoding="utf-8") == "note\n"
+    assert not (tmp_path / "sandboxes" / "out-of-scope").exists()
 
 
 def test_project_verification_failure_marks_candidate_failed(tmp_path: Path) -> None:

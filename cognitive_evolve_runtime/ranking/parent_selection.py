@@ -100,6 +100,27 @@ def reproductive_value(
     )
 
 
+def evaluator_selection_key(candidate: CandidateGenome) -> tuple[int, float, str]:
+    """Return the runtime-grounded lexicographic evaluator tier and score."""
+
+    metadata = candidate.metadata if isinstance(candidate.metadata, dict) else {}
+    evaluator = metadata.get("evaluator") if isinstance(metadata.get("evaluator"), dict) else {}
+    status = str(evaluator.get("status") or "").strip().lower()
+    if evaluator.get("passed") is True or status in {"passed", "pass", "ok", "success"}:
+        tier = 2
+    elif evaluator.get("passed") is False or status in {"failed", "fail", "error", "invalid", "rejected"}:
+        tier = 0
+    else:
+        tier = 1
+    metrics = evaluator.get("metrics") if isinstance(evaluator.get("metrics"), dict) else {}
+    raw_score = metrics.get("score", candidate.multihead_scores.get("evaluator_score", candidate.multihead_scores.get("objective_score", 0.0)))
+    try:
+        score = float(raw_score)
+    except (TypeError, ValueError):
+        score = 0.0
+    return tier, score if score == score else 0.0, candidate.id
+
+
 def _archive_directive_adjustment(candidate: CandidateGenome, archives: object | None) -> float:
     qd = getattr(archives, "quality_diversity", None)
     if qd is None or not hasattr(qd, "directive_boost"):
@@ -168,6 +189,7 @@ class ParentSelector:
         by_value = sorted(
             viable,
             key=lambda candidate: (
+                *evaluator_selection_key(candidate)[:2],
                 _order(candidate, floor=-1.0),
                 base_values.get(candidate.id, -1.0),
                 candidate.id,
@@ -202,6 +224,7 @@ class ParentSelector:
                 primary,
                 limit=max(0, target - repair_slots),
                 quality_fn=lambda candidate: _order(candidate, floor=0.0),
+                tier_fn=lambda candidate: evaluator_selection_key(candidate)[:2],
                 archives=archives,
                 advisory_features=advisory_features,
                 eligibility_policy=eligibility_policy,
@@ -211,6 +234,7 @@ class ParentSelector:
                     incubating,
                     limit=max(0, target - len(selected)),
                     quality_fn=lambda candidate: _order(candidate, floor=0.0),
+                    tier_fn=lambda candidate: evaluator_selection_key(candidate)[:2],
                     archives=archives,
                     advisory_features=advisory_features,
                     eligibility_policy=eligibility_policy,
@@ -228,6 +252,7 @@ class ParentSelector:
                 incubating,
                 limit=target,
                 quality_fn=lambda candidate: _order(candidate, floor=0.0),
+                tier_fn=lambda candidate: evaluator_selection_key(candidate)[:2],
                 archives=archives,
                 advisory_features=advisory_features,
                 eligibility_policy=eligibility_policy,
@@ -253,6 +278,7 @@ class ParentSelector:
                 primary_floor,
                 limit=target,
                 quality_fn=lambda candidate: _order(candidate, floor=0.0),
+                tier_fn=lambda candidate: evaluator_selection_key(candidate)[:2],
                 archives=archives,
                 advisory_features=advisory_features,
                 eligibility_policy=eligibility_policy,
@@ -274,6 +300,7 @@ class ParentSelector:
             repairable,
             limit=target,
             quality_fn=lambda candidate: _order(candidate, floor=0.0),
+            tier_fn=lambda candidate: evaluator_selection_key(candidate)[:2],
             archives=archives,
             advisory_features=advisory_features,
             eligibility_policy=eligibility_policy,
