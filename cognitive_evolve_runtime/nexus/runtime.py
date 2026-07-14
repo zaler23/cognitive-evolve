@@ -26,6 +26,7 @@ from cognitive_evolve_runtime.durable.resume_assembly import restore_archives, r
 from cognitive_evolve_runtime.llm.call_ledger import ledger_summary
 from cognitive_evolve_runtime.llm.session import current_llm_session
 from cognitive_evolve_runtime.nexus.context_protocol import ContextOrchestrator
+from cognitive_evolve_runtime.nexus.handoff import load_inherited_gene_entries
 from cognitive_evolve_runtime.nexus.live_store import LiveNexusStore
 from cognitive_evolve_runtime.nexus.budget_factory import evolution_budget_from_params
 from cognitive_evolve_runtime.nexus.loop import EvolutionBudget, EvolutionLoopResult, evolve_once, seed_population
@@ -135,9 +136,12 @@ class NexusRuntime:
         adaptive_config: dict[str, Any] | None = None,
         cancellation_callback: Any | None = None,
         initial_candidates: list[CandidateGenome | dict[str, Any]] | None = None,
+        inherited_handoff_path: str | Path | None = None,
+        inherited_candidate_ids: list[str] | None = None,
     ) -> NexusRunResult:
         with capture_fallback_events() as fallback_events:
             self._bind_llm_artifact_scope()
+            inherited_gene_entries = load_inherited_gene_entries(inherited_handoff_path, inherited_candidate_ids)
             runtime_options = resolve_runtime_options(request_options={"seed.family_priority_source": "model_authored_search_space"})
             packet = TextInputPacket.from_text(text)
             world = _build_text_world_model(packet, model=self.model)
@@ -150,7 +154,11 @@ class NexusRuntime:
                 model=self.model,
                 artifact_policy_config=artifact_policy_config,
             )
-            provided_context = _text_provided_context(contract, initial_candidates=initial_candidates)
+            provided_context = _text_provided_context(
+                contract,
+                initial_candidates=initial_candidates,
+                inherited_gene_entries=inherited_gene_entries,
+            )
             policy = self.policy_builder.build(contract=contract, world=world, model=self.model)
             _apply_search_mechanics(policy, runtime_options)
             budget = budget or evolution_budget_from_params(
@@ -226,9 +234,12 @@ class NexusRuntime:
         min_rounds_before_stop: int = 1,
         adaptive_config: dict[str, Any] | None = None,
         cancellation_callback: Any | None = None,
+        inherited_handoff_path: str | Path | None = None,
+        inherited_candidate_ids: list[str] | None = None,
     ) -> NexusRunResult:
         with capture_fallback_events() as fallback_events:
             self._bind_llm_artifact_scope()
+            inherited_gene_entries = load_inherited_gene_entries(inherited_handoff_path, inherited_candidate_ids)
             runtime_options = resolve_runtime_options(request_options={"verification.include_tests": bool(include_tests), "seed.family_priority_source": "model_authored_search_space"})
             snapshot = ProjectSnapshot.from_path(root)
             world = ProjectWorldModel.from_snapshot(snapshot, objective=user_goal)
@@ -265,9 +276,12 @@ class NexusRuntime:
                 model=None,
                 mutation_instruction="initial_project_seed",
             )
+            provided_context = initial_context_result.to_source_context()
+            if inherited_gene_entries:
+                provided_context["inherited_gene_entries"] = inherited_gene_entries
 
             def refresh_project_context(parents: list[CandidateGenome], mutation_instruction: str) -> dict[str, Any]:
-                return self.context_orchestrator.build_for_parents(
+                refreshed = self.context_orchestrator.build_for_parents(
                     contract=contract,
                     snapshot=snapshot,
                     world=world,
@@ -276,6 +290,9 @@ class NexusRuntime:
                     model=None,
                     mutation_instruction=mutation_instruction,
                 ).to_source_context()
+                if inherited_gene_entries:
+                    refreshed["inherited_gene_entries"] = inherited_gene_entries
+                return refreshed
 
             population = seed_population(
                 contract=contract,
@@ -283,7 +300,7 @@ class NexusRuntime:
                 policy=policy,
                 model=self.model_routes.model_for(NexusModelRole.SEED),
                 min_population_size=min_population_size,
-                provided_context=initial_context_result.to_source_context(),
+                provided_context=provided_context,
             )
             project_world_payload = _world_to_dict_with_latent_metadata({"snapshot": snapshot.to_dict(), "project_world_model": world.to_dict()}, contract)
             observer = self._live_observer(mode="project", contract=contract, world=project_world_payload, max_rounds=budget.max_rounds, budget=budget.to_dict(), runtime_options=runtime_options)
@@ -323,7 +340,7 @@ class NexusRuntime:
                 offspring_verifier=verify_offspring,
                 adaptive_config=adaptive_config,
                 verification_plan=verification_plan,
-                provided_context=initial_context_result.to_source_context(),
+                provided_context=provided_context,
                 context_provider=refresh_project_context,
             )
             run = NexusRunResult(
@@ -596,6 +613,7 @@ def _text_provided_context(
     contract: NexusObjectiveContract,
     *,
     initial_candidates: list[CandidateGenome | dict[str, Any]] | None = None,
+    inherited_gene_entries: list[dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     frozen_spec = dict(getattr(contract, "frozen_spec", {}) or {})
     candidates: list[dict[str, Any]] = []
@@ -606,10 +624,13 @@ def _text_provided_context(
             candidates.append(dict(candidate))
         else:
             raise TypeError("initial_candidates must contain CandidateGenome or dict values")
-    return {
+    context = {
         "frozen_spec": frozen_spec,
         "initial_candidates": candidates,
     }
+    if inherited_gene_entries:
+        context["inherited_gene_entries"] = list(inherited_gene_entries)
+    return context
 
 
 def _build_text_world_model(packet: TextInputPacket, *, model: NexusModelLike | None) -> TextWorldModel:

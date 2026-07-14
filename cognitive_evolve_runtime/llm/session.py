@@ -6,6 +6,8 @@ from contextvars import ContextVar
 from dataclasses import dataclass, field
 from typing import Any, Iterator
 
+from .request_policy import LLMRequestPolicy
+
 EVENTS: list[dict[str, Any]] = []
 
 
@@ -50,7 +52,7 @@ class LLMSession:
 _DEFAULT_SESSION = LLMSession(EVENTS)
 _CURRENT_SESSION: ContextVar[LLMSession | None] = ContextVar("cogev_llm_session", default=None)
 _LAST_RETRY_HISTORY: ContextVar[list[dict[str, Any]]] = ContextVar("cogev_llm_retry_history", default=[])
-_LOGICAL_CALL: ContextVar[tuple[str, str] | None] = ContextVar("cogev_llm_logical_call", default=None)
+_LOGICAL_CALL: ContextVar[tuple[str, str, LLMRequestPolicy | None] | None] = ContextVar("cogev_llm_logical_call", default=None)
 
 
 def current_llm_session() -> LLMSession:
@@ -72,15 +74,20 @@ def reset_llm_events() -> None:
 
 
 @contextmanager
-def logical_llm_call(logical_call_id: str, *, template_version: str = "") -> Iterator[None]:
+def logical_llm_call(
+    logical_call_id: str,
+    *,
+    template_version: str = "",
+    request_policy: LLMRequestPolicy | None = None,
+) -> Iterator[None]:
     """Bind one runtime-authored logical call identity to nested transport work."""
 
-    token = _LOGICAL_CALL.set((str(logical_call_id), str(template_version)))
+    token = _LOGICAL_CALL.set((str(logical_call_id), str(template_version), request_policy))
     try:
         yield
     finally:
         _LOGICAL_CALL.reset(token)
 
 
-def current_logical_llm_call() -> tuple[str, str] | None:
+def current_logical_llm_call() -> tuple[str, str, LLMRequestPolicy | None] | None:
     return _LOGICAL_CALL.get()

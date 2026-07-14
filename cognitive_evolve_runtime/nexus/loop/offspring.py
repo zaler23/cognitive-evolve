@@ -11,6 +11,7 @@ from cognitive_evolve_runtime.candidates.mutation import MutationEngine, Mutatio
 from cognitive_evolve_runtime.contracts.objective_contract import NexusObjectiveContract
 from cognitive_evolve_runtime.nexus._serde import coerce_str_list, stable_hash
 from cognitive_evolve_runtime.llm.fanout import run_ordered_fanout
+from cognitive_evolve_runtime.llm.request_policy import LLMRequestPolicy
 from cognitive_evolve_runtime.llm.session import logical_llm_call
 from cognitive_evolve_runtime.nexus.diagnosis import SearchDiagnosis
 from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy
@@ -26,11 +27,18 @@ from cognitive_evolve_runtime.llm.env import LLMConfigurationError
 from cognitive_evolve_runtime.nexus.v23_theory_config import CACrossoverConfig
 from cognitive_evolve_runtime.nexus.model_adapter import ModelResponseSchemaError
 from cognitive_evolve_runtime.nexus.semantic_dedupe import CandidateDeduper
-from cognitive_evolve_runtime.nexus.search_kernel.harvesting import CandidateHarvester, HarvestPolicy, plan_signature
+from cognitive_evolve_runtime.nexus.search_kernel.harvesting import (
+    CandidateHarvester,
+    HarvestPolicy,
+    plan_signature,
+    target_qualified_candidates,
+)
 from cognitive_evolve_runtime.nexus.search_kernel.fingerprints import candidate_materialized_artifact
 from cognitive_evolve_runtime.nexus.search_kernel.skill_library import search_skill_payload
 
 from .policy_directives import _attach_policy_directives_to_plans
+
+_OFFSPRING_PROMPT_TEMPLATE_VERSION = "nexus-offspring/v1"
 
 _TRUSTED_BRANCH_DIRECTIVE_KEYS = (
     "search_pressure",
@@ -243,7 +251,7 @@ def _generate_offspring(
             rejected=rejected,
             kind="offspring",
         )
-        batch_policy.metadata["requested_candidate_count"] = max(1, target - len(accepted))
+        batch_policy.metadata["requested_candidate_count"] = max(1, target - len(target_qualified_candidates(accepted)))
         raw = call_with_optional_context(
             model.generate_offspring,
             plans=plans,
@@ -335,8 +343,13 @@ def _generate_slot_offspring(
         slot_policy = EvolutionPolicy.from_dict(policy.to_dict())
         slot_policy.metadata["requested_candidate_count"] = 1
         slot_policy.metadata["offspring_slot_id"] = slot_id
+        sampling_policy = _slot_sampling_policy(policy, slot)
         try:
-            with logical_llm_call(f"{parent_plan_id}/{slot_id}"):
+            with logical_llm_call(
+                f"{parent_plan_id}/{slot_id}",
+                template_version=_OFFSPRING_PROMPT_TEMPLATE_VERSION,
+                request_policy=sampling_policy,
+            ):
                 raw = call_with_optional_context(
                     model.generate_offspring,
                     plans=[slot_plan],
@@ -388,6 +401,25 @@ def _generate_slot_offspring(
         for candidate in result.accepted:
             candidate.metadata["partial_model_offspring_error"] = summary
     return list(result.accepted)
+
+
+def _slot_sampling_policy(policy: EvolutionPolicy, slot: dict[str, Any]) -> LLMRequestPolicy | None:
+    configured = (policy.metadata or {}).get("slot_sampling_profiles")
+    if not isinstance(configured, dict):
+        return None
+    profiles = configured.get(str(slot.get("intent") or ""))
+    if profiles in (None, []):
+        return None
+    if not isinstance(profiles, list):
+        raise ValueError("slot_sampling_profiles intent value must be a list")
+    profile = profiles[int(slot.get("variation_index") or 0) % len(profiles)]
+    if not isinstance(profile, dict):
+        raise ValueError("slot_sampling_profiles entries must be objects")
+    return LLMRequestPolicy(
+        temperature=float(profile["temperature"]) if profile.get("temperature") is not None else None,
+        top_p=float(profile["top_p"]) if profile.get("top_p") is not None else None,
+        seed=int(profile["seed"]) if profile.get("seed") is not None else None,
+    )
 
 
 def _deterministic_fallback_offspring(

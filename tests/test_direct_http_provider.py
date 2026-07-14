@@ -115,10 +115,12 @@ def test_direct_http_defaults_to_endpoint_friendly_timeout_and_passes_seed(monke
         model="endpoint-model",
         messages=[{"role": "user", "content": "Return JSON."}],
         max_tokens=64,
+        top_p=0.75,
         seed=123,
     )
 
     assert calls[0]["timeout"] == 28.0
+    assert calls[0]["payload"]["top_p"] == 0.75
     assert calls[0]["payload"]["seed"] == 123
 
 
@@ -345,6 +347,7 @@ def test_model_spec_reasoning_effort_roundtrip_identity_and_idempotency() -> Non
     assert llm_public_status(status)["reasoning_effort"] == "high"
     common = {"provider": "direct_http:example-reasoning-model", "model": "example-reasoning-model", "prompt": {"x": 1}, "schema": {}}
     assert llm_idempotency_key(**common, reasoning_effort="high") != llm_idempotency_key(**common, reasoning_effort="medium")
+    assert llm_idempotency_key(**common, top_p=0.7) != llm_idempotency_key(**common, top_p=0.9)
 
     with pytest.raises(LLMConfigurationError, match="LLMModelSpec.reasoning_effort"):
         LLMModelSpec(model="example-reasoning-model", reasoning_effort="turbo")

@@ -6,23 +6,31 @@ a sidecar lock file and publishing only fully validated temporary files.
 """
 from __future__ import annotations
 
+import errno
 import json
 import os
 import threading
 import uuid
+import warnings
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator
 
 from cognitive_evolve_runtime.core.serialization import json_ready
 
-try:  # pragma: no cover - Windows fallback is covered by behavior, not platform.
+try:  # pragma: no cover - backend availability is platform-specific.
     import fcntl  # type: ignore[attr-defined]
-except Exception:  # pragma: no cover
+except ImportError:  # pragma: no cover
     fcntl = None  # type: ignore[assignment]
+
+try:  # pragma: no cover - backend availability is platform-specific.
+    import msvcrt  # type: ignore[attr-defined]
+except ImportError:  # pragma: no cover
+    msvcrt = None  # type: ignore[assignment]
 
 _THREAD_LOCKS: dict[Path, threading.RLock] = {}
 _THREAD_LOCKS_GUARD = threading.Lock()
+_cross_process_lock_warning_emitted = False
 
 
 def _coerce_runtime_file_path(path: Path | str) -> Path:
@@ -50,6 +58,40 @@ def _thread_lock(path: Path) -> threading.RLock:
         return lock
 
 
+def _warn_cross_process_lock_unavailable() -> None:
+    global _cross_process_lock_warning_emitted
+    with _THREAD_LOCKS_GUARD:
+        if _cross_process_lock_warning_emitted:
+            return
+        _cross_process_lock_warning_emitted = True
+    warnings.warn("cross_process_lock_unavailable", RuntimeWarning, stacklevel=3)
+
+
+def _prepare_windows_lock_file(handle: Any) -> None:
+    handle.seek(0, os.SEEK_END)
+    if handle.tell() == 0:
+        handle.write(b"\0")
+        handle.flush()
+    handle.seek(0)
+
+
+def _acquire_windows_lock(handle: Any) -> None:
+    _prepare_windows_lock_file(handle)
+    while True:
+        handle.seek(0)
+        try:
+            msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+            return
+        except OSError as exc:
+            if exc.errno not in {errno.EACCES, errno.EAGAIN}:
+                raise
+
+
+def _release_windows_lock(handle: Any) -> None:
+    handle.seek(0)
+    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+
+
 @contextmanager
 def file_lock(path: Path | str) -> Iterator[None]:
     """Serialize writers across processes when the platform supports it."""
@@ -60,9 +102,13 @@ def file_lock(path: Path | str) -> Iterator[None]:
     thread_lock = _thread_lock(lock_path)
     with thread_lock:
         # codeql[py/path-injection] Lock files are intentionally caller-scoped local runtime files.
-        with lock_path.open("a+", encoding="utf-8") as handle:
+        with lock_path.open("a+b") as handle:
             if fcntl is not None:
                 fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            elif msvcrt is not None:
+                _acquire_windows_lock(handle)
+            else:
+                _warn_cross_process_lock_unavailable()
             try:
                 yield
             finally:
@@ -73,6 +119,8 @@ def file_lock(path: Path | str) -> Iterator[None]:
                     pass
                 if fcntl is not None:
                     fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+                elif msvcrt is not None:
+                    _release_windows_lock(handle)
 
 
 def _fsync_dir(path: Path) -> None:

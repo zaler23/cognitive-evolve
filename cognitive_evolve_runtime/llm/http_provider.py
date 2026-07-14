@@ -136,7 +136,7 @@ class DirectHTTPProvider:
             "model": normalize_direct_http_model(str(kwargs.get("model") or "")),
             "messages": kwargs.get("messages") or [],
         }
-        for key in ("temperature", "max_tokens", "reasoning_effort", "response_format", "stream", "seed"):
+        for key in ("temperature", "top_p", "max_tokens", "reasoning_effort", "response_format", "stream", "seed"):
             value = kwargs.get(key)
             if value is not None:
                 payload[key] = value

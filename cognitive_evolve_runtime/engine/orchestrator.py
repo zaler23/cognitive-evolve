@@ -55,6 +55,8 @@ class EngineOrchestrator:
             budget=evolution_budget,
             cancellation_callback=cancellation_callback,
             runtime_metadata={"round_budget": round_budget.to_dict(), "model_backed": runtime_model is not None},
+            inherited_handoff_path=context.get("inherited_handoff_path"),
+            inherited_candidate_ids=context.get("inherited_candidate_ids"),
         )
         if progress_callback:
             for event in run.pipeline_events:

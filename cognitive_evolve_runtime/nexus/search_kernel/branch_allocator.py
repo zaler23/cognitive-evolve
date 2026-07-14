@@ -7,12 +7,15 @@ but cannot make a lineage productive by themselves.
 from __future__ import annotations
 
 import math
-from dataclasses import asdict, dataclass
-from typing import Any, Iterable
+from dataclasses import asdict, dataclass, field
+from typing import Any, Iterable, Mapping
 
 from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome
 from cognitive_evolve_runtime.nexus._serde import coerce_dict, stable_hash
-from cognitive_evolve_runtime.nexus.search_kernel.fingerprints import candidate_phenotype_signature
+from cognitive_evolve_runtime.nexus.search_kernel.fingerprints import (
+    base_mechanism_family,
+    candidate_phenotype_signature,
+)
 from cognitive_evolve_runtime.theory.bandit import OperatorArmStats, suggest_budget_allocation
 
 
@@ -39,6 +42,9 @@ class BranchSlot:
     intent: str
     variation_index: int
     ucb_score: float
+    coverage_bonus: float = 0.0
+    coverage_scale: float = 0.0
+    allocation_score: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -49,6 +55,7 @@ class ProductiveBranchAllocation:
     slots: tuple[BranchSlot, ...]
     arms: tuple[OperatorArmStats, ...]
     credit_summary: dict[str, int]
+    observed_family_counts: dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -64,6 +71,7 @@ class ProductiveBranchAllocation:
                 for arm in self.arms
             ],
             "credit_summary": dict(self.credit_summary),
+            "observed_family_counts": dict(self.observed_family_counts),
         }
 
 
@@ -197,6 +205,23 @@ def productive_outcomes(
             for indices in pass_groups.values()
             for index in indices
         }
+        probe_groups: dict[str, list[int]] = {}
+        for index in eligible:
+            if (
+                index in new_cell_rewards
+                or index in improvement_rewards
+                or index in challenge_rewards
+                or index in pass_rewards
+            ):
+                continue
+            if _probe_survived(facts[index]["candidate"]):
+                probe_groups.setdefault("parameterized_probe_survival", []).append(index)
+        verified_pass_cap = min(pass_rewards.values()) if pass_rewards else None
+        probe_rewards = {
+            index: min(0.5 / len(indices), verified_pass_cap) if verified_pass_cap is not None else 0.5 / len(indices)
+            for indices in probe_groups.values()
+            for index in indices
+        }
         cohort_cells: set[str] = set()
         cohort_resolved: set[str] = set()
 
@@ -235,6 +260,9 @@ def productive_outcomes(
             elif index in pass_rewards:
                 reasons.append("verified_or_evaluator_pass_survived")
                 reward = pass_rewards[index]
+            elif index in probe_rewards:
+                reasons.append("parameterized_probe_survived")
+                reward = probe_rewards[index]
             else:
                 reasons.append("no_grounded_productive_event")
 
@@ -274,12 +302,24 @@ def allocate_productive_branches(
     budget_history: Iterable[dict[str, Any]] = (),
     metric_directions: dict[str, str] | None = None,
     total_slots: int,
+    observed_family_counts: Mapping[str, int] | None = None,
 ) -> ProductiveBranchAllocation:
     """Allocate real branch slots with lineage-root UCB and an exploration floor."""
 
+    candidate_list = _dedupe_candidates(candidates)
+    family_counts = (
+        {family: observed_family_counts[family] for family in sorted(observed_family_counts)}
+        if observed_family_counts is not None
+        else count_observed_mechanism_families(candidate_list)
+    )
     if not parents or total_slots <= 0:
-        return ProductiveBranchAllocation(slots=(), arms=(), credit_summary={})
-    outcomes = productive_outcomes(candidates, metric_directions=metric_directions)
+        return ProductiveBranchAllocation(
+            slots=(),
+            arms=(),
+            credit_summary={},
+            observed_family_counts=family_counts,
+        )
+    outcomes = productive_outcomes(candidate_list, metric_directions=metric_directions)
     history = [dict(item) for item in budget_history if isinstance(item, dict)]
     planned_slots, rejected_slots = _historical_slot_events(history)
     allocation_epoch = max((_history_round(item) for item in history), default=-1) + 1
@@ -307,7 +347,7 @@ def allocate_productive_branches(
         arm_id = str(event.get("branch_arm_id") or event.get("arm_id") or "")
         if arm_id:
             add(arm_id, risk=1.0)
-    by_id = {candidate.id: candidate for candidate in _dedupe_candidates(candidates)}
+    by_id = {candidate.id: candidate for candidate in candidate_list}
     credited_slots: set[str] = set()
     reason_counts: dict[str, int] = {}
     for outcome in outcomes:
@@ -346,6 +386,15 @@ def allocate_productive_branches(
     slots: list[BranchSlot] = []
     virtual = {arm_id: stats[arm_id] for arm_id in arm_order}
     arm_slot_counts = {arm_id: 0 for arm_id in arm_order}
+    max_family_count = max(family_counts.values(), default=0)
+    arm_coverage_bonus = {
+        arm_id: sum(
+            _family_coverage_bonus(base_mechanism_family(parent), family_counts, max_family_count)
+            for parent in parent_groups[arm_id]
+        )
+        / len(parent_groups[arm_id])
+        for arm_id in arm_order
+    }
 
     # Explicitly try every unobserved selected lineage once before exploitation.
     for arm_id in (arm for arm in arm_order if virtual[arm].pulls == 0):
@@ -364,7 +413,24 @@ def allocate_productive_branches(
 
     while len(slots) < total_slots:
         suggestions = suggest_budget_allocation(tuple(virtual[arm_id] for arm_id in arm_order))
-        selected = suggestions[0]
+        raw_scores = [suggestion.suggestion_score for suggestion in suggestions]
+        ucb_span = max(raw_scores) - min(raw_scores)
+        scored_suggestions = [
+            (
+                suggestion,
+                suggestion.suggestion_score + arm_coverage_bonus[suggestion.arm_id] * ucb_span,
+            )
+            for suggestion in suggestions
+        ]
+        selected, selected_allocation_score = max(
+            scored_suggestions,
+            key=lambda item: (
+                item[1],
+                arm_coverage_bonus[item[0].arm_id],
+                item[0].suggestion_score,
+                item[0].arm_id,
+            ),
+        )
         arm_id = selected.arm_id
         best_mean = max((virtual[item].mean_reward for item in arm_order), default=0.0)
         intent = "exploit_deepen" if virtual[arm_id].mean_reward > 0.0 and virtual[arm_id].mean_reward >= best_mean else "standard_variation"
@@ -374,13 +440,21 @@ def allocate_productive_branches(
             parent_groups=parent_groups,
             counts=arm_slot_counts,
             score=selected.suggestion_score,
+            coverage_bonus=arm_coverage_bonus[arm_id],
+            coverage_scale=ucb_span,
+            allocation_score=selected_allocation_score,
             intent=intent,
             allocation_epoch=allocation_epoch,
         )
         virtual[arm_id] = _virtual_pull(virtual[arm_id])
 
     active_arms = tuple(stats[arm_id] for arm_id in arm_order)
-    return ProductiveBranchAllocation(slots=tuple(slots), arms=active_arms, credit_summary=reason_counts)
+    return ProductiveBranchAllocation(
+        slots=tuple(slots),
+        arms=active_arms,
+        credit_summary=reason_counts,
+        observed_family_counts=family_counts,
+    )
 
 
 def _append_slot(
@@ -390,6 +464,9 @@ def _append_slot(
     parent_groups: dict[str, list[CandidateGenome]],
     counts: dict[str, int],
     score: float,
+    coverage_bonus: float = 0.0,
+    coverage_scale: float = 0.0,
+    allocation_score: float = 0.0,
     intent: str,
     allocation_epoch: int,
 ) -> None:
@@ -406,6 +483,9 @@ def _append_slot(
             intent=intent,
             variation_index=index,
             ucb_score=0.0 if math.isinf(score) else round(float(score), 6),
+            coverage_bonus=round(float(coverage_bonus), 6),
+            coverage_scale=round(float(coverage_scale), 6),
+            allocation_score=round(float(allocation_score), 6),
         )
     )
     counts[arm_id] += 1
@@ -418,6 +498,20 @@ def _virtual_pull(arm: OperatorArmStats) -> OperatorArmStats:
         reward_sum=arm.reward_sum + arm.mean_reward,
         risk_sum=arm.risk_sum + arm.mean_risk,
     )
+
+
+def count_observed_mechanism_families(candidates: Iterable[CandidateGenome]) -> dict[str, int]:
+    counts: dict[str, int] = {}
+    for candidate in _dedupe_candidates(candidates):
+        family = base_mechanism_family(candidate)
+        counts[family] = counts.get(family, 0) + 1
+    return {family: counts[family] for family in sorted(counts)}
+
+
+def _family_coverage_bonus(family: str, counts: Mapping[str, int], max_count: int) -> float:
+    if max_count <= 0 or family == "general":
+        return 0.0
+    return 1.0 - counts.get(family, 0) / max_count
 
 
 def _same_cell_elite_improvement(
@@ -480,13 +574,36 @@ def _verification_state(candidate: CandidateGenome) -> str:
 
 
 def _payload_passed(payload: dict[str, Any]) -> bool:
-    status = str(payload.get("status") or payload.get("validation_status") or "").lower()
-    return payload.get("passed") is True or status in {"passed", "pass", "ok", "success", "preliminary_passed"}
+    status = str(payload.get("validation_status") or payload.get("status") or "").lower()
+    if status in {"not_run", "inconclusive"}:
+        return False
+    return status in {"passed", "pass", "ok", "success", "preliminary_passed"} or payload.get("passed") is True
 
 
 def _payload_failed(payload: dict[str, Any]) -> bool:
-    status = str(payload.get("status") or payload.get("validation_status") or "").lower()
-    return payload.get("passed") is False or status in {"failed", "fail", "error", "preliminary_failed"}
+    status = str(payload.get("validation_status") or payload.get("status") or "").lower()
+    if status in {"not_run", "inconclusive"}:
+        return False
+    return status in {"failed", "fail", "error", "preliminary_failed"} or payload.get("passed") is False
+
+
+def _probe_survived(candidate: CandidateGenome) -> bool:
+    payloads = [
+        coerce_dict(candidate.verification_result),
+        *(coerce_dict(item) for item in candidate.verification_trace[-3:]),
+    ]
+    for payload in reversed(payloads):
+        metadata = coerce_dict(payload.get("metadata"))
+        status = str(payload.get("validation_status") or metadata.get("validation_status") or "").lower()
+        ratio = metadata.get("probe_survival_ratio", payload.get("probe_survival_ratio"))
+        counterexamples = metadata.get("probe_counterexample_count", payload.get("probe_counterexample_count", 0))
+        executed = metadata.get("probe_executed_count", payload.get("probe_executed_count", 0))
+        try:
+            if status == "inconclusive" and float(ratio or 0.0) > 0.0 and int(counterexamples or 0) == 0 and int(executed or 0) > 0:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
 
 
 def _patch_state(candidate: CandidateGenome) -> str:
@@ -597,6 +714,7 @@ __all__ = [
     "ProductiveBranchAllocation",
     "ProductiveOutcome",
     "allocate_productive_branches",
+    "count_observed_mechanism_families",
     "lineage_root",
     "observed_outcome_cell",
     "productive_outcomes",

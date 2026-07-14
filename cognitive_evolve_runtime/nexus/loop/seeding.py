@@ -18,7 +18,12 @@ from cognitive_evolve_runtime.nexus.seed_coverage import (
     seed_axis_contract_receipt,
     seed_reservoir_sidecar_payload,
 )
-from cognitive_evolve_runtime.nexus.search_kernel.harvesting import CandidateHarvester, HarvestPolicy
+from cognitive_evolve_runtime.nexus.search_kernel.harvesting import (
+    CandidateHarvester,
+    HarvestPolicy,
+    candidate_is_target_qualified,
+    target_qualified_candidates,
+)
 from cognitive_evolve_runtime.nexus.search_kernel.skill_library import search_skill_payload
 from cognitive_evolve_runtime.nexus._shared import (
     MODEL_BOUNDARY_ERRORS,
@@ -255,7 +260,7 @@ def _generate_model_seed_batches(
         result.fatal_model_error = ModelResponseSchemaError("nexus_seed_population returned no valid candidates")
         result.stopped_reason = "model_error"
     coverage = assess_seed_coverage(
-        [*incumbent_candidates, *result.accepted],
+        target_qualified_candidates([*incumbent_candidates, *result.accepted]),
         reservoir=result.reservoir,
         rejected=result.rejected,
         harvest_summary=result.to_dict(),
@@ -275,6 +280,7 @@ def _generate_model_seed_batches(
         policy.metadata["algorithm_efficiency"] = {
             "seed_batches": result.batches,
             "accepted_per_batch": round(len(result.accepted) / max(1, result.batches), 4),
+            "target_qualified_per_batch": round(result.target_qualified_count / max(1, result.batches), 4),
             "reservoir_count": len(result.reservoir),
             "partial_failure_count": len(result.failed_batch_ids),
             "advisory_frontier_size": len(frontier.get("selected_ids") or []),
@@ -311,6 +317,8 @@ def _candidate_seed_harvest_trace(result: Any, candidate: CandidateGenome) -> di
         "batch": int((candidate.metadata or {}).get("model_seed_batch") or (candidate.metadata or {}).get("search_kernel_batch") or 0),
         "batches": int(getattr(result, "batches", 0) or 0),
         "accepted_count": len(getattr(result, "accepted", []) or []),
+        "target_qualified_count": int(getattr(result, "target_qualified_count", 0) or 0),
+        "carried_low_relevance_count": int(getattr(result, "carried_low_relevance_count", 0) or 0),
         "rejected_count": len(getattr(result, "rejected", []) or []),
         "reservoir_count": len(getattr(result, "reservoir", []) or []),
         "stopped_reason": str(getattr(result, "stopped_reason", "") or ""),
@@ -509,7 +517,7 @@ def _candidate_matches_seed_slot(candidate: CandidateGenome, slot: dict[str, Any
 
 
 def _uncovered_seed_slots(portfolio: list[dict[str, Any]], candidates: list[CandidateGenome]) -> list[dict[str, Any]]:
-    remaining_candidates = list(candidates)
+    remaining_candidates = target_qualified_candidates(candidates)
     missing: list[dict[str, Any]] = []
     for slot in portfolio:
         match_index = next(
@@ -566,7 +574,7 @@ def _seed_family_priority(policy: EvolutionPolicy, accepted: list[CandidateGenom
     plan, families = _seed_family_plan(policy)
     source = str(plan.get("source") or metadata.get("seed.family_priority_source") or metadata.get("seed_family_priority_source") or "model_authored_search_space")
     counts: dict[str, int] = {}
-    for candidate in accepted:
+    for candidate in target_qualified_candidates(accepted):
         candidate_metadata = getattr(candidate, "metadata", {}) if candidate is not None else {}
         search_space = candidate_metadata.get("search_space") if isinstance(candidate_metadata, dict) else {}
         if isinstance(search_space, dict):
@@ -617,7 +625,9 @@ def _policy_for_seed_batch(
         _allocate_seed_slots(policy, requested_count=max(1, int(target_size or 1))),
         accepted,
     )
-    requested_count = len(portfolio) if portfolio else max(1, int(target_size or 1) - len(accepted))
+    target_qualified_count = len(target_qualified_candidates(accepted))
+    carried_low_relevance_count = sum(not candidate_is_target_qualified(candidate) for candidate in accepted)
+    requested_count = len(portfolio) if portfolio else max(1, int(target_size or 1) - target_qualified_count)
     seed_instruction = (
         "In this single seed call return exactly one materially distinct candidate per seed_portfolio slot. "
         "For every candidate set metadata.seed_type to slot_id and metadata.search_space to the slot family_id, "
@@ -647,7 +657,8 @@ def _policy_for_seed_batch(
             "seed_portfolio_contract": _seed_portfolio_contract(),
             "requested_candidate_count": requested_count,
             "seed_target_size": max(1, int(target_size or 1)),
-            "accepted_seed_count": len(accepted),
+            "accepted_seed_count": target_qualified_count,
+            "carried_low_relevance_count": carried_low_relevance_count,
             "search_kernel_skills": search_skill_payload(limit=4),
         }
     )

@@ -14,7 +14,7 @@ from .minimax_budget import _allocate_adversarial_budget, allocation_summary
 
 _VERIFY_MAX_WORKERS_ENV = "COGEV_VERIFY_CONCURRENCY"
 from .honesty_core import measure_verification_result
-from .probe_executor import execute_probes
+from .probe_executor import apply_probe_counterexample_evidence, execute_probes, result_with_probe_observations
 from .regime import compile_grounding_regime
 from .replay_runner import build_replay_record
 from .strength import measured_strength_from_result
@@ -58,8 +58,9 @@ def run_obligations_for_population(candidates: list[Any], obligations: list[dict
 
 def _check_one(candidate: Any, obligation: dict[str, Any], cache: dict[str, dict[str, Any]], cache_lock: threading.Lock, adversarial_budget: int, budget_summary: dict[str, Any]) -> dict[str, Any]:
     result = _check_obligation(candidate, obligation, cache=cache, cache_lock=cache_lock, adversarial_budget=adversarial_budget, budget_summary=budget_summary)
-    changed = False
-    if obligation.get("must_pass") and not result.passed:
+    probe_record = apply_probe_counterexample_evidence(candidate, result)
+    changed = probe_record is not None
+    if probe_record is None and obligation.get("must_pass") and not result.passed:
         evidence = EvidenceRecord(
             candidate_id=str(getattr(candidate, "id", "")),
             source="verification_obligation_runner",
@@ -84,7 +85,24 @@ def _check_one(candidate: Any, obligation: dict[str, Any], cache: dict[str, dict
 def _check_obligation(candidate: Any, obligation: dict[str, Any], *, cache: dict[str, dict[str, Any]], cache_lock: threading.Lock | None = None, adversarial_budget: int | None = None, budget_summary: dict[str, Any] | None = None) -> VerificationResult:
     oid = str(obligation.get("id") or "obligation")
     fingerprint = str(obligation.get("verifier_fingerprint") or "obligation:" + stable_hash(obligation)[:16])
-    key = "obligation:" + stable_hash({"candidate": getattr(candidate, "id", ""), "artifact": getattr(candidate, "artifact", ""), "fingerprint": fingerprint, "adversarial_budget": adversarial_budget})
+    artifact_sha = candidate_artifact_hash(candidate)
+    regime = compile_grounding_regime(
+        candidate=candidate,
+        verifier_fingerprint=fingerprint,
+        artifact_hash=artifact_sha,
+        raw_obligation=obligation,
+        oracle_kind="diagnostic_matcher",
+        override_adversarial_budget=adversarial_budget,
+    )
+    key_payload = {
+        "candidate": getattr(candidate, "id", ""),
+        "artifact": getattr(candidate, "artifact", ""),
+        "fingerprint": fingerprint,
+        "adversarial_budget": adversarial_budget,
+    }
+    if any(probe.template_id for probe in regime.probes):
+        key_payload["probe_signature"] = regime.probe_signature
+    key = "obligation:" + stable_hash(key_payload)
     with (cache_lock or threading.Lock()):
         if key in cache and isinstance(cache[key], dict):
             entry = cache[key]
@@ -112,16 +130,8 @@ def _check_obligation(candidate: Any, obligation: dict[str, Any], *, cache: dict
             "strength_contribution": obligation.get("strength_contribution", 0),
         },
     )
-    artifact_sha = candidate_artifact_hash(candidate)
-    regime = compile_grounding_regime(
-        candidate=candidate,
-        verifier_fingerprint=fingerprint,
-        artifact_hash=artifact_sha,
-        raw_obligation=obligation,
-        oracle_kind=str(raw_result.metadata.get("oracle_kind") or ""),
-        override_adversarial_budget=adversarial_budget,
-    )
     actual_probe_verdicts = execute_probes(raw_result, regime, candidate=candidate, raw_obligation=obligation)
+    raw_result = result_with_probe_observations(raw_result, actual_probe_verdicts)
     replay_record = build_replay_record(
         candidate,
         raw_result,

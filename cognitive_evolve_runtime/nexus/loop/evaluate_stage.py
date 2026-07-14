@@ -9,6 +9,7 @@ from cognitive_evolve_runtime.contracts.objective_contract import NexusObjective
 from cognitive_evolve_runtime.events.progress import EvolutionProgressEvent, PipelineProgressEvent
 from cognitive_evolve_runtime.evaluators import EvaluatorSpec, ProgressiveEvaluator, apply_evidence_record
 from cognitive_evolve_runtime.evaluators.evidence import select_preliminary_incumbent
+from cognitive_evolve_runtime.llm.session import current_llm_session, logical_llm_call
 from cognitive_evolve_runtime.nexus.critique import CandidateCritique
 from cognitive_evolve_runtime.nexus.diagnosis import SearchDiagnosis, SearchStateDiagnoser
 from cognitive_evolve_runtime.nexus.generation_plan import GenerationPlan, apply_generation_plan, assert_stage_ready, build_generation_plan, expected_generation_plan_id
@@ -30,6 +31,8 @@ from .offspring import _best_auxiliary_id
 from .stage_helpers import _eligibility_policy
 
 from .round_context import RoundEvaluation
+
+_RELATIVE_RANK_PROMPT_TEMPLATE_VERSION = "nexus-relative-rank/v1"
 
 
 class EvaluateStage:
@@ -183,20 +186,25 @@ class EvaluateStage:
     ) -> RelativeRankingResult:
         self.last_generation_plan = {}
         self.last_completed_stage_ops = []
-        preliminary_incumbent = select_preliminary_incumbent(population.candidates)
-        if preliminary_incumbent is not None:
-            rankings = RelativeRater(model=None).rank(
-                candidates=population.candidates,
-                contract=contract,
-                policy=policy,
-                archives=archives,
-            )
-            rankings.best_final_answer_id = preliminary_incumbent.id
-            rankings.raw_notes = (
-                rankings.raw_notes + "; " if rankings.raw_notes else ""
-            ) + "preliminary_evaluator_is_selection_authority"
-        else:
-            rankings = self.rater.rank(candidates=population.candidates, contract=contract, policy=policy, archives=archives)
+        run_id = str(current_llm_session().run_id or "run")
+        with logical_llm_call(
+            f"{run_id}/round-{current_round}/relative-rank/logical-pass",
+            template_version=_RELATIVE_RANK_PROMPT_TEMPLATE_VERSION,
+        ):
+            preliminary_incumbent = select_preliminary_incumbent(population.candidates)
+            if preliminary_incumbent is not None:
+                rankings = RelativeRater(model=None).rank(
+                    candidates=population.candidates,
+                    contract=contract,
+                    policy=policy,
+                    archives=archives,
+                )
+                rankings.best_final_answer_id = preliminary_incumbent.id
+                rankings.raw_notes = (
+                    rankings.raw_notes + "; " if rankings.raw_notes else ""
+                ) + "preliminary_evaluator_is_selection_authority"
+            else:
+                rankings = self.rater.rank(candidates=population.candidates, contract=contract, policy=policy, archives=archives)
         self.elo.update_from_relative(rankings)
         self.elo.apply_to_candidates(population.candidates, axes=list(policy.fitness_axes or []))
         latent_ranking_summary = annotate_candidates_with_latent_signals(population.candidates, contract)

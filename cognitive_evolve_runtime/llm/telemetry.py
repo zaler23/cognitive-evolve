@@ -21,6 +21,7 @@ def record_event(
     error_type: str | None = None,
     cache_replayed: bool = False,
     physical_call_id: str = "",
+    sampling: dict[str, Any] | None = None,
 ) -> None:
     usage = usage or {}
     event = {
@@ -38,6 +39,8 @@ def record_event(
         "usage_provenance": usage_provenance or ("unspecified" if usage else "unavailable"),
         "estimated_cost_usd": estimated_cost_usd,
     }
+    if sampling:
+        event["sampling"] = dict(sampling)
     if retry_history:
         event["retry_history"] = retry_history
     if governor:

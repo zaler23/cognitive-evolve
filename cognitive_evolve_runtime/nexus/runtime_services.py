@@ -11,9 +11,11 @@ import tempfile
 from pathlib import Path
 from typing import Any
 
+from cognitive_evolve_runtime.core.serialization import stable_hash
 from cognitive_evolve_runtime.inputs.project_snapshot import ProjectSnapshot
 from cognitive_evolve_runtime.llm.session import current_llm_session
 from cognitive_evolve_runtime.nexus.consistency import assert_runtime_consistency
+from cognitive_evolve_runtime.nexus.handoff import build_inheritable_handoff
 from cognitive_evolve_runtime.nexus.loop import EvolutionBudget, EvolutionLoopResult
 from cognitive_evolve_runtime.nexus.final_projection import build_final_projection
 from cognitive_evolve_runtime.nexus.nextgen import user_facing_verification_status
@@ -83,6 +85,7 @@ class NexusPersistenceService:
         checkpoint_path = self.output_dir / "checkpoint.json"
         run_result_path = self.output_dir / "run-result.json"
         external_review_bundle_path = self.output_dir / "external-review-bundle.json"
+        inheritable_handoff_path = self.output_dir / "inheritable-handoff.v1.json"
 
         progress_event = result.progress_events[-1] if result.progress_events else {}
         if result.interrupted:
@@ -149,6 +152,13 @@ class NexusPersistenceService:
                 final_certificate=final_certificate,
             ).to_dict()
 
+        inheritable_handoff = build_inheritable_handoff(
+            population=result.population,
+            failure_archive=result.archives.failure_archive,
+            source_run_id=str(current_llm_session().run_id or ""),
+            project_signature=_handoff_project_signature(run),
+        )
+
         artifacts = {
             "population": self._artifact_ref(population_path),
             "archives": self._artifact_ref(archive_path),
@@ -158,6 +168,7 @@ class NexusPersistenceService:
             "candidates": self._artifact_ref(self.output_dir / "candidates.md"),
             "run_result": self._artifact_ref(run_result_path),
             "snapshot_transaction": self._artifact_ref(self.output_dir / "snapshot-transaction.json"),
+            "inheritable_handoff": self._artifact_ref(inheritable_handoff_path),
         }
         if adaptive_state:
             artifacts.update(
@@ -213,6 +224,7 @@ class NexusPersistenceService:
             SnapshotWrite("final-answer.md", "text", final_answer_artifact_text(result) + "\n", sort_keys=False),
             SnapshotWrite("candidates.md", "text", candidates_markdown(result) + "\n", sort_keys=False),
             SnapshotWrite("run-result.json", "json", run.to_dict()),
+            SnapshotWrite("inheritable-handoff.v1.json", "json", inheritable_handoff),
         ]
         if external_review_bundle is not None:
             writes.append(SnapshotWrite("external-review-bundle.json", "json", external_review_bundle))
@@ -431,6 +443,18 @@ def _sync_budget_width_metadata(evolution: dict[str, Any], budget: EvolutionBudg
     runtime = dict(evolution.get("round_budget_runtime") or {})
     runtime["mutation_branches_per_round"] = int(getattr(budget, "branch_factor", 0) or 0)
     evolution["round_budget_runtime"] = runtime
+
+
+def _handoff_project_signature(run: Any) -> str:
+    world = dict(getattr(run, "world", {}) or {})
+    snapshot = dict(world.get("snapshot") or {})
+    root_hash = str(snapshot.get("root_hash") or "")
+    if root_hash:
+        return root_hash
+    contract_hash = str(dict(getattr(run, "contract", {}) or {}).get("contract_hash") or "")
+    if contract_hash:
+        return contract_hash
+    return "run-context:" + stable_hash({"mode": str(getattr(run, "mode", "") or ""), "world": world})
 
 
 def _adaptive_snapshot_writes(adaptive_state: dict[str, Any], final_certificate: dict[str, Any], *, final_projection: dict[str, Any] | None = None) -> list[SnapshotWrite]:

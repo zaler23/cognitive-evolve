@@ -98,6 +98,7 @@ def build_prompt_view(
                 "source_context.selected_files",
                 "source_context.slices",
                 "source_context.context_limits",
+                "source_context.inherited_gene_entries",
                 *(
                     ["parents", "plans"]
                     if request_type == "nexus_generate_offspring"
@@ -635,6 +636,16 @@ def _source_context_view(value: Any) -> dict[str, Any]:
     raw_initial = data.get("initial_candidates")
     if isinstance(raw_initial, list):
         out["initial_candidates"] = [_initial_candidate_context_view(item) for item in raw_initial]
+    inherited = data.get("inherited_gene_entries")
+    if isinstance(inherited, list):
+        out["inherited_gene_entries"] = [
+            {
+                "candidate_id": str(item.get("candidate_id") or ""),
+                "gene_summary": str(item.get("gene_summary") or ""),
+            }
+            for item in inherited
+            if isinstance(item, dict)
+        ]
     selected = data.get("selected_files")
     if isinstance(selected, list):
         out["selected_files"] = [str(item) for item in selected if str(item or "").strip()]

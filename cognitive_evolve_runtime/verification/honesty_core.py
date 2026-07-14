@@ -21,6 +21,8 @@ class ProbeCase:
     content: str
     provenance: str
     expected_verdict_flip: bool
+    template_id: str = ""
+    parameters: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -35,6 +37,7 @@ class GroundingRegime:
     replay_artifact_hash: str = ""
     verifier_fingerprint: str = ""
     oracle_kind: str = ""
+    probe_signature: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)
