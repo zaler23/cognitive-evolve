@@ -491,29 +491,6 @@ def test_runner_uses_process_group_and_resource_limiter(monkeypatch: pytest.Monk
     assert callable(captured["preexec_fn"])
 
 
-def test_runner_can_skip_resource_limiter_for_engine_owned_harness(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path: Path,
-) -> None:
-    captured: dict[str, object] = {}
-
-    def fake_run(*args, **kwargs):  # noqa: ANN001
-        captured.update(kwargs)
-        return subprocess.CompletedProcess(args=args[0], returncode=0, stdout="ok", stderr="")
-
-    monkeypatch.setattr(subprocess, "run", fake_run)
-
-    result = ToolRunner(allowed_executables={"python"}).run(
-        ["python", "-c", "print('ok')"],
-        cwd=tmp_path,
-        enforce_resource_limits=False,
-    )
-
-    assert result.status == "passed"
-    assert captured["start_new_session"] is True
-    assert captured["preexec_fn"] is None
-
-
 def test_yaml_config_uses_real_yaml_semantics() -> None:
     data = parse_simple_yaml(
         """

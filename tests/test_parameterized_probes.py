@@ -79,21 +79,14 @@ def test_probe_harness_preserves_python_loader_path(monkeypatch) -> None:
         oracle_kind="toolrunner",
         override_adversarial_budget=1,
     )
+    observed_command: list[str] = []
     observed_env: dict[str, str] = {}
     monkeypatch.setenv("LD_LIBRARY_PATH", "/engine/python/lib")
 
-    def _run(
-        _self,
-        _command,
-        *,
-        cwd,
-        env=None,
-        timeout_seconds=None,
-        enforce_resource_limits=True,
-    ):  # noqa: ANN001, ANN202
+    def _run(_self, command, *, cwd, env=None, timeout_seconds=None):  # noqa: ANN001, ANN202
         del cwd, timeout_seconds
+        observed_command.extend(command)
         observed_env.update(env or {})
-        assert enforce_resource_limits is False
         return ToolFeedback(
             tool_id="probe-harness",
             status="passed",
@@ -114,6 +107,7 @@ def test_probe_harness_preserves_python_loader_path(monkeypatch) -> None:
 
     result = execute_probes(VerificationResult(passed=False), regime, candidate=candidate)
 
+    assert observed_command[1] == "-I"
     assert observed_env == {"LD_LIBRARY_PATH": "/engine/python/lib"}
     assert result["probe_results"][0]["status"] == "survived"
 

@@ -241,10 +241,9 @@ def _run_artifact_assertions(artifact: Any, probes: list[ProbeCase]) -> list[dic
         artifact_path.write_text(json.dumps(artifact, ensure_ascii=False, sort_keys=True), encoding="utf-8")
         cases_path.write_text(json.dumps(cases, ensure_ascii=False, sort_keys=True), encoding="utf-8")
         feedback = ToolRunner().run(
-            [sys.executable, str(harness), str(artifact_path), str(cases_path)],
+            [sys.executable, "-I", str(harness), str(artifact_path), str(cases_path)],
             cwd=tmp,
             env={"LD_LIBRARY_PATH": loader_path} if loader_path else None,
-            enforce_resource_limits=False,
         )
     if feedback.status != "passed":
         reason = "probe_harness_" + str(feedback.status or "error")
