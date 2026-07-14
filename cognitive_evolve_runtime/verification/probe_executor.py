@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 import tempfile
 from pathlib import Path
@@ -232,6 +233,7 @@ def _run_artifact_assertions(artifact: Any, probes: list[ProbeCase]) -> list[dic
         for probe in probes
     ]
     harness = Path(__file__).with_name("probe_harness.py")
+    loader_path = os.environ.get("LD_LIBRARY_PATH")
     with tempfile.TemporaryDirectory(prefix="cogev-probe-") as raw_tmp:
         tmp = Path(raw_tmp)
         artifact_path = tmp / "artifact.json"
@@ -241,6 +243,7 @@ def _run_artifact_assertions(artifact: Any, probes: list[ProbeCase]) -> list[dic
         feedback = ToolRunner().run(
             [sys.executable, str(harness), str(artifact_path), str(cases_path)],
             cwd=tmp,
+            env={"LD_LIBRARY_PATH": loader_path} if loader_path else None,
         )
     if feedback.status != "passed":
         reason = "probe_harness_" + str(feedback.status or "error")

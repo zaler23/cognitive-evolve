@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome
 from cognitive_evolve_runtime.evaluators.evidence import evidence_records
 from cognitive_evolve_runtime.evaluators.challenge_memory import ChallengeMemory
@@ -9,6 +11,7 @@ from cognitive_evolve_runtime.nexus.search_kernel.branch_allocator import (
     _payload_passed,
     productive_outcomes,
 )
+from cognitive_evolve_runtime.tools.feedback import ToolFeedback
 from cognitive_evolve_runtime.verification.cache import check_with_cache
 from cognitive_evolve_runtime.verification.honesty_core import ProbeCase
 from cognitive_evolve_runtime.verification.ladder import VerificationStrength
@@ -65,6 +68,45 @@ def test_parameterized_probe_executes_fixed_json_assertions_and_keeps_pending_ca
     assert observed["counterexample_count"] == 1
     assert observed["pending_count"] == 1
     assert observed["probe_survival_ratio"] == 0.5
+
+
+def test_probe_harness_preserves_python_loader_path(monkeypatch) -> None:
+    candidate = _candidate(_case("survives", path="/metrics/score", operator="gte", expected=8))
+    regime = compile_grounding_regime(
+        candidate=candidate,
+        verifier_fingerprint="vf",
+        artifact_hash="artifact",
+        oracle_kind="toolrunner",
+        override_adversarial_budget=1,
+    )
+    observed_env: dict[str, str] = {}
+    monkeypatch.setenv("LD_LIBRARY_PATH", "/engine/python/lib")
+
+    def _run(_self, _command, *, cwd, env=None, timeout_seconds=None):  # noqa: ANN001, ANN202
+        del cwd, timeout_seconds
+        observed_env.update(env or {})
+        return ToolFeedback(
+            tool_id="probe-harness",
+            status="passed",
+            raw_output_ref=json.dumps(
+                [
+                    {
+                        "probe_id": regime.probes[0].probe_id,
+                        "assertion_id": "survives",
+                        "status": "survived",
+                        "path": "/metrics/score",
+                        "operator": "gte",
+                    }
+                ]
+            ),
+        )
+
+    monkeypatch.setattr("cognitive_evolve_runtime.verification.probe_executor.ToolRunner.run", _run)
+
+    result = execute_probes(VerificationResult(passed=False), regime, candidate=candidate)
+
+    assert observed_env == {"LD_LIBRARY_PATH": "/engine/python/lib"}
+    assert result["probe_results"][0]["status"] == "survived"
 
 
 def test_model_command_and_expression_are_recorded_unsupported_and_never_executed(monkeypatch) -> None:
