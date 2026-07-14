@@ -34,7 +34,15 @@ class ToolRunner:
         self.allowed_executables = set(allowed_executables or DEFAULT_ALLOWED_EXECUTABLES)
         self.allowed_executable_paths = {Path(path).expanduser().resolve() for path in (allowed_executable_paths or set())}
 
-    def run(self, command: str | list[str], *, cwd: str | Path, env: dict[str, str] | None = None, timeout_seconds: float | None = None) -> ToolFeedback:
+    def run(
+        self,
+        command: str | list[str],
+        *,
+        cwd: str | Path,
+        env: dict[str, str] | None = None,
+        timeout_seconds: float | None = None,
+        enforce_resource_limits: bool = True,
+    ) -> ToolFeedback:
         start = time.monotonic()
         args = shlex.split(command) if isinstance(command, str) else [str(item) for item in command]
         allowed, reason = self._command_allowed(args)
@@ -61,7 +69,7 @@ class ToolRunner:
                 timeout=timeout_seconds or self.timeout_seconds,
                 check=False,
                 start_new_session=True,
-                preexec_fn=_resource_limiter(timeout_seconds or self.timeout_seconds),
+                preexec_fn=_resource_limiter(timeout_seconds or self.timeout_seconds) if enforce_resource_limits else None,
             )
             status = "passed" if proc.returncode == 0 else "failed"
             diagnostics = [redact_text(line) for line in (proc.stderr or proc.stdout).splitlines() if line.strip()]

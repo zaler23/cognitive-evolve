@@ -82,9 +82,18 @@ def test_probe_harness_preserves_python_loader_path(monkeypatch) -> None:
     observed_env: dict[str, str] = {}
     monkeypatch.setenv("LD_LIBRARY_PATH", "/engine/python/lib")
 
-    def _run(_self, _command, *, cwd, env=None, timeout_seconds=None):  # noqa: ANN001, ANN202
+    def _run(
+        _self,
+        _command,
+        *,
+        cwd,
+        env=None,
+        timeout_seconds=None,
+        enforce_resource_limits=True,
+    ):  # noqa: ANN001, ANN202
         del cwd, timeout_seconds
         observed_env.update(env or {})
+        assert enforce_resource_limits is False
         return ToolFeedback(
             tool_id="probe-harness",
             status="passed",

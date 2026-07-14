@@ -244,6 +244,7 @@ def _run_artifact_assertions(artifact: Any, probes: list[ProbeCase]) -> list[dic
             [sys.executable, str(harness), str(artifact_path), str(cases_path)],
             cwd=tmp,
             env={"LD_LIBRARY_PATH": loader_path} if loader_path else None,
+            enforce_resource_limits=False,
         )
     if feedback.status != "passed":
         reason = "probe_harness_" + str(feedback.status or "error")
