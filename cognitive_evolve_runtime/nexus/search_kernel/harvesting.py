@@ -51,10 +51,20 @@ class HarvestResult:
 
         return self.fatal_model_error
 
+    @property
+    def target_qualified_count(self) -> int:
+        return sum(candidate_is_target_qualified(candidate) for candidate in self.accepted)
+
+    @property
+    def carried_low_relevance_count(self) -> int:
+        return len(self.accepted) - self.target_qualified_count
+
     def to_dict(self) -> dict[str, Any]:
         return {
             "accepted_ids": [candidate.id for candidate in self.accepted],
             "accepted_count": len(self.accepted),
+            "target_qualified_count": self.target_qualified_count,
+            "carried_low_relevance_count": self.carried_low_relevance_count,
             "rejected": [_persisted_rejection(item) for item in self.rejected[-50:]],
             "rejected_count": len(self.rejected),
             "batches": self.batches,
@@ -125,24 +135,26 @@ class CandidateHarvester:
                     result.rejected.append(error_record)
                     continue
                 successful_batches_in_window += 1
-                families_before = _harvest_family_set(result.accepted)
-                accepted_before = len(result.accepted)
+                qualified_before = target_qualified_candidates(result.accepted)
+                families_before = _harvest_family_set(qualified_before)
+                accepted_before = len(qualified_before)
                 gain = self._apply_batch(result, batch_index=current_index, batch=batch, context=context)
-                accepted_delta = len(result.accepted) - accepted_before
-                if self.policy.stop_at_target and result.batches >= max(1, self.policy.min_batches) and len(result.accepted) >= self.policy.target_size:
+                qualified_after = target_qualified_candidates(result.accepted)
+                accepted_delta = len(qualified_after) - accepted_before
+                if self.policy.stop_at_target and result.batches >= max(1, self.policy.min_batches) and len(qualified_after) >= self.policy.target_size:
                     result.stopped_reason = "target_reached"
                     # The fanout window has already executed. Keep consuming its
-                    # ordered results so later quota/transport errors remain in
-                    # the ledger, but _apply_batch will accept no more candidates.
+                    # ordered results so later candidates and transport errors
+                    # remain in the authoritative harvest/ledger.
                     continue
                 if self.policy.exhaust_on_no_new and max_batches is None and self.policy.stage == "seed":
-                    families_after = _harvest_family_set(result.accepted)
+                    families_after = _harvest_family_set(qualified_after)
                     exhausted_batch = _unbounded_seed_handoff_exhausted(
                         accepted_before=accepted_before,
                         accepted_delta=accepted_delta,
                         family_count_before=len(families_before),
                         family_delta=len(families_after - families_before),
-                        accepted_count=len(result.accepted),
+                        accepted_count=len(qualified_after),
                         family_count=len(families_after),
                         batches=result.batches,
                         target_size=self.policy.target_size,
@@ -176,31 +188,33 @@ class CandidateHarvester:
         batch: list[CandidateGenome],
         context: dict[str, Any],
     ) -> float:
-        before = len(result.accepted)
+        before = result.target_qualified_count
         relevant = 0
         novel = 0
         for candidate in batch:
-            if self.policy.stop_at_target and len(result.accepted) >= max(0, int(self.policy.target_size)):
-                break
             rel = relevance_score(candidate, **context)
+            target_qualified = rel >= self.policy.relevance_floor
             candidate.metadata.setdefault("search_kernel_stage", self.policy.stage)
             candidate.metadata["search_kernel_batch"] = batch_index
             candidate.metadata["search_kernel_relevance"] = rel
+            candidate.metadata["search_kernel_target_qualified"] = target_qualified
             candidate.metadata["search_kernel_fingerprint"] = candidate_fingerprint(candidate).to_dict()
             candidate.metadata["descriptor_cell"] = descriptor_cell_key(candidate)
             ensure_nextgen_identity(candidate)
-            if rel < self.policy.relevance_floor:
-                record = {"batch": batch_index, "candidate_id": candidate.id, "reason": "low_relevance", "relevance": rel}
-                result.rejected.append(record)
-                record_candidate_budget_decision(candidate, source=f"{self.policy.stage}_harvester", reason="low_relevance", action="soft_reservoir" if self.policy.reservoir_mode else "soft_reject", details=record)
-                if self.policy.reservoir_mode:
-                    candidate.metadata.setdefault("seed_reservoir_reason", "low_relevance")
-                    self._store_reservoir(result, candidate, reason="low_relevance")
-                continue
-            relevant += 1
             if self.deduper.add(candidate):
-                novel += 1
                 result.accepted.append(candidate)
+                if target_qualified:
+                    relevant += 1
+                    novel += 1
+                else:
+                    record = {"batch": batch_index, "candidate_id": candidate.id, "reason": "low_relevance", "relevance": rel}
+                    record_candidate_budget_decision(
+                        candidate,
+                        source=f"{self.policy.stage}_harvester",
+                        reason="low_relevance",
+                        action="advisory_deprioritize",
+                        details=record,
+                    )
             else:
                 reason = str(candidate.metadata.get("dedupe_reason") or "duplicate_semantic_signature")
                 signature_key = "phenotype_signature" if reason == "duplicate_materialized_artifact" else "dedupe_signature"
@@ -223,7 +237,7 @@ class CandidateHarvester:
                 if self.policy.reservoir_mode:
                     candidate.metadata.setdefault("seed_reservoir_reason", reason)
                     self._store_reservoir(result, candidate, reason=reason)
-        return batch_gain(accepted_count=len(result.accepted) - before, novel_count=novel, batch_size=max(1, len(batch)), relevant_count=relevant)
+        return batch_gain(accepted_count=result.target_qualified_count - before, novel_count=novel, batch_size=max(1, len(batch)), relevant_count=relevant)
 
     def _store_reservoir(self, result: HarvestResult, candidate: CandidateGenome, *, reason: str) -> None:
         limit = max(0, int(self.policy.reservoir_limit or 0))
@@ -250,6 +264,15 @@ def _harvest_workers(*, max_batches: int | None, configured: int | None) -> int:
 
 def _persisted_rejection(item: dict[str, Any]) -> dict[str, Any]:
     return {str(key): value for key, value in item.items() if key != "candidate"}
+
+
+def candidate_is_target_qualified(candidate: CandidateGenome) -> bool:
+    metadata = candidate.metadata if isinstance(candidate.metadata, dict) else {}
+    return metadata.get("search_kernel_target_qualified") is not False
+
+
+def target_qualified_candidates(candidates: Iterable[CandidateGenome]) -> list[CandidateGenome]:
+    return [candidate for candidate in candidates if candidate_is_target_qualified(candidate)]
 
 
 def _unbounded_seed_handoff_exhausted(
@@ -345,4 +368,12 @@ def dedupe_plans(plans: Iterable[MutationPlan]) -> tuple[list[MutationPlan], lis
     return accepted, rejected
 
 
-__all__ = ["CandidateHarvester", "HarvestPolicy", "HarvestResult", "dedupe_plans", "plan_signature"]
+__all__ = [
+    "CandidateHarvester",
+    "HarvestPolicy",
+    "HarvestResult",
+    "candidate_is_target_qualified",
+    "dedupe_plans",
+    "plan_signature",
+    "target_qualified_candidates",
+]

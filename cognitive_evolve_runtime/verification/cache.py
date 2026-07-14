@@ -6,7 +6,7 @@ from typing import Any
 
 from cognitive_evolve_runtime.core.serialization import stable_hash
 from .honesty_core import measure_verification_result
-from .probe_executor import execute_probes
+from .probe_executor import execute_probes, result_with_probe_observations
 from .regime import compile_grounding_regime
 from .replay_runner import build_replay_record
 from .types import VerificationResult, SynthesizedVerifier
@@ -23,8 +23,14 @@ def candidate_artifact_hash(candidate: Any) -> str:
     return "artifact-" + stable_hash({"artifact": artifact, "artifact_type": getattr(candidate, "artifact_type", ""), "verifier_metadata": verifier_relevant})[:24]
 
 
-def verification_cache_key(candidate: Any, verifier_fingerprint: str) -> str:
-    return "verification:" + stable_hash({"artifact_sha": candidate_artifact_hash(candidate), "verifier_fingerprint": verifier_fingerprint})
+def verification_cache_key(candidate: Any, verifier_fingerprint: str, probe_signature: str = "") -> str:
+    payload = {
+        "artifact_sha": candidate_artifact_hash(candidate),
+        "verifier_fingerprint": verifier_fingerprint,
+    }
+    if probe_signature:
+        payload["probe_signature"] = probe_signature
+    return "verification:" + stable_hash(payload)
 
 
 def check_with_cache(candidate: Any, verifier: SynthesizedVerifier, cache: dict[str, dict[str, Any]]) -> tuple[VerificationResult, str, bool]:
@@ -34,7 +40,18 @@ def check_with_cache(candidate: Any, verifier: SynthesizedVerifier, cache: dict[
 
 def _check_with_cache_locked(candidate: Any, verifier: SynthesizedVerifier, cache: dict[str, dict[str, Any]]) -> tuple[VerificationResult, str, bool]:
     fingerprint = str(getattr(verifier, "fingerprint", "") or getattr(verifier, "verifier_id", ""))
-    key = verification_cache_key(candidate, fingerprint)
+    artifact_sha = candidate_artifact_hash(candidate)
+    plan = getattr(verifier, "plan", None) if isinstance(getattr(verifier, "plan", None), dict) else None
+    oracle_hint = str((plan or {}).get("modality") or getattr(verifier, "verifier_id", "").replace("-verifier", "") or "")
+    regime = compile_grounding_regime(
+        candidate=candidate,
+        verifier_fingerprint=fingerprint,
+        artifact_hash=artifact_sha,
+        plan=plan,
+        oracle_kind=oracle_hint,
+    )
+    parameterized_signature = regime.probe_signature if any(probe.template_id for probe in regime.probes) else ""
+    key = verification_cache_key(candidate, fingerprint, parameterized_signature)
     legacy_entry_seen = False
     if key in cache and isinstance(cache[key], dict):
         entry = cache[key]
@@ -54,7 +71,6 @@ def _check_with_cache_locked(candidate: Any, verifier: SynthesizedVerifier, cach
         legacy_entry_seen = True
 
     raw_result = verifier.check(candidate)
-    artifact_sha = candidate_artifact_hash(candidate)
     oracle_kind = str(raw_result.metadata.get("oracle_kind") or getattr(verifier, "verifier_id", "").replace("-verifier", "") or "")
     metadata = dict(raw_result.metadata)
     metadata.update({
@@ -66,14 +82,8 @@ def _check_with_cache_locked(candidate: Any, verifier: SynthesizedVerifier, cach
         "diagnostics_only": bool(metadata.get("diagnostics_only", False)),
     })
     raw_result = VerificationResult(raw_result.passed, raw_result.score, raw_result.strength, raw_result.evidence_ref, raw_result.replayable, list(raw_result.diagnostics), metadata)
-    regime = compile_grounding_regime(
-        candidate=candidate,
-        verifier_fingerprint=fingerprint,
-        artifact_hash=artifact_sha,
-        plan=getattr(verifier, "plan", None) if isinstance(getattr(verifier, "plan", None), dict) else None,
-        oracle_kind=oracle_kind,
-    )
     actual_probe_verdicts = execute_probes(raw_result, regime, candidate=candidate)
+    raw_result = result_with_probe_observations(raw_result, actual_probe_verdicts)
     replay_record = build_replay_record(
         candidate,
         raw_result,

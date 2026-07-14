@@ -30,6 +30,7 @@ def reproductive_value(
     *,
     advisory_features: Mapping[str, Any] | None = None,
     budget_context: list[CandidateGenome] | None = None,
+    include_search_relevance: bool = True,
 ) -> float:
     live_context = list(budget_context) if budget_context is not None else budget_eligible_candidates(population)
     fate = CandidateFate.normalize(candidate.current_fate)
@@ -78,6 +79,8 @@ def reproductive_value(
         complementarity_signal,
         frontier_signal,
     ]
+    if include_search_relevance and "search_kernel_relevance" in metadata:
+        positive.append(_bounded_float(metadata.get("search_kernel_relevance"), default=0.0))
     value = sum(positive) / max(1, len(positive))
     reserve_penalty = 0.15 if fate in {CandidateFate.CULLED.value, CandidateFate.FAILED.value, CandidateFate.DORMANT.value} else 0.0
     return (
@@ -173,7 +176,26 @@ class ParentSelector:
         target = max(0, limit)
         round_index = _int(coerce_dict(eligibility_policy).get("current_round"), default=0)
         selection_pressure = coerce_dict(coerce_dict(eligibility_policy).get("selection_pressure"))
-        base_values = {candidate.id: reproductive_value(candidate, population, archives, budget_context=viable) + _selection_pressure_adjustment(candidate, selection_pressure) for candidate in viable}
+        pressure_adjustments = {
+            candidate.id: _selection_pressure_adjustment(candidate, selection_pressure)
+            for candidate in viable
+        }
+        base_values = {
+            candidate.id: reproductive_value(
+                candidate,
+                population,
+                archives,
+                budget_context=viable,
+                include_search_relevance=False,
+            )
+            + pressure_adjustments[candidate.id]
+            for candidate in viable
+        }
+        ordering_values = {
+            candidate.id: reproductive_value(candidate, population, archives, budget_context=viable)
+            + pressure_adjustments[candidate.id]
+            for candidate in viable
+        }
         # cbt_soft is a canonical search-diversity soft quota: it may reorder viable
         # parents but must NEVER enter the >=0 base_values eligibility floor below.
         # Compute it once per viable candidate -- it records a budget-decision side
@@ -181,11 +203,13 @@ class ParentSelector:
         cbt_ordering = {candidate.id: cbt_soft_budget_adjustment(candidate, viable) for candidate in viable}
 
         def _order(candidate: CandidateGenome, *, floor: float) -> float:
-            return base_values.get(candidate.id, floor) + _advisory_selection_adjustment(candidate, advisory_features) + cbt_ordering.get(candidate.id, 0.0)
+            return ordering_values.get(candidate.id, floor) + _advisory_selection_adjustment(candidate, advisory_features) + cbt_ordering.get(candidate.id, 0.0)
 
         resurrection_candidates = _resurrection_candidates(viable, target=target)
         for candidate in resurrection_candidates:
-            base_values[candidate.id] = base_values.get(candidate.id, 0.0) + max(0.0, resurrection_score(candidate, viable)) * 0.25 + 0.20
+            bonus = max(0.0, resurrection_score(candidate, viable)) * 0.25 + 0.20
+            base_values[candidate.id] = base_values.get(candidate.id, 0.0) + bonus
+            ordering_values[candidate.id] = ordering_values.get(candidate.id, 0.0) + bonus
         by_value = sorted(
             viable,
             key=lambda candidate: (

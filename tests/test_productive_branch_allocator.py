@@ -356,8 +356,117 @@ def test_allocator_is_nonuniform_but_preserves_an_untried_lineage_slot() -> None
     assert len(arm_ids) == 4
     assert arm_ids[0] == "C"
     assert first.slots[0].intent == "explore_fresh"
+    assert first.slots[0].coverage_bonus == 0.0
+    assert first.slots[0].coverage_scale == 0.0
+    assert first.slots[0].allocation_score == 0.0
     assert set(arm_ids) == {"A", "B", "C"}
     assert first.to_dict() == second.to_dict()
+
+
+def test_family_coverage_bonus_is_scaled_by_the_current_finite_ucb_span() -> None:
+    parent_dense = CandidateGenome(
+        id="dense-root",
+        lineage=["dense-root"],
+        artifact={"value": "dense-root"},
+        metadata={"search_space": {"family_id": "dense"}},
+    )
+    parent_sparse = CandidateGenome(
+        id="sparse-root",
+        lineage=["sparse-root"],
+        artifact={"value": "sparse-root"},
+        metadata={"search_space": {"family_id": "sparse"}},
+    )
+    dense_history = [
+        CandidateGenome(
+            id=f"dense-{index}",
+            lineage=["dense-root", f"dense-{index}"],
+            artifact={"value": f"dense-{index}"},
+            metadata={"search_space": {"family_id": "dense"}},
+        )
+        for index in range(2)
+    ]
+    budget_history = [
+        {
+            "round": 0,
+            "generation_plan": {
+                "productive_branch_allocation": {
+                    "slots": [
+                        {"slot_id": "dense-0", "arm_id": "dense-root"},
+                        {"slot_id": "dense-1", "arm_id": "dense-root"},
+                        {"slot_id": "sparse-0", "arm_id": "sparse-root"},
+                    ]
+                }
+            },
+        }
+    ]
+
+    allocation = allocate_productive_branches(
+        parents=[parent_dense, parent_sparse],
+        candidates=[parent_dense, parent_sparse, *dense_history],
+        budget_history=budget_history,
+        total_slots=1,
+    )
+
+    [slot] = allocation.slots
+    assert slot.arm_id == "sparse-root"
+    assert allocation.observed_family_counts == {"dense": 3, "sparse": 1}
+    assert slot.coverage_bonus == pytest.approx(2 / 3, abs=1e-6)
+    assert slot.coverage_scale > 0.0
+    assert slot.allocation_score - slot.ucb_score == pytest.approx(
+        slot.coverage_bonus * slot.coverage_scale,
+        abs=2e-6,
+    )
+    assert allocation.to_dict()["observed_family_counts"] == {"dense": 3, "sparse": 1}
+
+
+def test_general_family_sets_density_scale_but_never_receives_coverage_bonus() -> None:
+    general = CandidateGenome(
+        id="z-general-root",
+        lineage=["z-general-root"],
+        artifact={"value": "general"},
+        metadata={"search_space": {"family_id": "general"}},
+    )
+    rare = CandidateGenome(
+        id="a-rare-root",
+        lineage=["a-rare-root"],
+        artifact={"value": "rare"},
+        metadata={"search_space": {"family_id": "rare"}},
+    )
+    general_history = [
+        CandidateGenome(
+            id=f"general-{index}",
+            artifact={"value": index},
+            metadata={"search_space": {"family_id": "general"}},
+        )
+        for index in range(2)
+    ]
+    budget_history = [
+        {
+            "round": 0,
+            "generation_plan": {
+                "productive_branch_allocation": {
+                    "slots": [
+                        {"slot_id": "general-0", "arm_id": "z-general-root"},
+                        {"slot_id": "rare-0", "arm_id": "a-rare-root"},
+                    ]
+                }
+            },
+        }
+    ]
+
+    allocation = allocate_productive_branches(
+        parents=[general, rare],
+        candidates=[general, rare, *general_history],
+        budget_history=budget_history,
+        total_slots=1,
+    )
+
+    [slot] = allocation.slots
+    assert allocation.observed_family_counts == {"general": 3, "rare": 1}
+    assert slot.arm_id == "a-rare-root"
+    assert slot.ucb_score == slot.allocation_score
+    assert slot.coverage_scale == 0.0
+    assert slot.coverage_bonus == pytest.approx(2 / 3, abs=1e-6)
 
 
 def test_single_plan_binds_each_child_to_one_distinct_branch_slot() -> None:

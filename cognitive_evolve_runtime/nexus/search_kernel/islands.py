@@ -8,7 +8,12 @@ from typing import Any, Iterable
 from cognitive_evolve_runtime.candidates.genome import CandidateGenome
 from cognitive_evolve_runtime.nexus._serde import stable_hash
 
-from .branch_allocator import ProductiveBranchAllocation, allocate_productive_branches, lineage_root
+from .branch_allocator import (
+    ProductiveBranchAllocation,
+    allocate_productive_branches,
+    count_observed_mechanism_families,
+    lineage_root,
+)
 
 
 @dataclass(frozen=True)
@@ -67,6 +72,7 @@ def allocate_logical_islands(
     current_round: int = 0,
 ) -> LogicalIslandAllocation:
     candidate_list = list(candidates)
+    observed_family_counts = count_observed_mechanism_families(candidate_list)
     parent_roots = sorted({lineage_root(parent) for parent in parents})
     island_count = derive_island_count(
         total_slots=total_slots,
@@ -80,6 +86,7 @@ def allocate_logical_islands(
             budget_history=budget_history,
             metric_directions=metric_directions,
             total_slots=total_slots,
+            observed_family_counts=observed_family_counts,
         )
         candidate_islands = {candidate.id: 0 for candidate in candidate_list}
         return LogicalIslandAllocation(
@@ -140,6 +147,7 @@ def allocate_logical_islands(
             budget_history=budget_history,
             metric_directions=metric_directions,
             total_slots=island_slots,
+            observed_family_counts=observed_family_counts,
         )
         island_branches = [
             replace(
@@ -154,7 +162,12 @@ def allocate_logical_islands(
             credit[key] = credit.get(key, 0) + int(value)
         slot_islands.update({slot.slot_id: island_id for slot in island_branches})
     return LogicalIslandAllocation(
-        branches=ProductiveBranchAllocation(slots=tuple(branches), arms=tuple(arms), credit_summary=credit),
+        branches=ProductiveBranchAllocation(
+            slots=tuple(branches),
+            arms=tuple(arms),
+            credit_summary=credit,
+            observed_family_counts=observed_family_counts,
+        ),
         candidate_islands=candidate_islands,
         slot_islands=slot_islands,
         borrowed_parent_ids=borrowed,

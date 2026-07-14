@@ -463,7 +463,7 @@ def test_unbound_legacy_graded_result_does_not_bless_candidate() -> None:
 
 
 
-def test_seed_reservoir_soft_retains_low_relevance_and_duplicates() -> None:
+def test_seed_reservoir_retains_duplicates_while_low_relevance_is_carried() -> None:
     duplicate = CandidateGenome(id="dup2", concise_claim="same", core_mechanism="same", artifact="same")
 
     harvester = CandidateHarvester(
@@ -478,10 +478,11 @@ def test_seed_reservoir_soft_retains_low_relevance_and_duplicates() -> None:
         context={},
     )
 
-    assert [candidate.id for candidate in result.accepted] == ["dup1"]
-    assert {candidate.id for candidate in result.reservoir} == {"dup2", "low"}
-    assert {item["reason"] for item in result.rejected} >= {"duplicate_materialized_artifact", "low_relevance"}
+    assert [candidate.id for candidate in result.accepted] == ["dup1", "low"]
+    assert {candidate.id for candidate in result.reservoir} == {"dup2"}
+    assert {item["reason"] for item in result.rejected} == {"duplicate_materialized_artifact"}
     assert duplicate.metadata["candidate_budget_decision"]["action"] == "soft_reservoir"
+    assert result.accepted[-1].metadata["candidate_budget_decision"]["action"] == "advisory_deprioritize"
 
 
 def test_duplicate_offspring_is_hard_excluded_with_budget_trace() -> None:
@@ -662,7 +663,7 @@ def test_resurrection_lane_prefers_intent_aligned_loser_pool_candidate() -> None
     assert aligned.metadata["resurrection_round"] == 9
 
 
-def test_seed_reservoir_limit_truncates_with_summary() -> None:
+def test_low_relevance_candidates_do_not_consume_duplicate_reservoir_limit() -> None:
     harvester = CandidateHarvester(
         policy=HarvestPolicy(target_size=1, max_batches=1, relevance_floor=1.1, reservoir_mode=True, reservoir_limit=2)
     )
@@ -670,10 +671,10 @@ def test_seed_reservoir_limit_truncates_with_summary() -> None:
 
     result = harvester.harvest(request_batch=lambda *_args: batch, context={})
 
-    assert [candidate.id for candidate in result.reservoir] == ["low-0", "low-1"]
-    assert result.reservoir_truncated_count == 3
-    assert [item["candidate_id"] for item in result.reservoir_truncated_summaries] == ["low-2", "low-3", "low-4"]
-    assert result.to_dict()["reservoir_truncated_count"] == 3
+    assert [candidate.id for candidate in result.accepted] == [f"low-{i}" for i in range(5)]
+    assert result.reservoir == []
+    assert result.reservoir_truncated_count == 0
+    assert result.reservoir_truncated_summaries == []
 
 
 def test_seed_model_ensemble_candidate_genome_origin_trace() -> None:

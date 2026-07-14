@@ -8,6 +8,35 @@ from cognitive_evolve_runtime.core.serialization import coerce_dict, stable_hash
 from .honesty_core import GroundingRegime, ProbeCase
 
 
+_ARTIFACT_ASSERTION_TEMPLATE = "artifact_assertion/v1"
+_ARTIFACT_ASSERTION_OPERATORS = {
+    "exists",
+    "not_exists",
+    "equal",
+    "not_equal",
+    "contains",
+    "not_contains",
+    "lt",
+    "lte",
+    "gt",
+    "gte",
+    "between",
+}
+_UNSUPPORTED_MODEL_EXECUTION_FIELDS = {
+    "args",
+    "command",
+    "cwd",
+    "executable",
+    "expression",
+    "file",
+    "file_path",
+    "module",
+    "python",
+    "python_expression",
+    "shell",
+}
+
+
 def compile_grounding_regime(
     *,
     candidate: Any = None,
@@ -32,8 +61,17 @@ def compile_grounding_regime(
     artifact_hash = str(artifact_hash or "")
     fingerprint = str(verifier_fingerprint or obligation.get("verifier_fingerprint") or "")
     kind = str(oracle_kind or obligation.get("oracle_kind") or plan_data.get("modality") or "").strip().lower()
-    probes = _compile_probes(candidate_id=candidate_id, obligation=obligation, plan=plan_data)
+    probes = _compile_probes(candidate=candidate, candidate_id=candidate_id, obligation=obligation, plan=plan_data)
     budget = _engine_falsification_budget(obligation=obligation, plan=plan_data, oracle_kind=kind) if override_adversarial_budget is None else max(0, int(override_adversarial_budget or 0))
+    probe_signature = "probe-" + stable_hash(
+        {
+            "artifact_hash": artifact_hash,
+            "adversarial_budget": budget,
+            "probes": [probe.to_dict() for probe in probes],
+            "template_version": _ARTIFACT_ASSERTION_TEMPLATE,
+            "verifier_fingerprint": fingerprint,
+        }
+    )[:24]
     regime_id = "regime-" + stable_hash(
         {
             "candidate_id": candidate_id,
@@ -42,6 +80,7 @@ def compile_grounding_regime(
             "obligation_id": obligation.get("id"),
             "oracle_kind": kind,
             "adversarial_budget": budget,
+            "probe_signature": probe_signature,
         }
     )[:16]
     return GroundingRegime(
@@ -52,22 +91,43 @@ def compile_grounding_regime(
         replay_artifact_hash=artifact_hash,
         verifier_fingerprint=fingerprint,
         oracle_kind=kind,
+        probe_signature=probe_signature,
     )
 
 
-def _compile_probes(*, candidate_id: str, obligation: dict[str, Any], plan: dict[str, Any]) -> list[ProbeCase]:
+def _compile_probes(*, candidate: Any, candidate_id: str, obligation: dict[str, Any], plan: dict[str, Any]) -> list[ProbeCase]:
+    parameterized: list[ProbeCase] = []
+    sources = [obligation]
+    sources.extend(coerce_dict(item) for item in getattr(candidate, "proof_obligations", []) if isinstance(item, dict))
+    for source_index, source in enumerate(sources):
+        cases = source.get("probe_cases")
+        if not isinstance(cases, list):
+            continue
+        obligation_id = str(source.get("id") or obligation.get("id") or f"obligation-{source_index}")
+        for case_index, raw_case in enumerate(cases):
+            if not isinstance(raw_case, dict):
+                continue
+            parameterized.append(
+                _compile_artifact_assertion_case(
+                    candidate_id=candidate_id,
+                    obligation_id=obligation_id,
+                    case_index=case_index,
+                    raw_case=raw_case,
+                )
+            )
+
     hints: list[dict[str, Any]] = []
     for source in (obligation.get("exogeneity_probe"), obligation.get("variety_probe"), plan.get("probe_requirements")):
         if isinstance(source, dict):
             hints.append(source)
         elif isinstance(source, list):
             hints.extend(item for item in source if isinstance(item, dict))
-    if not hints and not obligation and not plan:
+    if not hints and not obligation and not plan and not parameterized:
         return []
-    if not hints:
+    if not hints and not parameterized:
         hints = [{"kind": "default_counterfactual", "expected_verdict_flip": False}]
-    probes: list[ProbeCase] = []
-    for index, hint in enumerate(hints[:4]):
+    probes: list[ProbeCase] = list(parameterized)
+    for index, hint in enumerate(hints):
         semantic_label = str(hint.get("kind") or hint.get("label") or "verification_probe")
         # The content is deliberately engine-authored and stable; raw hint text is
         # only treated as a semantic label, not as certification evidence.
@@ -80,7 +140,55 @@ def _compile_probes(*, candidate_id: str, obligation: dict[str, Any], plan: dict
                 expected_verdict_flip=bool(hint.get("expected_verdict_flip", False)),
             )
         )
-    return probes
+    return list({probe.probe_id: probe for probe in probes}.values())
+
+
+def _compile_artifact_assertion_case(
+    *,
+    candidate_id: str,
+    obligation_id: str,
+    case_index: int,
+    raw_case: dict[str, Any],
+) -> ProbeCase:
+    template_id = str(raw_case.get("template") or "")
+    assertion_id = str(raw_case.get("assertion_id") or "")
+    pointer = str(raw_case.get("path") or "")
+    operator = str(raw_case.get("operator") or "")
+    forbidden = sorted(key for key in raw_case if str(key) in _UNSUPPORTED_MODEL_EXECUTION_FIELDS)
+    reason = ""
+    if forbidden:
+        reason = "unsupported_fields:" + ",".join(forbidden)
+    elif template_id != _ARTIFACT_ASSERTION_TEMPLATE:
+        reason = "unsupported_template"
+    elif not assertion_id:
+        reason = "assertion_id_required"
+    elif pointer and not pointer.startswith("/"):
+        reason = "invalid_json_pointer"
+    elif operator not in _ARTIFACT_ASSERTION_OPERATORS:
+        reason = "unsupported_operator"
+    parameters = {
+        "assertion_id": assertion_id,
+        "path": pointer,
+        "operator": operator,
+        "expected": raw_case.get("expected"),
+    }
+    if reason:
+        parameters["unsupported_reason"] = reason
+    identity = {
+        "candidate_id": candidate_id,
+        "obligation_id": obligation_id,
+        "case_index": case_index,
+        "template_id": template_id,
+        "parameters": parameters,
+    }
+    return ProbeCase(
+        probe_id="probe-" + stable_hash(identity)[:12],
+        content="engine_template:" + _ARTIFACT_ASSERTION_TEMPLATE + ":" + stable_hash(identity)[:24],
+        provenance="engine_template_model_parameters",
+        expected_verdict_flip=False,
+        template_id=template_id,
+        parameters=parameters,
+    )
 
 
 def _engine_falsification_budget(*, obligation: dict[str, Any], plan: dict[str, Any], oracle_kind: str) -> int:
