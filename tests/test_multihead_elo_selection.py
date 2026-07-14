@@ -54,6 +54,19 @@ def test_multihead_elo_attaches_reproductive_signal_to_candidates() -> None:
     assert candidates[0].multihead_scores["elo_mean_rating"] > candidates[1].multihead_scores["elo_mean_rating"]
 
 
+def test_multihead_elo_decay_and_old_checkpoint_restore_share_one_state() -> None:
+    elo = MultiHeadElo()
+    elo.update_pairwise("winner", "loser", axis="answer_likelihood")
+    first_delta = elo.ratings["winner"]["answer_likelihood"] - elo.initial_rating
+    previous = elo.ratings["winner"]["answer_likelihood"]
+    elo.update_pairwise("winner", "loser", axis="answer_likelihood")
+    second_delta = elo.ratings["winner"]["answer_likelihood"] - previous
+
+    assert second_delta < first_delta
+    assert elo.update_counts == {"answer_likelihood": 2}
+    assert MultiHeadElo.from_dict({"ratings": elo.ratings}).update_counts == {}
+
+
 def test_reproductive_value_uses_elo_signal_as_live_selection_pressure() -> None:
     high = _candidate("high", answer=0.4)
     low = _candidate("low", answer=0.4)

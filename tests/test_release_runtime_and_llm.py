@@ -26,6 +26,7 @@ from cognitive_evolve_runtime.llm import (
     _retry_sleep_seconds,
     _usage_dict,
     current_llm_session,
+    logical_llm_call,
     llm_json,
     llm_session,
     llm_status_cli,
@@ -40,6 +41,7 @@ from cognitive_evolve_runtime.llm.mock_provider import MockProviderResponse
 from cognitive_evolve_runtime.llm.provider_interface import LLMProviderResult
 from cognitive_evolve_runtime.llm import transport as transport_module
 from cognitive_evolve_runtime.nexus.evaluation import runtime_validation_run, native_eval_run
+from cognitive_evolve_runtime.nexus.runtime import NexusRuntime
 
 
 def test_fixture_backed_runtime_smoke_same_process(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -295,8 +297,7 @@ def test_budget_reservation_releases_after_provider_error_and_cancellation(monke
     assert session.budget_reservation_usd == 0.0
 
 
-@pytest.mark.xfail(strict=True, reason="provider-backed crash idempotency is not implemented")
-def test_crash_after_provider_response_does_not_duplicate_remote_call(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_crash_after_provider_response_does_not_duplicate_remote_call(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("COGEV_LLM_PROVIDER", "litellm")
     monkeypatch.setenv("COGEV_LLM_MODEL", "test/model")
     monkeypatch.setenv("COGEV_LLM_API_KEY", "test-key")
@@ -318,11 +319,128 @@ def test_crash_after_provider_response_does_not_duplicate_remote_call(monkeypatc
         raise RuntimeError("simulated crash after provider response")
 
     monkeypatch.setattr(transport_module, "record_event", crash_after_response)
-    with llm_session(LLMSession()), pytest.raises(RuntimeError, match="simulated crash"):
+    journal_dir = tmp_path / "llm"
+    with llm_session(LLMSession(journal_dir=str(journal_dir))), logical_llm_call("round-1/crash-window"), pytest.raises(RuntimeError, match="simulated crash"):
         llm_json("crash_window", {"same": "request"}, system="Return JSON", schema_hint={}, provider=provider)
 
     monkeypatch.setattr(transport_module, "record_event", original_record_event)
-    with llm_session(LLMSession()):
+    with llm_session(LLMSession(journal_dir=str(journal_dir))), logical_llm_call("round-1/crash-window"):
         llm_json("crash_window", {"same": "request"}, system="Return JSON", schema_hint={}, provider=provider)
 
     assert provider.calls == 1
+
+
+def test_response_replay_does_not_merge_distinct_logical_calls(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("COGEV_LLM_PROVIDER", "litellm")
+    monkeypatch.setenv("COGEV_LLM_MODEL", "test/model")
+    monkeypatch.setenv("COGEV_LLM_API_KEY", "test-key")
+    monkeypatch.setenv("COGEV_LLM_RETRY_ATTEMPTS", "1")
+    monkeypatch.delenv("COGEV_LLM_BUDGET_USD", raising=False)
+
+    class Provider:
+        provider_id = "test"
+        calls = 0
+
+        def complete_json(self, **kwargs: object) -> LLMProviderResult:
+            self.calls += 1
+            return LLMProviderResult(response=MockProviderResponse({"ok": True}), estimated_cost_usd=0.01)
+
+    provider = Provider()
+    session = LLMSession(journal_dir=str(tmp_path / "llm"))
+    with llm_session(session):
+        with logical_llm_call("round-1/slot-1"):
+            llm_json("same_request", {"same": "request"}, system="Return JSON", schema_hint={}, provider=provider)
+        with logical_llm_call("round-1/slot-2"):
+            llm_json("same_request", {"same": "request"}, system="Return JSON", schema_hint={}, provider=provider)
+
+    assert provider.calls == 2
+
+
+def test_response_replay_counts_physical_usage_once(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("COGEV_LLM_PROVIDER", "litellm")
+    monkeypatch.setenv("COGEV_LLM_MODEL", "test/model")
+    monkeypatch.setenv("COGEV_LLM_API_KEY", "test-key")
+    monkeypatch.setenv("COGEV_LLM_RETRY_ATTEMPTS", "1")
+    monkeypatch.delenv("COGEV_LLM_BUDGET_USD", raising=False)
+
+    class Provider:
+        provider_id = "test"
+        calls = 0
+
+        def complete_json(self, **kwargs: object) -> LLMProviderResult:
+            self.calls += 1
+            return LLMProviderResult(response=MockProviderResponse({"ok": True}), estimated_cost_usd=0.01)
+
+    provider = Provider()
+    session = LLMSession(journal_dir=str(tmp_path / "llm"))
+    with llm_session(session):
+        for _ in range(2):
+            with logical_llm_call("round-1/slot-1"):
+                llm_json("same_request", {"same": "request"}, system="Return JSON", schema_hint={}, provider=provider)
+
+    assert provider.calls == 1
+    assert session.total_estimated_cost_usd() == 0.01
+    assert sum(event.get("cache_replayed") is True for event in session.snapshot()) == 1
+
+
+def test_runtime_response_replay_scope_is_stable_across_sessions(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("COGEV_LLM_PROVIDER", "litellm")
+    monkeypatch.setenv("COGEV_LLM_MODEL", "test/model")
+    monkeypatch.setenv("COGEV_LLM_API_KEY", "test-key")
+    monkeypatch.setenv("COGEV_LLM_RETRY_ATTEMPTS", "1")
+    monkeypatch.delenv("COGEV_LLM_BUDGET_USD", raising=False)
+    monkeypatch.delenv("COGEV_RUN_ID", raising=False)
+
+    class Provider:
+        provider_id = "test"
+        calls = 0
+
+        def complete_json(self, **kwargs: object) -> LLMProviderResult:
+            self.calls += 1
+            return LLMProviderResult(response=MockProviderResponse({"ok": True}), estimated_cost_usd=0.01)
+
+    provider = Provider()
+    output_dir = tmp_path / "nexus-runtime"
+    run_ids: list[str | None] = []
+    for _ in range(2):
+        session = LLMSession(journal_dir=str(tmp_path / "journal"))
+        with llm_session(session):
+            NexusRuntime(output_dir=output_dir)._bind_llm_artifact_scope()
+            run_ids.append(session.run_id)
+            with logical_llm_call("round-1/plan-1/slot-1"):
+                llm_json("same_request", {"same": "request"}, system="Return JSON", schema_hint={}, provider=provider)
+
+    assert provider.calls == 1
+    assert run_ids[0] == run_ids[1]
+    assert len(list((output_dir / "llm-responses" / "v1").glob("*.json"))) == 1
+
+
+def test_response_replay_signature_tracks_resolved_sampling_run_and_template(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("COGEV_LLM_PROVIDER", "litellm")
+    monkeypatch.setenv("COGEV_LLM_MODEL", "test/model")
+    monkeypatch.setenv("COGEV_LLM_API_KEY", "test-key")
+    monkeypatch.setenv("COGEV_LLM_RETRY_ATTEMPTS", "1")
+    monkeypatch.delenv("COGEV_LLM_BUDGET_USD", raising=False)
+
+    class Provider:
+        provider_id = "test"
+        calls = 0
+
+        def complete_json(self, **kwargs: object) -> LLMProviderResult:
+            self.calls += 1
+            return LLMProviderResult(response=MockProviderResponse({"ok": True}), estimated_cost_usd=0.01)
+
+    provider = Provider()
+    journal_dir = str(tmp_path / "llm")
+    monkeypatch.setenv("COGEV_LLM_TEMPERATURE", "0.2")
+    with llm_session(LLMSession(run_id="run-a", journal_dir=journal_dir)), logical_llm_call("slot", template_version="v1"):
+        llm_json("same_request", {"same": "request"}, system="Return JSON", schema_hint={}, provider=provider)
+    monkeypatch.setenv("COGEV_LLM_TEMPERATURE", "0.7")
+    with llm_session(LLMSession(run_id="run-a", journal_dir=journal_dir)), logical_llm_call("slot", template_version="v1"):
+        llm_json("same_request", {"same": "request"}, system="Return JSON", schema_hint={}, provider=provider)
+    with llm_session(LLMSession(run_id="run-b", journal_dir=journal_dir)), logical_llm_call("slot", template_version="v1"):
+        llm_json("same_request", {"same": "request"}, system="Return JSON", schema_hint={}, provider=provider)
+    with llm_session(LLMSession(run_id="run-b", journal_dir=journal_dir)), logical_llm_call("slot", template_version="v2"):
+        llm_json("same_request", {"same": "request"}, system="Return JSON", schema_hint={}, provider=provider)
+
+    assert provider.calls == 4

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+import math
 from typing import Any
 
 from cognitive_evolve_runtime.candidates.genome import CandidateGenome
@@ -11,6 +12,7 @@ from cognitive_evolve_runtime.nexus.policy import DEFAULT_FITNESS_AXES
 @dataclass
 class MultiHeadElo:
     ratings: dict[str, dict[str, float]] = field(default_factory=dict)
+    update_counts: dict[str, int] = field(default_factory=dict)
     initial_rating: float = 1000.0
     k_factor: float = 24.0
 
@@ -26,9 +28,12 @@ class MultiHeadElo:
         win = self.ratings[winner_id][axis]
         lose = self.ratings[loser_id][axis]
         expected_win = 1.0 / (1.0 + 10 ** ((lose - win) / 400.0))
-        delta = self.k_factor * weight * (1.0 - expected_win)
+        update_count = int(self.update_counts.get(axis, 0))
+        effective_k = self.k_factor / math.sqrt(1.0 + update_count)
+        delta = effective_k * weight * (1.0 - expected_win)
         self.ratings[winner_id][axis] = win + delta
         self.ratings[loser_id][axis] = lose - delta
+        self.update_counts[axis] = update_count + 1
 
     def update_from_relative(self, ranking: Any) -> None:
         preferences = [dict(pref) for pref in getattr(ranking, "pairwise_preferences", []) or [] if isinstance(pref, dict)]
@@ -88,6 +93,7 @@ class MultiHeadElo:
     def from_dict(cls, data: dict[str, Any]) -> "MultiHeadElo":
         return cls(
             ratings={str(cid): {str(axis): float(value) for axis, value in dict(scores).items()} for cid, scores in dict(data.get("ratings") or {}).items() if isinstance(scores, dict)},
+            update_counts={str(axis): max(0, int(value)) for axis, value in dict(data.get("update_counts") or {}).items()},
             initial_rating=float(data.get("initial_rating", 1000.0) or 1000.0),
             k_factor=float(data.get("k_factor", 24.0) or 24.0),
         )

@@ -2,14 +2,22 @@ from __future__ import annotations
 
 from cognitive_evolve_runtime.candidates.genome import CandidateGenome
 from cognitive_evolve_runtime.nexus.search_kernel.descriptor_cells import behavior_descriptor
+from cognitive_evolve_runtime.nexus.search_kernel.fingerprints import candidate_materialized_artifact
+
+from .text_vector import lexical_similarity
 
 
 def novelty_distance(a: CandidateGenome, b: CandidateGenome) -> float:
     a_set = _descriptor_set(a)
     b_set = _descriptor_set(b)
-    if not a_set and not b_set:
-        return 0.0
-    return 1.0 - (len(a_set & b_set) / max(1, len(a_set | b_set)))
+    signals: list[float] = []
+    if a_set or b_set:
+        signals.append(1.0 - (len(a_set & b_set) / max(1, len(a_set | b_set))))
+    left_artifact = candidate_materialized_artifact(a)
+    right_artifact = candidate_materialized_artifact(b)
+    if left_artifact or right_artifact:
+        signals.append(1.0 - lexical_similarity(left_artifact, right_artifact))
+    return sum(signals) / len(signals) if signals else 0.0
 
 
 def population_novelty(candidate: CandidateGenome, population: list[CandidateGenome]) -> float:

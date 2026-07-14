@@ -19,6 +19,8 @@ def record_event(
     retry_history: list[dict[str, Any]] | None = None,
     governor: dict[str, Any] | None = None,
     error_type: str | None = None,
+    cache_replayed: bool = False,
+    physical_call_id: str = "",
 ) -> None:
     usage = usage or {}
     event = {
@@ -42,4 +44,8 @@ def record_event(
         event["governor"] = governor
     if error_type:
         event["error_type"] = error_type
+    if physical_call_id:
+        event["physical_call_id"] = physical_call_id
+    if cache_replayed:
+        event["cache_replayed"] = True
     current_llm_session().record(event)

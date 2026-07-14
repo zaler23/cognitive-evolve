@@ -441,6 +441,10 @@ class StructuredModelAdapter(StructuredModelAdapterCore):
             "contract": contract,
             "policy": policy,
             "archives": archives,
+            "comparison_protocol": {
+                "mechanism_summary": "Extract no more than three mechanism points per candidate before comparing.",
+                "length_signal": "Artifact length and verbosity are not quality signals.",
+            },
         }
         controls = self.metadata.get("prompt_context_controls")
         if isinstance(controls, dict) and controls:

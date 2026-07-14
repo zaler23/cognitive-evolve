@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import math
 import hashlib
+import os
 import uuid
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -20,9 +21,13 @@ from cognitive_evolve_runtime.contracts.objective_contract import (
 from cognitive_evolve_runtime.inputs.project_map import ProjectWorldModel
 from cognitive_evolve_runtime.inputs.project_snapshot import ProjectSnapshot
 from cognitive_evolve_runtime.inputs.text_packet import TextInputPacket, TextWorldModel
+from cognitive_evolve_runtime.durable.async_writer import WriteBehindObserver
+from cognitive_evolve_runtime.durable.resume_assembly import restore_archives, restore_budget, restore_mode_specific, restore_population
+from cognitive_evolve_runtime.llm.call_ledger import ledger_summary
+from cognitive_evolve_runtime.llm.session import current_llm_session
 from cognitive_evolve_runtime.nexus.context_protocol import ContextOrchestrator
 from cognitive_evolve_runtime.nexus.live_store import LiveNexusStore
-from cognitive_evolve_runtime.nexus.budget_factory import evolution_budget_from_params, resume_evolution_budget
+from cognitive_evolve_runtime.nexus.budget_factory import evolution_budget_from_params
 from cognitive_evolve_runtime.nexus.loop import EvolutionBudget, EvolutionLoopResult, evolve_once, seed_population
 from cognitive_evolve_runtime.nexus.model_adapter import StructuredModelAdapter
 from cognitive_evolve_runtime.nexus.model_routes import NexusModelRole, NexusModelRoutes, coerce_model_routes
@@ -132,6 +137,7 @@ class NexusRuntime:
         initial_candidates: list[CandidateGenome | dict[str, Any]] | None = None,
     ) -> NexusRunResult:
         with capture_fallback_events() as fallback_events:
+            self._bind_llm_artifact_scope()
             runtime_options = resolve_runtime_options(request_options={"seed.family_priority_source": "model_authored_search_space"})
             packet = TextInputPacket.from_text(text)
             world = _build_text_world_model(packet, model=self.model)
@@ -146,6 +152,7 @@ class NexusRuntime:
             )
             provided_context = _text_provided_context(contract, initial_candidates=initial_candidates)
             policy = self.policy_builder.build(contract=contract, world=world, model=self.model)
+            _apply_search_mechanics(policy, runtime_options)
             budget = budget or evolution_budget_from_params(
                 max_rounds=max_rounds,
                 branch_factor=branch_factor,
@@ -166,7 +173,7 @@ class NexusRuntime:
             )
             archives = ArchiveManager(policy.archive_schema)
             world_payload = _world_to_dict_with_latent_metadata(world, contract)
-            observer = self._live_observer(mode="text", contract=contract, world=world_payload, max_rounds=budget.max_rounds, budget=budget.to_dict())
+            observer = self._live_observer(mode="text", contract=contract, world=world_payload, max_rounds=budget.max_rounds, budget=budget.to_dict(), runtime_options=runtime_options)
             if observer is not None:
                 observer({"phase": "post_seeding", "round": 0, "population": population, "archives": archives, "policy": policy, "progress_event": {"type": "nexus_post_seeding_checkpoint", "round": 0, "phase": "post_seeding", "max_rounds": budget.max_rounds}, "runtime_options": runtime_options})
             verification_plan = VerificationSynthesizer(model=self.model).synthesize({"goal": goal, "contract": contract.to_dict()})
@@ -201,6 +208,7 @@ class NexusRuntime:
                 run.evolution["prompt_view_metadata"] = prompt_metadata
             _sync_runtime_round_metadata(run.evolution, result)
             _attach_fallback_events(run.evolution, fallback_events)
+            _attach_limit_pressure(run.evolution, observer)
             run.artifacts = self._persist(run, result, contract=contract, world=world_payload, budget_history=result.budget_history, budget=budget, runtime_options=runtime_options)
             return run
 
@@ -220,6 +228,7 @@ class NexusRuntime:
         cancellation_callback: Any | None = None,
     ) -> NexusRunResult:
         with capture_fallback_events() as fallback_events:
+            self._bind_llm_artifact_scope()
             runtime_options = resolve_runtime_options(request_options={"verification.include_tests": bool(include_tests), "seed.family_priority_source": "model_authored_search_space"})
             snapshot = ProjectSnapshot.from_path(root)
             world = ProjectWorldModel.from_snapshot(snapshot, objective=user_goal)
@@ -233,6 +242,7 @@ class NexusRuntime:
             )
             _enable_project_latent_exploration(contract)
             policy = self.policy_builder.build(contract=contract, world=world, model=self.model)
+            _apply_search_mechanics(policy, runtime_options)
             budget = budget or evolution_budget_from_params(
                 max_rounds=max_rounds,
                 branch_factor=branch_factor,
@@ -276,7 +286,7 @@ class NexusRuntime:
                 provided_context=initial_context_result.to_source_context(),
             )
             project_world_payload = _world_to_dict_with_latent_metadata({"snapshot": snapshot.to_dict(), "project_world_model": world.to_dict()}, contract)
-            observer = self._live_observer(mode="project", contract=contract, world=project_world_payload, max_rounds=budget.max_rounds, budget=budget.to_dict())
+            observer = self._live_observer(mode="project", contract=contract, world=project_world_payload, max_rounds=budget.max_rounds, budget=budget.to_dict(), runtime_options=runtime_options)
             if observer is not None:
                 observer({"phase": "post_seeding", "round": 0, "population": population, "archives": archives, "policy": policy, "progress_event": {"type": "nexus_post_seeding_checkpoint", "round": 0, "phase": "post_seeding", "max_rounds": budget.max_rounds}, "runtime_options": runtime_options})
             verification_plan = VerificationSynthesizer(model=self.model).synthesize({"goal": user_goal, "contract": contract.to_dict(), "mode": "project"})
@@ -333,11 +343,13 @@ class NexusRuntime:
                 run.evolution["prompt_view_metadata"] = prompt_metadata
             _sync_runtime_round_metadata(run.evolution, result)
             _attach_fallback_events(run.evolution, fallback_events)
+            _attach_limit_pressure(run.evolution, observer)
             run.artifacts = self._persist(run, result, contract=contract, world=project_world_payload, budget_history=result.budget_history, budget=budget, runtime_options=runtime_options)
             return run
 
     def resume_from_checkpoint(self, *, max_rounds: int | None = None) -> NexusRunResult:
         with capture_fallback_events() as fallback_events:
+            self._bind_llm_artifact_scope()
             if self.output_dir is None:
                 raise ValueError("resume_from_checkpoint requires output_dir")
             with snapshot_reader(self.output_dir) as snapshot_root:
@@ -356,10 +368,12 @@ class NexusRuntime:
                     payload = json.loads(run_result_path.read_text(encoding="utf-8"))
                     return NexusRunResult(**payload)
             runtime_options = restore_runtime_options(persisted=restored.get("runtime_options") or getattr(checkpoint, "runtime_options", {}), overrides={})
-            mode = str(restored.get("mode") or checkpoint.mode or "text")
-            population = restored["population"]
-            archives = restored["archives"]
+            _restore_legacy_search_mechanics(runtime_options)
+            mode = restore_mode_specific(restored, checkpoint)
+            population = restore_population(restored)
+            archives = restore_archives(restored)
             policy = restored["policy"]
+            _apply_search_mechanics(policy, runtime_options)
             contract = _contract_from_checkpoint(mode, restored.get("contract") or {})
             if mode == "project":
                 _enable_project_latent_exploration(contract)
@@ -421,23 +435,8 @@ class NexusRuntime:
                     **restored_context,
                     **_text_provided_context(contract, initial_candidates=initial_candidates),
                 }
-            adaptive_resume = bool(budget_data.get("adaptive"))
-            if max_rounds is not None:
-                target_rounds = max(int(max_rounds), int(checkpoint.round or 0) + 1)
-            elif adaptive_resume:
-                previous_limit = int(budget_data.get("round_safety_limit") or checkpoint.max_rounds or 1)
-                safety_window = max(1, previous_limit)
-                target_rounds = int(checkpoint.round or 0) + safety_window
-            else:
-                target_rounds = max(int(checkpoint.max_rounds or checkpoint.round or 1), int(checkpoint.round or 0))
-            budget = resume_evolution_budget(
-                checkpoint_round=checkpoint.round,
-                checkpoint_max_rounds=checkpoint.max_rounds,
-                budget_data=budget_data,
-                max_rounds=max_rounds,
-            )
-            budget.max_rounds = target_rounds
-            budget.history = list(restored.get("budget_history") or [])
+            budget = restore_budget(restored, checkpoint, max_rounds=max_rounds)
+            target_rounds = budget.max_rounds
             seed_harvest = policy.metadata.get("seed_harvest", {}) if isinstance(policy.metadata, dict) else {}
             seed_failure = seed_harvest.get("fatal_model_error") or seed_harvest.get("model_error")
             seed_model = self.model_routes.model_for(NexusModelRole.SEED)
@@ -451,7 +450,7 @@ class NexusRuntime:
                     provided_context=provided_context,
                 )
             verification_plan = _verification_plan_from_restored(restored, contract=contract, mode=mode, model=self.model)
-            observer = self._live_observer(mode=mode, contract=contract, world=world, max_rounds=target_rounds, budget=budget.to_dict())
+            observer = self._live_observer(mode=mode, contract=contract, world=world, max_rounds=target_rounds, budget=budget.to_dict(), runtime_options=runtime_options)
             result = evolve_once(
                 population=population,
                 archives=archives,
@@ -485,13 +484,31 @@ class NexusRuntime:
             run.evolution.setdefault("runtime_metadata", {})["model_routes"] = self.model_routes.public_summary()
             _sync_runtime_round_metadata(run.evolution, result)
             _attach_fallback_events(run.evolution, fallback_events)
+            _attach_limit_pressure(run.evolution, observer)
             run.artifacts = self._persist(run, result, contract=contract, world=world_payload, budget_history=budget.history, budget=budget, runtime_options=runtime_options)
             return run
 
-    def _live_observer(self, *, mode: str, contract: Any, world: Any, max_rounds: int, budget: dict[str, Any] | None = None) -> Any | None:
+    def _live_observer(self, *, mode: str, contract: Any, world: Any, max_rounds: int, budget: dict[str, Any] | None = None, runtime_options: dict[str, Any] | None = None) -> Any | None:
         if self.output_dir is None:
             return None
-        return LiveNexusStore(self.output_dir, mode=mode, contract=contract, world=world, max_rounds=max_rounds, budget=budget)
+        store = LiveNexusStore(self.output_dir, mode=mode, contract=contract, world=world, max_rounds=max_rounds, budget=budget, runtime_options=runtime_options)
+        persistence_mode = str(dict(runtime_options or {}).get("persistence.mode") or os.environ.get("COGEV_PERSISTENCE_MODE") or "async_full").strip().lower()
+        if persistence_mode == "async_full":
+            return WriteBehindObserver(store)
+        if persistence_mode == "sync_full":
+            return store
+        raise ValueError("COGEV_PERSISTENCE_MODE must be async_full or sync_full")
+
+    def _bind_llm_artifact_scope(self) -> None:
+        if self.output_dir is None:
+            return
+        session = current_llm_session()
+        session.response_dir = str(self.output_dir)
+        if not session.run_id:
+            configured = str(os.environ.get("COGEV_RUN_ID") or "").strip()
+            session.run_id = configured or "nexus-" + hashlib.sha256(
+                str(self.output_dir.expanduser().resolve()).encode("utf-8")
+            ).hexdigest()[:20]
 
     def _verify_project_population(self, snapshot: ProjectSnapshot, candidates: list[Any], *, include_tests: bool = False, contract: Any | None = None, applied_overlays: dict[str, Any] | None = None) -> list[ProjectVerificationSummary]:
         verification_context = _verification_context(contract=contract, applied_overlays=applied_overlays)
@@ -524,6 +541,28 @@ def _enable_project_latent_exploration(contract: NexusObjectiveContract) -> None
     metadata = contract.metadata if isinstance(contract.metadata, dict) else {}
     metadata["latent_objective_enabled"] = True
     contract.metadata = metadata
+
+
+def _apply_search_mechanics(policy: EvolutionPolicy, runtime_options: dict[str, Any]) -> None:
+    metadata = policy.metadata if isinstance(policy.metadata, dict) else {}
+    metadata["offspring_parallel_mode"] = str(runtime_options["search.offspring_parallel_mode"])
+    policy.metadata = metadata
+
+
+def _restore_legacy_search_mechanics(runtime_options: dict[str, Any]) -> None:
+    missing_offspring_mode = "search.offspring_parallel_mode" not in runtime_options
+    missing_persistence_mode = "persistence.mode" not in runtime_options
+    if not (missing_offspring_mode or missing_persistence_mode):
+        return
+    sources = dict(runtime_options.get("_sources") or {})
+    if missing_offspring_mode:
+        runtime_options["search.offspring_parallel_mode"] = "single_batch"
+        sources["search.offspring_parallel_mode"] = "legacy_checkpoint_default"
+    if missing_persistence_mode:
+        runtime_options["persistence.mode"] = "sync_full"
+        sources["persistence.mode"] = "legacy_checkpoint_default"
+    runtime_options["legacy_mechanics_restored"] = True
+    runtime_options["_sources"] = sources
 
 
 def _resolve_budget_width_from_policy(budget: EvolutionBudget, policy: EvolutionPolicy) -> None:
@@ -667,6 +706,45 @@ def _attach_fallback_events(evolution: dict[str, Any], events: list[dict[str, st
     sanitized = [dict(event) for event in events if isinstance(event, dict)]
     evolution["fallback_events"] = sanitized
     evolution["fallback_event_count"] = len(sanitized)
+
+
+def _attach_limit_pressure(evolution: dict[str, Any], observer: Any | None) -> None:
+    events = current_llm_session().snapshot()
+    physical_ids = {str(event.get("physical_call_id")) for event in events if str(event.get("physical_call_id") or "")}
+    physical_without_id = sum(
+        1
+        for event in events
+        if not event.get("physical_call_id") and event.get("cache_replayed") is not True
+    )
+    pressure: dict[str, Any] = dict(evolution.get("limit_pressure") or {})
+    pressure.update(
+        {
+            "provider_calls": len(physical_ids) + physical_without_id,
+            "model_boundary_errors": sum(1 for event in events if event.get("error_type")),
+            "cache_replayed": sum(1 for event in events if event.get("cache_replayed") is True),
+        }
+    )
+    harvest_raw = 0
+    harvest_accepted = 0
+    for record in evolution.get("budget_history", []) if isinstance(evolution.get("budget_history"), list) else []:
+        plan = record.get("generation_plan") if isinstance(record, dict) and isinstance(record.get("generation_plan"), dict) else {}
+        harvest = plan.get("offspring_harvest") if isinstance(plan.get("offspring_harvest"), dict) else {}
+        accepted = int(harvest.get("accepted_count") or 0)
+        rejected = int(harvest.get("rejected_count") or 0)
+        harvest_accepted += accepted
+        harvest_raw += accepted + rejected
+        slot_errors = harvest.get("slot_errors") if isinstance(harvest.get("slot_errors"), list) else []
+        pressure["model_boundary_errors"] += len(slot_errors)
+    error = evolution.get("error") if isinstance(evolution.get("error"), dict) else {}
+    if error and str(error.get("type") or "").endswith(("LLMResponseError", "ModelResponseSchemaError", "LLMConfigurationError")):
+        pressure["model_boundary_errors"] += 1
+    pressure["harvest_raw"] = harvest_raw
+    pressure["harvest_accepted"] = harvest_accepted
+    ledger = ledger_summary()
+    pressure["max_observed_concurrent_calls"] = int(ledger.get("max_observed_concurrent_calls") or 0)
+    if observer is not None and hasattr(observer, "telemetry"):
+        pressure.update(observer.telemetry())
+    evolution["limit_pressure"] = pressure
 
 def _sync_runtime_round_metadata(evolution: dict[str, Any], result: EvolutionLoopResult) -> None:
     metadata = dict(evolution.get("runtime_metadata") or {})

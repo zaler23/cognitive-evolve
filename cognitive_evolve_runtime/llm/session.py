@@ -18,6 +18,7 @@ class LLMSession:
     budget_call_lock: threading.Lock = field(default_factory=threading.Lock)
     run_id: str | None = None
     journal_dir: str | None = None
+    response_dir: str | None = None
     call_ledger_path: str | None = None
     budget_reservation_usd: float = 0.0
 
@@ -34,12 +35,22 @@ class LLMSession:
             return list(self.events)
 
     def total_estimated_cost_usd(self) -> float:
-        return round(sum(float(event.get("estimated_cost_usd") or 0.0) for event in self.snapshot()), 6)
+        total = 0.0
+        seen_physical: set[str] = set()
+        for event in self.snapshot():
+            physical_call_id = str(event.get("physical_call_id") or "")
+            if physical_call_id and physical_call_id in seen_physical:
+                continue
+            if physical_call_id:
+                seen_physical.add(physical_call_id)
+            total += float(event.get("estimated_cost_usd") or 0.0)
+        return round(total, 6)
 
 
 _DEFAULT_SESSION = LLMSession(EVENTS)
 _CURRENT_SESSION: ContextVar[LLMSession | None] = ContextVar("cogev_llm_session", default=None)
 _LAST_RETRY_HISTORY: ContextVar[list[dict[str, Any]]] = ContextVar("cogev_llm_retry_history", default=[])
+_LOGICAL_CALL: ContextVar[tuple[str, str] | None] = ContextVar("cogev_llm_logical_call", default=None)
 
 
 def current_llm_session() -> LLMSession:
@@ -58,3 +69,18 @@ def llm_session(session: LLMSession | None = None) -> Iterator[LLMSession]:
 
 def reset_llm_events() -> None:
     current_llm_session().clear()
+
+
+@contextmanager
+def logical_llm_call(logical_call_id: str, *, template_version: str = "") -> Iterator[None]:
+    """Bind one runtime-authored logical call identity to nested transport work."""
+
+    token = _LOGICAL_CALL.set((str(logical_call_id), str(template_version)))
+    try:
+        yield
+    finally:
+        _LOGICAL_CALL.reset(token)
+
+
+def current_logical_llm_call() -> tuple[str, str] | None:
+    return _LOGICAL_CALL.get()

@@ -93,6 +93,16 @@ class PatchSandbox:
         return candidate_id, target
 
     def _apply_locked(self, candidate: CandidateGenome) -> PatchApplicationResult:
+        preflight_diagnostics, preflight_files = self._preflight_candidate(candidate)
+        if preflight_diagnostics:
+            result = PatchApplicationResult(
+                status="failed",
+                diagnostics=preflight_diagnostics,
+                failed_files=preflight_files,
+                sandbox_path="",
+            )
+            setattr(candidate, "patch_application_result", result.to_dict())
+            return result
         sandbox = self.prepare(candidate.id)
         pre_hash = _sandbox_tree_hash(sandbox)
         applied: list[str] = []
@@ -137,6 +147,42 @@ class PatchSandbox:
         )
         setattr(candidate, "patch_application_result", result.to_dict())
         return result
+
+    def _preflight_candidate(self, candidate: CandidateGenome) -> tuple[list[str], list[str]]:
+        diagnostics: list[str] = []
+        failed_files: list[str] = []
+        patch_set = list(getattr(candidate, "patch_set", []) or [])
+        for operation in patch_set:
+            path = str(operation.path or "")
+            scope_error = _patch_scope_error(path, self.allowed_patch_scope)
+            if scope_error:
+                diagnostics.append(scope_error)
+                failed_files.append(path)
+            elif _source_path_uses_symlink(self.source_root, path):
+                diagnostics.append(f"unsafe source symlink in patch path: {path}")
+                failed_files.append(path)
+        if patch_set:
+            return diagnostics, failed_files
+        patch_text = _generic_unified_patch_text(candidate)
+        if not patch_text:
+            return diagnostics, failed_files
+        repaired, _notes = _repair_unified_patch_text(patch_text)
+        preflight = preflight_unified_patch(repaired)
+        strip = _strip_level_for_unified_patch(repaired)
+        patch_files = _paths_from_unified_patch(repaired, strip=strip)
+        if not preflight["ok"]:
+            diagnostics.append("patch_preflight_failed:" + ";".join(preflight["diagnostics"]))
+            failed_files.extend(patch_files)
+            return diagnostics, failed_files
+        for path in patch_files:
+            scope_error = _patch_scope_error(path, self.allowed_patch_scope)
+            if scope_error:
+                diagnostics.append(scope_error)
+                failed_files.append(path)
+            elif _source_path_uses_symlink(self.source_root, path):
+                diagnostics.append(f"unsafe source symlink in patch path: {path}")
+                failed_files.append(path)
+        return diagnostics, failed_files
 
     def _apply_operation(self, sandbox: Path, op: PatchOperation) -> tuple[bool, str]:
         scope_error = _patch_scope_error(op.path, self.allowed_patch_scope)

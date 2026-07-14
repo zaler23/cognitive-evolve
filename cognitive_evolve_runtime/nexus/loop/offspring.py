@@ -9,7 +9,9 @@ from cognitive_evolve_runtime.candidates.crossover import crossover, neighborhoo
 from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome, candidate_from_dict
 from cognitive_evolve_runtime.candidates.mutation import MutationEngine, MutationOperator, MutationPlan, MutationPlanner
 from cognitive_evolve_runtime.contracts.objective_contract import NexusObjectiveContract
-from cognitive_evolve_runtime.nexus._serde import coerce_str_list
+from cognitive_evolve_runtime.nexus._serde import coerce_str_list, stable_hash
+from cognitive_evolve_runtime.llm.fanout import run_ordered_fanout
+from cognitive_evolve_runtime.llm.session import logical_llm_call
 from cognitive_evolve_runtime.nexus.diagnosis import SearchDiagnosis
 from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy
 from cognitive_evolve_runtime.nexus.protocols import NexusModelLike, NexusMutationPlannerModelProtocol, NexusOffspringModelProtocol
@@ -189,6 +191,28 @@ def _generate_offspring(
         )
     if not isinstance(model, NexusOffspringModelProtocol):
         raise LLMConfigurationError("configured model does not implement NexusOffspringModelProtocol")
+    branch_slots = _branch_slots_from_plans(plans)
+    policy_metadata = policy.metadata if isinstance(policy.metadata, dict) else {}
+    mode = str(
+        policy_metadata.get("offspring_parallel_mode")
+        or os.environ.get("COGEV_OFFSPRING_PARALLEL_MODE")
+        or "slot"
+    ).strip().lower()
+    if mode not in {"slot", "single_batch"}:
+        raise ValueError("COGEV_OFFSPRING_PARALLEL_MODE must be slot or single_batch")
+    if branch_slots and mode == "slot":
+        return _generate_slot_offspring(
+            model=model,
+            parents=parents,
+            plans=plans,
+            branch_slots=branch_slots,
+            world=world,
+            contract=contract,
+            policy=policy,
+            candidate_pool=candidate_pool or [],
+            provided_context=provided_context,
+            harvest_outcome=harvest_outcome,
+        )
     harvest_error: Exception | None = None
     saw_model_items = False
     target = max(1, int(target_size or len(plans) or 1))
@@ -271,6 +295,99 @@ def _generate_offspring(
             harvest_outcome["status"] = "duplicate_exhausted"
         return []
     raise ModelResponseSchemaError("nexus_generate_offspring returned no valid offspring")
+
+
+def _generate_slot_offspring(
+    *,
+    model: NexusOffspringModelProtocol,
+    parents: list[CandidateGenome],
+    plans: list[MutationPlan],
+    branch_slots: list[dict[str, Any]],
+    world: Any,
+    contract: NexusObjectiveContract,
+    policy: EvolutionPolicy,
+    candidate_pool: list[CandidateGenome],
+    provided_context: dict[str, Any] | None,
+    harvest_outcome: dict[str, Any] | None,
+) -> list[CandidateGenome]:
+    parent_by_id = {parent.id: parent for parent in parents}
+    source_plan = plans[0]
+    parent_plan_id = str((source_plan.metadata or {}).get("plan_id") or "runtime-lineage-envelope")
+
+    def _request_slot(slot: dict[str, Any]) -> tuple[CandidateGenome | None, Exception | None]:
+        slot_id = str(slot["slot_id"])
+        parent_id = str(slot["parent_id"])
+        parent = parent_by_id[parent_id]
+        slot_plan_id = stable_hash({"parent_plan_id": parent_plan_id, "slot_id": slot_id})[:20]
+        slot_metadata = {
+            **dict(source_plan.metadata or {}),
+            "parent_plan_id": parent_plan_id,
+            "plan_id": slot_plan_id,
+            "branch_slots": [dict(slot)],
+        }
+        slot_plan = MutationPlan.from_dict(
+            {
+                **source_plan.to_dict(),
+                "parent_ids": [parent_id],
+                "metadata": slot_metadata,
+            }
+        )
+        slot_policy = EvolutionPolicy.from_dict(policy.to_dict())
+        slot_policy.metadata["requested_candidate_count"] = 1
+        slot_policy.metadata["offspring_slot_id"] = slot_id
+        try:
+            with logical_llm_call(f"{parent_plan_id}/{slot_id}"):
+                raw = call_with_optional_context(
+                    model.generate_offspring,
+                    plans=[slot_plan],
+                    parents=[parent],
+                    world=world,
+                    contract=contract,
+                    policy=slot_policy,
+                    provided_context=provided_context,
+                )
+            raw_items = list(raw or [])
+            if len(raw_items) != 1 or not isinstance(raw_items[0], (CandidateGenome, dict)):
+                raise ModelResponseSchemaError(f"offspring slot {slot_id} must return exactly one candidate")
+            candidate = _candidate_from_model_offspring(raw_items[0])
+            _merge_plan_metadata_into_model_offspring([candidate], [slot_plan], [parent])
+            return candidate, None
+        except MODEL_BOUNDARY_ERRORS as exc:
+            return None, exc
+
+    slot_results = run_ordered_fanout(branch_slots, _request_slot, thread_name_prefix="cogev-offspring-slot")
+    successful = [candidate for candidate, error in slot_results if candidate is not None and error is None]
+    errors = [error for candidate, error in slot_results if candidate is None and error is not None]
+    if not successful:
+        raise errors[0]
+
+    existing_candidates = list(candidate_pool)
+    existing_ids = {candidate.id for candidate in existing_candidates}
+    existing_candidates.extend(parent for parent in parents if parent.id not in existing_ids)
+    harvester = CandidateHarvester(
+        deduper=CandidateDeduper(existing_candidates),
+        policy=HarvestPolicy(
+            target_size=len(successful),
+            max_batches=1,
+            min_batches=1,
+            relevance_floor=0.15,
+            stage="offspring",
+            fanout_workers=1,
+        ),
+    )
+    result = harvester.harvest(
+        request_batch=lambda _batch, _accepted, _rejected: list(successful),
+        context={"contract": contract, "policy": policy, "world": world},
+    )
+    if harvest_outcome is not None:
+        harvest_outcome.update(result.to_dict())
+        harvest_outcome["status"] = "accepted" if result.accepted else "duplicate_exhausted"
+        harvest_outcome["slot_errors"] = [f"{error.__class__.__name__}: {error}" for error in errors]
+    if errors:
+        summary = "; ".join(f"{error.__class__.__name__}: {error}" for error in errors)
+        for candidate in result.accepted:
+            candidate.metadata["partial_model_offspring_error"] = summary
+    return list(result.accepted)
 
 
 def _deterministic_fallback_offspring(
@@ -629,6 +746,10 @@ def _bind_branch_slot(
     metadata["branch_slot_parent_id"] = str(selected.get("parent_id") or "")
     metadata["branch_intent"] = str(selected.get("intent") or "")
     metadata["branch_slot_binding_status"] = "bound"
+    if selected.get("island_id") is not None:
+        if "island_id" in metadata and metadata.get("island_id") != selected.get("island_id"):
+            metadata["model_claimed_island_id"] = metadata.get("island_id")
+        metadata["island_id"] = int(selected["island_id"])
     directive = selected.get("directive") if isinstance(selected.get("directive"), dict) else {}
     if directive:
         metadata["branch_slot_directive"] = dict(directive)

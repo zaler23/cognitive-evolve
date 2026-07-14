@@ -179,10 +179,11 @@ class NexusPersistenceService:
         if selected_candidate is not None:
             artifacts["external_review_bundle"] = self._artifact_ref(external_review_bundle_path)
             llm_events = current_llm_session().snapshot()
-            token_events = [event for event in llm_events if isinstance(event.get("usage"), dict) and event.get("usage")]
+            physical_events = _physical_llm_events(llm_events)
+            token_events = [event for event in physical_events if isinstance(event.get("usage"), dict) and event.get("usage")]
             declared_token_provenance = {str(event.get("usage_provenance") or "") for event in token_events}
             token_provenance = "provider_reported" if declared_token_provenance == {"provider_reported"} else "unavailable"
-            estimated_cost_events = [event for event in llm_events if event.get("estimated_cost_usd") is not None]
+            estimated_cost_events = [event for event in physical_events if event.get("estimated_cost_usd") is not None]
             usage = {
                 "rounds_completed": {"value": int(result.current_round or 0), "provenance": "authoritative", "source": "runtime_state"},
                 "telemetry_event_count": {"value": len(llm_events), "provenance": "authoritative", "source": "llm_session"},
@@ -456,6 +457,22 @@ def _adaptive_snapshot_writes(adaptive_state: dict[str, Any], final_certificate:
 def _challenge_events_jsonl(challenge_memory: dict[str, Any]) -> str:
     items = dict(challenge_memory.get("items") or {})
     return "".join(json.dumps(item, ensure_ascii=False, sort_keys=True, default=str) + "\n" for item in items.values() if isinstance(item, dict))
+
+
+def _physical_llm_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Keep one accounting record per durable physical response."""
+
+    by_physical_id: dict[str, dict[str, Any]] = {}
+    without_identity: list[dict[str, Any]] = []
+    for event in events:
+        physical_call_id = str(event.get("physical_call_id") or "")
+        if not physical_call_id:
+            without_identity.append(event)
+            continue
+        current = by_physical_id.get(physical_call_id)
+        if current is None or (event.get("cache_replayed") is not True and current.get("cache_replayed") is True):
+            by_physical_id[physical_call_id] = event
+    return [*without_identity, *by_physical_id.values()]
 
 
 __all__ = [

@@ -135,6 +135,36 @@ class _FanoutOffspringModel:
             self.probe.exit()
 
 
+class _SlotOffspringModel:
+    def __init__(self, probe: _ConcurrencyProbe, failures: set[str] | None = None) -> None:
+        self.probe = probe
+        self.failures = failures or set()
+        self.calls: list[str] = []
+
+    def generate_offspring(self, *, plans: list[MutationPlan], parents: list[CandidateGenome], world: Any, contract: Any, policy: EvolutionPolicy) -> list[dict[str, Any]]:
+        assert len(plans) == 1
+        assert len(plans[0].metadata["branch_slots"]) == 1
+        assert policy.metadata["requested_candidate_count"] == 1
+        slot_id = str(plans[0].metadata["branch_slots"][0]["slot_id"])
+        self.calls.append(slot_id)
+        self.probe.enter()
+        try:
+            time.sleep(0.03)
+            if slot_id in self.failures:
+                raise LLMResponseError(f"failed {slot_id}")
+            return [
+                {
+                    "id": f"child-{slot_id}",
+                    "parent_ids": [parents[0].id],
+                    "artifact": f"artifact-{slot_id}",
+                    "concise_claim": slot_id,
+                    "core_mechanism": f"mechanism-{slot_id}",
+                }
+            ]
+        finally:
+            self.probe.exit()
+
+
 def _candidate(cid: str) -> CandidateGenome:
     return CandidateGenome(id=cid, artifact=f"artifact {cid}", concise_claim=f"claim {cid}", core_mechanism=f"mechanism {cid}")
 
@@ -359,6 +389,132 @@ def test_offspring_generation_uses_bounded_model_fanout(monkeypatch) -> None:
         {str(candidate.metadata.get("model_claimed_candidate_id") or "") for candidate in offspring}
     )
     assert len({candidate.id for candidate in offspring}) == len(offspring)
+
+
+def test_runtime_branch_slots_are_independent_ordered_model_calls(monkeypatch) -> None:
+    monkeypatch.setenv("COGEV_MODEL_FANOUT_CONCURRENCY", "3")
+    monkeypatch.delenv("COGEV_OFFSPRING_PARALLEL_MODE", raising=False)
+    probe = _ConcurrencyProbe()
+    parents = [_candidate(f"P{i}") for i in range(3)]
+    slots = [
+        {"slot_id": f"slot-{index}", "arm_id": parent.id, "parent_id": parent.id, "intent": "explore_fresh"}
+        for index, parent in enumerate(parents)
+    ]
+    plan = MutationPlan(
+        operator="ModelDirected",
+        parent_ids=[parent.id for parent in parents],
+        metadata={"plan_id": "runtime-plan", "plan_source": "runtime_lineage_envelope", "branch_slots": slots},
+    )
+    model = _SlotOffspringModel(probe)
+
+    offspring = _generate_offspring(
+        model=model,
+        mutation_engine=MutationEngine(),
+        parents=parents,
+        plans=[plan],
+        world=_World(),
+        contract=_Contract(),
+        policy=EvolutionPolicy(),
+        target_size=3,
+    )
+
+    assert probe.max_active > 1
+    assert sorted(model.calls) == ["slot-0", "slot-1", "slot-2"]
+    assert [candidate.metadata["branch_slot_id"] for candidate in offspring] == ["slot-0", "slot-1", "slot-2"]
+    assert [candidate.parent_ids for candidate in offspring] == [["P0"], ["P1"], ["P2"]]
+
+
+def test_runtime_branch_slots_keep_partial_success_without_batch_fallback(monkeypatch) -> None:
+    monkeypatch.setenv("COGEV_MODEL_FANOUT_CONCURRENCY", "3")
+    monkeypatch.delenv("COGEV_OFFSPRING_PARALLEL_MODE", raising=False)
+    probe = _ConcurrencyProbe()
+    parents = [_candidate(f"P{i}") for i in range(3)]
+    slots = [
+        {"slot_id": f"slot-{index}", "arm_id": parent.id, "parent_id": parent.id, "intent": "explore_fresh"}
+        for index, parent in enumerate(parents)
+    ]
+    plan = MutationPlan(
+        operator="ModelDirected",
+        parent_ids=[parent.id for parent in parents],
+        metadata={"plan_id": "runtime-plan", "plan_source": "runtime_lineage_envelope", "branch_slots": slots},
+    )
+    model = _SlotOffspringModel(probe, {"slot-1"})
+
+    offspring = _generate_offspring(
+        model=model,
+        mutation_engine=MutationEngine(),
+        parents=parents,
+        plans=[plan],
+        world=_World(),
+        contract=_Contract(),
+        policy=EvolutionPolicy(),
+        target_size=3,
+    )
+
+    assert sorted(model.calls) == ["slot-0", "slot-1", "slot-2"]
+    assert [candidate.metadata["branch_slot_id"] for candidate in offspring] == ["slot-0", "slot-2"]
+    assert all("failed slot-1" in candidate.metadata["partial_model_offspring_error"] for candidate in offspring)
+
+
+def test_runtime_branch_slots_all_model_errors_propagate_without_batch_fallback(monkeypatch) -> None:
+    monkeypatch.setenv("COGEV_MODEL_FANOUT_CONCURRENCY", "3")
+    probe = _ConcurrencyProbe()
+    parents = [_candidate("P0"), _candidate("P1")]
+    slots = [
+        {"slot_id": "slot-0", "arm_id": "P0", "parent_id": "P0"},
+        {"slot_id": "slot-1", "arm_id": "P1", "parent_id": "P1"},
+    ]
+    plan = MutationPlan(
+        operator="ModelDirected",
+        parent_ids=[parent.id for parent in parents],
+        metadata={"plan_id": "runtime-plan", "branch_slots": slots},
+    )
+    model = _SlotOffspringModel(probe, {"slot-0", "slot-1"})
+
+    with pytest.raises(LLMResponseError, match="failed slot-0"):
+        _generate_offspring(
+            model=model,
+            mutation_engine=MutationEngine(),
+            parents=parents,
+            plans=[plan],
+            world=_World(),
+            contract=_Contract(),
+            policy=EvolutionPolicy(),
+            candidate_pool=parents,
+            target_size=2,
+        )
+
+    assert sorted(model.calls) == ["slot-0", "slot-1"]
+
+
+def test_runtime_branch_slots_do_not_swallow_programming_errors(monkeypatch) -> None:
+    monkeypatch.setenv("COGEV_MODEL_FANOUT_CONCURRENCY", "2")
+    parent = _candidate("P0")
+    plan = MutationPlan(
+        operator="ModelDirected",
+        parent_ids=[parent.id],
+        metadata={
+            "plan_id": "runtime-plan",
+            "branch_slots": [{"slot_id": "slot-0", "arm_id": parent.id, "parent_id": parent.id}],
+        },
+    )
+
+    class BrokenModel:
+        def generate_offspring(self, **_kwargs):
+            raise RuntimeError("programming bug")
+
+    with pytest.raises(RuntimeError, match="programming bug"):
+        _generate_offspring(
+            model=BrokenModel(),
+            mutation_engine=MutationEngine(),
+            parents=[parent],
+            plans=[plan],
+            world=_World(),
+            contract=_Contract(),
+            policy=EvolutionPolicy(),
+            candidate_pool=[parent],
+            target_size=1,
+        )
 
 
 def test_model_offspring_merges_edge_lineage_by_parent_or_plan_not_modulo_index() -> None:

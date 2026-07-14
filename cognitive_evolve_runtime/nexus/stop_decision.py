@@ -18,6 +18,7 @@ from cognitive_evolve_runtime.nexus.stop_reasons import (
     DIMINISHING_RETURNS_CHECKPOINT,
     normalize_external_review_stop_reason,
 )
+from cognitive_evolve_runtime.nexus.loop.adaptive_stop import adaptive_stagnation_exhausted
 
 
 
@@ -34,6 +35,7 @@ class StopDecisionEngine:
         population: CandidatePopulation,
         model: NexusModelLike | None,
         contract: Any | None = None,
+        evolution_policy: Any | None = None,
     ) -> str:
         policy = str(getattr(budget, "stop_policy", "") or "llm_after_minimum").strip().lower()
         if policy == "route_incomplete_single_diagnostic":
@@ -42,6 +44,15 @@ class StopDecisionEngine:
             return ""
         if policy == "max_rounds":
             return ""
+        if adaptive_stagnation_exhausted(
+            adaptive=bool(getattr(budget, "adaptive", False)),
+            best_answer_id=best_answer_id,
+            history=[item for item in getattr(budget, "history", []) if isinstance(item, dict)],
+            diagnosis=diagnosis,
+            policy=evolution_policy,
+            candidates=population.candidates,
+        ):
+            return DIMINISHING_RETURNS_CHECKPOINT
         convergence_reason = self._self_observed_convergence(budget=budget, diagnosis=diagnosis, best_answer_id=best_answer_id)
         if convergence_reason:
             if normalize_external_review_stop_reason(convergence_reason):

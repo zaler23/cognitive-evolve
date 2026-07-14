@@ -4,6 +4,7 @@ import json
 import os
 import time
 import uuid
+from dataclasses import asdict
 from typing import Any
 
 from .budget import budget_reservation, enforce_budget
@@ -37,7 +38,8 @@ from .litellm_provider import LiteLLMProvider, litellm_provider_kwargs
 from .provider_interface import LLMProviderInterface
 from .model_spec import LLMModelSpec
 from .request_policy import LLMRequestPolicy
-from .session import _LAST_RETRY_HISTORY
+from .response_cache import load_response, response_signature, store_response
+from .session import _LAST_RETRY_HISTORY, current_llm_session, current_logical_llm_call
 from .telemetry import record_event
 from ..core.redaction import public_error_message
 
@@ -65,48 +67,6 @@ def _default_provider_for_status(status: dict[str, Any]) -> LLMProviderInterface
     if provider_id in {"direct_http", "http", "openai_http"}:
         return DirectHTTPProvider()
     return LiteLLMProvider()
-
-
-def _truncated_transport_content(*, request_type: str, schema_hint: dict[str, Any], prompt_bounds: dict[str, Any], bounded_request_text: str) -> str:
-    """Return valid JSON content that respects the configured prompt cap."""
-
-    limit = int(prompt_bounds.get("max_prompt_chars") or 0)
-    excerpt = bounded_request_text
-    while True:
-        content = json.dumps(
-            {
-                "request_type": request_type,
-                "schema_hint": schema_hint,
-                "payload": {
-                    "_transport_prompt_truncated": True,
-                    "_prompt_bounds": prompt_bounds,
-                    "bounded_request_excerpt": excerpt,
-                },
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-            default=str,
-        )
-        if limit <= 0 or len(content) <= limit:
-            return content
-        over = len(content) - limit
-        if len(excerpt) <= max(16, over + 16):
-            excerpt = excerpt[: max(0, len(excerpt) - over - 16)]
-            # If metadata alone exceeds the limit, return the smallest valid
-            # request object we can build.
-            if not excerpt:
-                return json.dumps(
-                    {
-                        "request_type": request_type,
-                        "schema_hint": schema_hint if len(json.dumps(schema_hint, ensure_ascii=False, default=str)) < max(64, limit // 2) else {},
-                        "payload": {"_transport_prompt_truncated": True, "original_chars": prompt_bounds.get("original_chars")},
-                    },
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    default=str,
-                )
-        else:
-            excerpt = excerpt[: max(0, len(excerpt) - over - 32)]
 
 
 def _result_message_content(result: Any) -> str:
@@ -187,6 +147,9 @@ def _budgeted_llm_json(request_type: str, payload: dict[str, Any], *, system: st
     enforce_budget(preflight=True)
     call_id = f"llm-{uuid.uuid4().hex}"
     started = time.time()
+    resolved_temperature = env_float(LLM_TEMPERATURE_ENV, 0.2)
+    resolved_seed = os.environ.get("COGEV_LLM_SEED")
+    resolved_max_tokens = max_tokens_for_request(request_type, request_policy)
     request_hash = stable_hash(
         {
             "request_type": request_type,
@@ -202,11 +165,93 @@ def _budgeted_llm_json(request_type: str, payload: dict[str, Any], *, system: st
         model=str(status.get("model") or status.get("fixture") or ""),
         prompt={"system": system, "payload": payload, "request_type": request_type},
         schema=schema_hint,
-        temperature=os.environ.get(LLM_TEMPERATURE_ENV),
-        seed=os.environ.get("COGEV_LLM_SEED"),
+        temperature=resolved_temperature,
+        seed=resolved_seed,
         contract_version=str((payload.get("contract") or payload.get("evaluation_contract") or {}).get("version", "unknown")) if isinstance(payload, dict) else "unknown",
         reasoning_effort=call_identity.reasoning_effort,
     )
+    logical_context = current_logical_llm_call()
+    run_id = str(current_llm_session().run_id or os.environ.get("COGEV_RUN_ID") or "run")
+    round_id = str(os.environ.get("COGEV_ROUND_ID") or "runtime")
+    logical_call_id = logical_context[0] if logical_context is not None else "/".join(
+        (
+            run_id,
+            round_id,
+            str(os.environ.get("COGEV_STEP_ID") or request_type),
+            request_hash,
+        )
+    )
+    template_version = logical_context[1] if logical_context is not None else ""
+    signature = response_signature(
+        {
+            "logical_call_id": logical_call_id,
+            "run_id": run_id,
+            "round_id": round_id,
+            "provider": call_identity.provider,
+            "model": call_identity.model,
+            "request_type": request_type,
+            "system": system,
+            "payload": payload,
+            "schema_hint": schema_hint,
+            "temperature": resolved_temperature,
+            "seed": resolved_seed,
+            "reasoning_effort": call_identity.reasoning_effort,
+            "max_tokens": resolved_max_tokens,
+            "request_policy": asdict(request_policy) if request_policy is not None else {},
+            "template_version": template_version,
+        }
+    )
+    cached = load_response(signature) if logical_context is not None else None
+    if cached is not None:
+        response = dict(cached["parsed_response"])
+        usage = dict(cached.get("usage") or {})
+        estimated_cost = cached.get("estimated_cost_usd")
+        physical_call_id = str(cached.get("physical_call_id") or "")
+        record_event(
+            request_type,
+            response,
+            status,
+            usage=usage,
+            usage_provenance="run_local_replay",
+            estimated_cost_usd=estimated_cost,
+            attempts=0,
+            governor=llm_governor_status(),
+            cache_replayed=True,
+            physical_call_id=physical_call_id,
+        )
+        write_llm_journal(
+            {
+                "call_id": call_id,
+                "physical_call_id": physical_call_id,
+                "logical_call_id": logical_call_id,
+                "response_signature": signature,
+                "run_id": os.environ.get("COGEV_RUN_ID", "run"),
+                "round_id": os.environ.get("COGEV_ROUND_ID", "runtime"),
+                "step_id": os.environ.get("COGEV_STEP_ID", request_type),
+                "provider": status.get("provider"),
+                "model": status.get("model") or status.get("fixture"),
+                "request_hash": request_hash,
+                "request_type": request_type,
+                "status": "cache_replayed",
+                "attempt": 0,
+                "started_at": started,
+                "ended_at": time.time(),
+                "usage": usage,
+                "estimated_cost_usd": estimated_cost,
+            },
+            parsed_response=response,
+        )
+        record_call_state(
+            "completed",
+            call_id=call_id,
+            request_type=request_type,
+            request_hash=request_hash,
+            round_id=os.environ.get("COGEV_ROUND_ID", "runtime"),
+            step_id=os.environ.get("COGEV_STEP_ID", request_type),
+            extra={"cache_replayed": True, "physical_call_id": physical_call_id, "logical_call_id": logical_call_id},
+        )
+        enforce_budget(preflight=False)
+        return response
     record_call_state(
         "started",
         call_id=call_id,
@@ -237,6 +282,20 @@ def _budgeted_llm_json(request_type: str, payload: dict[str, Any], *, system: st
         response = load_fixture_response(request_type, payload, str(status["fixture"]))
         response.setdefault("provider", "fixture")
         response.setdefault("model", "fixture")
+        if logical_context is not None:
+            store_response(
+                signature,
+                {
+                    "logical_call_id": logical_call_id,
+                    "physical_call_id": call_id,
+                    "request_hash": request_hash,
+                    "parsed_response": response,
+                    "raw_response": response,
+                    "response_digest": stable_hash(response),
+                    "usage": {},
+                    "estimated_cost_usd": 0.0,
+                },
+            )
         record_event(
             request_type,
             response,
@@ -244,6 +303,7 @@ def _budgeted_llm_json(request_type: str, payload: dict[str, Any], *, system: st
             attempts=1,
             usage_provenance="fixture",
             governor=llm_governor_status(),
+            physical_call_id=call_id,
         )
         enforce_budget(preflight=False)
         write_llm_journal({
@@ -298,23 +358,13 @@ def _budgeted_llm_json(request_type: str, payload: dict[str, Any], *, system: st
 
     request = {"request_type": request_type, "schema_hint": schema_hint, "payload": payload}
     request_text = json.dumps(request, ensure_ascii=False, sort_keys=True, default=str)
-    bounded_request_text, prompt_bounds = bounded_prompt_for_provider(
+    _, prompt_bounds = bounded_prompt_for_provider(
         request_text,
         max_chars=request_policy.max_prompt_chars if request_policy is not None else None,
     )
+    user_content = request_text
     if prompt_bounds.get("truncated"):
-        # Last-resort transport guard.  Nexus should normally send a compact
-        # prompt view well below this limit; if another caller accidentally
-        # builds a huge payload, keep the provider request bounded and valid
-        # JSON instead of silently sending a multi-megabyte prompt.
-        user_content = _truncated_transport_content(
-            request_type=request_type,
-            schema_hint=schema_hint,
-            prompt_bounds=prompt_bounds,
-            bounded_request_text=bounded_request_text,
-        )
-    else:
-        user_content = bounded_request_text
+        prompt_bounds["transport_action"] = "sent_full_request"
     messages = [
         {"role": "system", "content": system + "\nReturn only valid JSON."},
         {"role": "user", "content": user_content},
@@ -327,7 +377,7 @@ def _budgeted_llm_json(request_type: str, payload: dict[str, Any], *, system: st
     response: dict[str, Any] | None = None
     parse_error: Exception | None = None
     active_messages = list(messages)
-    active_max_tokens = max_tokens_for_request(request_type, request_policy)
+    active_max_tokens = resolved_max_tokens
     json_attempt = 0
     retry_history: list[dict[str, Any]] = []
     _LAST_RETRY_HISTORY.set([])
@@ -442,6 +492,20 @@ def _budgeted_llm_json(request_type: str, payload: dict[str, Any], *, system: st
     response.setdefault("provider", status["provider"])
     response.setdefault("model", status["model"])
     usage = usage_dict(result)
+    if logical_context is not None:
+        store_response(
+            signature,
+            {
+                "logical_call_id": logical_call_id,
+                "physical_call_id": call_id,
+                "request_hash": request_hash,
+                "parsed_response": response,
+                "raw_response": safe_json(result),
+                "response_digest": stable_hash(response),
+                "usage": usage,
+                "estimated_cost_usd": estimated_cost,
+            },
+        )
     breaker.record_success(call_identity.breaker_key)
     record_event(
         request_type,
@@ -453,6 +517,7 @@ def _budgeted_llm_json(request_type: str, payload: dict[str, Any], *, system: st
         attempts=attempts,
         retry_history=_LAST_RETRY_HISTORY.get([]),
         governor=llm_governor_status(),
+        physical_call_id=call_id,
     )
     write_llm_journal({
         "call_id": call_id,

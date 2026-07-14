@@ -332,7 +332,7 @@ def test_direct_parent_over_transport_cap_fails_instead_of_dropping_artifact(mon
         )
 
 
-def test_transport_applies_prompt_bound_before_provider(monkeypatch) -> None:
+def test_transport_preserves_complete_prompt_before_provider(monkeypatch) -> None:
     monkeypatch.setenv("COGEV_LLM_PROVIDER", "litellm")
     monkeypatch.setenv("COGEV_LLM_MODEL", "unit-test-model")
     monkeypatch.setenv("COGEV_LLM_MAX_PROMPT_CHARS", "1400")
@@ -360,8 +360,8 @@ def test_transport_applies_prompt_bound_before_provider(monkeypatch) -> None:
         "model": "unit-test-model",
     }
     user_message = provider.messages[1]["content"]
-    assert len(user_message) <= 1400
-    assert json.loads(user_message)["payload"]["_transport_prompt_truncated"] is True
+    assert len(user_message) > 1400
+    assert json.loads(user_message)["payload"]["blob"] == "Q" * 50_000
 
 
 def test_nexus_adapter_structurally_fits_to_transport_cap(monkeypatch) -> None:

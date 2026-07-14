@@ -11,6 +11,9 @@ from typing import Any, Mapping
 
 from cognitive_evolve_runtime.core.serialization import json_ready
 
+OFFSPRING_PARALLEL_MODES = frozenset({"slot", "single_batch"})
+PERSISTENCE_MODES = frozenset({"async_full", "sync_full"})
+
 
 def resolve_runtime_options(
     *,
@@ -25,6 +28,22 @@ def resolve_runtime_options(
     _set_default(options, sources, "context.provider", "repository-context", "default")
     _set_default(options, sources, "scheduler.policy", "fabric-default", "default")
     _set_default(options, sources, "seed.family_priority_source", "model_authored_search_space", "default")
+    _set_default(
+        options,
+        sources,
+        "search.offspring_parallel_mode",
+        str(env.get("COGEV_OFFSPRING_PARALLEL_MODE") or "slot").strip().lower(),
+        "environment:COGEV_OFFSPRING_PARALLEL_MODE" if "COGEV_OFFSPRING_PARALLEL_MODE" in env else "default",
+    )
+    _set_default(
+        options,
+        sources,
+        "persistence.mode",
+        str(env.get("COGEV_PERSISTENCE_MODE") or "async_full").strip().lower(),
+        "environment:COGEV_PERSISTENCE_MODE" if "COGEV_PERSISTENCE_MODE" in env else "default",
+    )
+    _validate_choice(options, "search.offspring_parallel_mode", OFFSPRING_PARALLEL_MODES)
+    _validate_choice(options, "persistence.mode", PERSISTENCE_MODES)
     if "COGEV_VERIFY_INCLUDE_TESTS" in env and "verification.include_tests" not in options:
         options["verification.include_tests"] = _env_bool(env.get("COGEV_VERIFY_INCLUDE_TESTS"))
         sources["verification.include_tests"] = "environment:COGEV_VERIFY_INCLUDE_TESTS"
@@ -65,6 +84,12 @@ def _set_default(options: dict[str, Any], sources: dict[str, Any], key: str, val
     if key not in options:
         options[key] = value
         sources.setdefault(key, source)
+
+
+def _validate_choice(options: Mapping[str, Any], key: str, allowed: frozenset[str]) -> None:
+    value = str(options.get(key) or "").strip().lower()
+    if value not in allowed:
+        raise ValueError(f"{key} must be one of: {', '.join(sorted(allowed))}")
 
 
 def _json_dict(value: Mapping[str, Any] | Any) -> dict[str, Any]:

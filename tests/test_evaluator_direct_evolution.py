@@ -54,8 +54,11 @@ class _DirectOnlyModel:
         assert plans[0].metadata["plan_source"] == "runtime_lineage_envelope"
         assert plans[0].metadata["completion_mode"] == "complete_task_artifact_only"
         requested = policy.metadata["requested_candidate_count"]
-        assert requested == 3
+        assert requested == 1
         assert len(plans[0].metadata["branch_slots"]) == requested
+        slot = plans[0].metadata["branch_slots"][0]
+        index = int(slot["variation_index"])
+        assert plans[0].parent_ids == [slot["parent_id"]]
         return [
             CandidateGenome(
                 id=f"child-{index}",
@@ -65,7 +68,6 @@ class _DirectOnlyModel:
                 concise_claim=f"candidate {index}",
                 core_mechanism=f"direct semantic mutation {index}",
             )
-            for index in range(requested)
         ]
 
 
@@ -143,7 +145,7 @@ def _apply_failed_external_evaluation(candidates: list[CandidateGenome], **_: An
     return [SimpleNamespace(passed=False) for _candidate in candidates]
 
 
-def test_external_evaluator_path_uses_one_direct_model_call_per_round(monkeypatch) -> None:
+def test_external_evaluator_path_uses_one_direct_model_call_per_slot(monkeypatch) -> None:
     monkeypatch.setenv("COGEV_MODEL_FANOUT_CONCURRENCY", "1")
     monkeypatch.setenv("COGEV_NEXUS_OFFSPRING_BATCH_LIMIT", "4")
     monkeypatch.setenv("COGEV_NEXUS_OFFSPRING_MIN_BATCHES", "4")
@@ -205,10 +207,10 @@ def test_external_evaluator_path_uses_one_direct_model_call_per_round(monkeypatc
     )
 
     assert stop_reason == ""
-    assert model.calls == ["generate_offspring"]
+    assert model.calls == ["generate_offspring"] * 3
     assert context_calls == [["parent"]]
     assert context_instructions[0].count("Branch intent:") == 3
-    assert model.provided_contexts[0]["slices"][0]["text"] == "ROUND-CONTEXT"
+    assert all(context["slices"][0]["text"] == "ROUND-CONTEXT" for context in model.provided_contexts)
     children = [candidate for candidate in population.candidates if candidate.artifact.get("source") == "parent"]
     assert len(children) == 3
     assert {candidate.metadata["model_claimed_candidate_id"] for candidate in children} == {"child-0", "child-1", "child-2"}
@@ -331,7 +333,7 @@ def test_full_evaluator_led_loop_calls_only_direct_offspring_model(monkeypatch) 
 
     result = controller.run()
 
-    assert model.calls == ["generate_offspring"]
+    assert model.calls == ["generate_offspring"] * 3
     assert result.interrupted is False
     children = sorted(
         (candidate for candidate in result.population.candidates if candidate.metadata.get("model_claimed_candidate_id", "").startswith("child-")),
@@ -355,6 +357,7 @@ def test_full_evaluator_led_loop_calls_only_direct_offspring_model(monkeypatch) 
 
 def test_schema_valid_empty_direct_offspring_continues_to_second_attempt(monkeypatch) -> None:
     monkeypatch.setenv("COGEV_MODEL_FANOUT_CONCURRENCY", "1")
+    monkeypatch.setenv("COGEV_OFFSPRING_PARALLEL_MODE", "single_batch")
     model = _AbstainingDirectModel()
     controller = EvolutionLoopController(
         population=CandidatePopulation(
@@ -405,6 +408,7 @@ def test_schema_valid_empty_direct_offspring_continues_to_second_attempt(monkeyp
 
 def test_schema_valid_empty_direct_offspring_without_incumbent_checkpoints(monkeypatch) -> None:
     monkeypatch.setenv("COGEV_MODEL_FANOUT_CONCURRENCY", "1")
+    monkeypatch.setenv("COGEV_OFFSPRING_PARALLEL_MODE", "single_batch")
     model = _AbstainingDirectModel()
     controller = EvolutionLoopController(
         population=CandidatePopulation(
@@ -451,6 +455,7 @@ def test_schema_valid_empty_direct_offspring_without_incumbent_checkpoints(monke
 
 def test_deduped_direct_output_is_not_an_empty_abstention(monkeypatch) -> None:
     monkeypatch.setenv("COGEV_MODEL_FANOUT_CONCURRENCY", "1")
+    monkeypatch.setenv("COGEV_OFFSPRING_PARALLEL_MODE", "single_batch")
     model = _CopyingDirectModel()
     controller = EvolutionLoopController(
         population=CandidatePopulation(
@@ -496,6 +501,7 @@ def test_deduped_direct_output_is_not_an_empty_abstention(monkeypatch) -> None:
 
 def test_model_claimed_identity_and_fate_are_normalized_before_next_evaluator(monkeypatch) -> None:
     monkeypatch.setenv("COGEV_MODEL_FANOUT_CONCURRENCY", "1")
+    monkeypatch.setenv("COGEV_OFFSPRING_PARALLEL_MODE", "single_batch")
     model = _SpoofingDirectModel()
     budget = EvolutionBudget(max_rounds=2, branch_factor=1, stop_policy="max_rounds")
     pipeline = EvolutionRound(model=model, budget=budget, adaptive=_evaluator_controller())

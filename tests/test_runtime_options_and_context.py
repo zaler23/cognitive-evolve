@@ -16,8 +16,8 @@ from cognitive_evolve_runtime.nexus.model_routes import NexusModelRoutes
 from cognitive_evolve_runtime.nexus.loop.seeding import _policy_for_seed_batch
 from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy
 from cognitive_evolve_runtime.nexus.prompt_view import build_prompt_view
-from cognitive_evolve_runtime.nexus.runtime import NexusRuntime, _build_text_world_model
-from cognitive_evolve_runtime.nexus.runtime_options import option_bool, restore_runtime_options
+from cognitive_evolve_runtime.nexus.runtime import NexusRuntime, _build_text_world_model, _restore_legacy_search_mechanics
+from cognitive_evolve_runtime.nexus.runtime_options import option_bool, resolve_runtime_options, restore_runtime_options
 from cognitive_evolve_runtime.persistence.checkpoint import CHECKPOINT_SCHEMA_VERSION, CheckpointStore, build_checkpoint_state
 from cognitive_evolve_runtime.inputs.text_packet import TextInputPacket
 
@@ -186,6 +186,23 @@ def test_checkpoint_roundtrips_runtime_options(tmp_path: Path) -> None:
     assert restored["runtime_options"]["verification.include_tests"] is True
     assert restore_runtime_options(persisted=restored["runtime_options"], overrides={"verification.include_tests": False})["verification.include_tests"] is False
     assert option_bool(restored["runtime_options"], "verification.include_tests") is True
+
+
+def test_search_mechanics_are_resolved_once_and_legacy_checkpoints_keep_old_modes() -> None:
+    options = resolve_runtime_options(
+        environment={
+            "COGEV_OFFSPRING_PARALLEL_MODE": "single_batch",
+            "COGEV_PERSISTENCE_MODE": "sync_full",
+        }
+    )
+    assert options["search.offspring_parallel_mode"] == "single_batch"
+    assert options["persistence.mode"] == "sync_full"
+
+    legacy: dict[str, object] = {}
+    _restore_legacy_search_mechanics(legacy)
+    assert legacy["search.offspring_parallel_mode"] == "single_batch"
+    assert legacy["persistence.mode"] == "sync_full"
+    assert legacy["legacy_mechanics_restored"] is True
 
 
 def test_checkpoint_schema_upgrades_legacy_and_rejects_future(tmp_path: Path) -> None:
