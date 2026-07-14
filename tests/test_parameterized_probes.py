@@ -63,7 +63,7 @@ def test_parameterized_probe_executes_fixed_json_assertions_and_keeps_pending_ca
         "survived",
         "counterexample",
         "pending_budget",
-    ]
+    ], observed["probe_results"]
     assert observed["survived_count"] == 1
     assert observed["counterexample_count"] == 1
     assert observed["pending_count"] == 1

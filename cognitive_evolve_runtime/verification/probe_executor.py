@@ -248,6 +248,8 @@ def _run_artifact_assertions(artifact: Any, probes: list[ProbeCase]) -> list[dic
         )
     if feedback.status != "passed":
         reason = "probe_harness_" + str(feedback.status or "error")
+        if feedback.diagnostics:
+            reason += ":" + "; ".join(feedback.diagnostics)
         return [_probe_result(probe, "unsupported", reason=reason) for probe in probes]
     try:
         payload = json.loads(feedback.raw_output_ref)
