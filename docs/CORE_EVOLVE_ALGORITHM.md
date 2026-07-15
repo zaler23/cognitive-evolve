@@ -113,9 +113,10 @@ manifest, the frozen task, and bounded evaluator feedback. It does not prescribe
 a named mutation operator: the model chooses the concrete semantic strategy and
 returns complete evaluator-visible artifact variants for the allocated slots.
 
-The complete slot manifest is requested in one normal generation batch. There
-is no sequential semantic top-up after duplicates or short output. A
-schema-valid empty batch is an explicit abstention: an already accepted
+The default `slot` mode requests one model response per allocated slot;
+explicit `single_batch` mode requests the complete slot manifest in one
+generation call. There is no sequential semantic top-up after duplicates or
+short output. A schema-valid empty batch is an explicit abstention: an already accepted
 preliminary incumbent may continue to the next registered round; without one,
 the run checkpoints. Provider, transport, and nonempty invalid-response errors
 remain explicit failures rather than activating a second generation path.

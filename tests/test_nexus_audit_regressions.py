@@ -226,18 +226,20 @@ def test_model_synthesis_failure_falls_back_to_reference_summary() -> None:
     assert result.final_answer == "Use a source-aware patch preflight before expensive ranking."
 
 
-def test_model_synthesis_ordinary_exception_still_falls_back() -> None:
+def test_provider_fallback_is_recorded_as_an_auditable_local_degradation() -> None:
     class BuggySynthModel:
         def synthesize_result(self, **_: object) -> dict[str, object]:
             raise RuntimeError("local bug")
 
     candidate = CandidateGenome(id="reference", artifact="fallback answer", multihead_scores={"answer_likelihood": 0.8})
 
-    result = synthesize_result(population=CandidatePopulation([candidate]), archives=ArchiveManager(), model=BuggySynthModel())
+    with capture_fallback_events() as events:
+        result = synthesize_result(population=CandidatePopulation([candidate]), archives=ArchiveManager(), model=BuggySynthModel())
 
     assert result.status == "final_synthesis_local_fallback"
     assert result.final_answer == "fallback answer"
     assert "model_synthesis_local_fallback:RuntimeError" in result.warnings
+    assert [(event["stage"], event["reason"]) for event in events] == [("final_synthesis", "RuntimeError")]
 
 
 

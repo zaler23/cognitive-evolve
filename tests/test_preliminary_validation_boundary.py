@@ -14,6 +14,7 @@ from cognitive_evolve_runtime.nexus.final_projection import build_final_projecti
 from cognitive_evolve_runtime.nexus.model_adapter_schemas import _stop_decision_schema
 from cognitive_evolve_runtime.nexus.nextgen import best_current_direction_payload, candidate_verification_status
 from cognitive_evolve_runtime.nexus.loop import EvolutionBudget, EvolutionRound
+from cognitive_evolve_runtime.nexus.loop.controller import _replay_certificate_for_final_state
 from cognitive_evolve_runtime.nexus.state import nexus_runtime_state, nexus_verification_results
 from cognitive_evolve_runtime.nexus.stop_decision import StopDecisionEngine
 from cognitive_evolve_runtime.nexus.synthesis import SynthesizedResult
@@ -79,6 +80,36 @@ def _legacy_run() -> dict[str, object]:
         },
         "verification_summaries": [{"passed": True, "source": "local-check"}],
     }
+
+
+def test_replay_certificate_distinguishes_terminal_readback_from_continuation() -> None:
+    terminal = _replay_certificate_for_final_state(
+        synthesis=SynthesizedResult(
+            status="completed",
+            final_answer="answer",
+            closure_certificate={"stop_reason": "candidate_ready_for_external_review"},
+        ),
+        final_certificate={},
+        latent_replay_audit={},
+    )
+    continuation = _replay_certificate_for_final_state(
+        synthesis=SynthesizedResult(
+            status="completed",
+            final_answer="answer",
+            closure_certificate={"stop_reason": "max_rounds"},
+        ),
+        final_certificate={},
+        latent_replay_audit={},
+    )
+
+    assert terminal["scope"] == "verifier_on_frozen_artifact_only"
+    assert terminal["checkpoint_resume_semantics"] == "terminal_checkpoint_reads_existing_result"
+    assert terminal["continuation_may_call_model"] is False
+    assert "reads persisted run-result.json" in terminal["replay_command"]
+    assert continuation["scope"] == "continued_evolution_not_frozen_replay"
+    assert continuation["checkpoint_resume_semantics"] == "non_terminal_checkpoint_continues_evolution"
+    assert continuation["continuation_may_call_model"] is True
+    assert "may call the model" in continuation["replay_command"]
 
 
 def test_legacy_verified_result_is_read_as_preliminary_only() -> None:

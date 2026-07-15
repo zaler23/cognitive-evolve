@@ -24,7 +24,7 @@ Input Packet
   → Final answer, patch, report, or structured failure analysis
 ```
 
-The platform fixes evolution mechanics: snapshots, file hashes, candidate lineage, archive fates, local tool protocol, isolated temporary patch copies, persistence, checkpoint replay, and progress events. These copies are not a security sandbox. The model decides task semantics through structured objective contracts, policies, seeds, and concrete offspring. Every model-backed reproduction round uses one runtime-authored lineage envelope and one direct offspring call. With a configured evaluator, the envelope carries bounded observed feedback and asks for complete evaluator-visible artifacts; without one, it permits concrete exploratory progress. Critique, diagnosis, and policy may still be model-driven, but reproduction does not pay for a separate mutation-planning call or let a planning response override runtime branch allocation.
+The platform fixes evolution mechanics: snapshots, file hashes, candidate lineage, archive fates, local tool protocol, isolated temporary patch copies, persistence, checkpoint replay, and progress events. These copies are not a security sandbox. The model decides task semantics through structured objective contracts, policies, seeds, and concrete offspring. Every model-backed reproduction round uses one runtime-authored lineage envelope. In the default `slot` mode, it makes one `generate_offspring` call per allocated branch slot; explicit `single_batch` mode makes one call for the complete slot manifest. With a configured evaluator, the envelope carries bounded observed feedback and asks for complete evaluator-visible artifacts; without one, it permits concrete exploratory progress. Critique, diagnosis, and policy may still be model-driven, but the normal model-backed reproduction path bypasses mutation planning; offline mode keeps deterministic mutation planning as a compatibility path.
 
 ## Runtime architecture
 
@@ -204,7 +204,9 @@ unbound synthesis answer does not produce a misleading bundle; `run-result.json`
 records why the export is unavailable. The project does not import a verdict or
 turn the integrity hash into a correctness claim.
 
-Fallbacks are auditable runtime events, not silent logger-only behavior.
+Provider failures are not silently swallowed: stages that support local
+degradation may take a recorded, auditable fallback path rather than a hidden
+logger-only path.
 `run-result.json` stores `evolution.fallback_events` and
 `evolution.fallback_event_count`; `nexus-runtime/events.jsonl` stores the same
 sanitized fallback event summaries. These summaries redact local paths and

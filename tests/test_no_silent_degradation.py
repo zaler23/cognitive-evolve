@@ -70,6 +70,7 @@ def test_route_incomplete_clamps_engine_to_single_diagnostic_round(tmp_path) -> 
         context={
             "task_dir": str(tmp_path),
             "rounds": 5,
+            "offline": True,
             "semantic_assessment": {"task_type": "route_incomplete", "semantic_control": {"incomplete": True}},
         },
     )
