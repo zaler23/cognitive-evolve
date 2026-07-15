@@ -10,8 +10,6 @@ from .genome import CandidateFate, CandidateGenome
 from .patch_merge import merge_patch_sets
 from .project_candidate import PatchOperation, ProjectCandidateGenome
 from cognitive_evolve_runtime.core.serialization import coerce_dict, coerce_str_list, stable_hash
-from cognitive_evolve_runtime.core.scalars import bounded_score
-from cognitive_evolve_runtime.theory.bandit import OperatorArmStats, suggest_budget_allocation
 
 
 class MutationOperator:
@@ -336,12 +334,21 @@ class MutationEngine:
 
 
 class MutationPlanner:
-    def plan_from_actions(self, parents: list[CandidateGenome], actions: list[str], rarity_seeds: list[str] | None = None) -> list[MutationPlan]:
+    def plan_from_actions(
+        self,
+        parents: list[CandidateGenome],
+        actions: list[str],
+        rarity_seeds: list[str] | None = None,
+        *,
+        preferred_actions_by_parent: dict[str, str] | None = None,
+        grounded_emitter_credit_by_parent: dict[str, dict[str, Any]] | None = None,
+    ) -> list[MutationPlan]:
         seeds = list(rarity_seeds or [])
-        shadow_bandit = _shadow_action_palette_bandit(parents, actions)
+        preferred = dict(preferred_actions_by_parent or {})
+        emitter_credit = dict(grounded_emitter_credit_by_parent or {})
         plans: list[MutationPlan] = []
         for index, parent in enumerate(parents):
-            action = actions[index % len(actions)] if actions else MutationOperator.DEEPEN
+            action = preferred.get(parent.id) or (actions[index % len(actions)] if actions else MutationOperator.DEEPEN)
             operator, unknown_fallback = _mapped_action(action)
             metadata: dict[str, Any] = {"raw_policy_action": str(action or "")} if actions else {}
             if unknown_fallback:
@@ -350,8 +357,8 @@ class MutationPlanner:
                     "fallback_operator": MutationOperator.DEEPEN,
                     "reason": "unknown_action",
                 }
-            if shadow_bandit:
-                metadata["shadow_action_palette_bandit"] = shadow_bandit
+            if parent.id in emitter_credit:
+                metadata["grounded_emitter_credit"] = dict(emitter_credit[parent.id])
             plans.append(
                 MutationPlan(
                     operator=operator,
@@ -455,42 +462,6 @@ def apply_strategy_restart(
             candidate.risk_notes = []
             candidate.commands_run = []
     return candidate
-
-
-def _shadow_action_palette_bandit(parents: list[CandidateGenome], actions: list[str]) -> dict[str, Any]:
-    if not parents or not actions:
-        return {}
-    raw: dict[str, dict[str, Any]] = {}
-    for index, parent in enumerate(parents):
-        action = str(actions[index % len(actions)] or MutationOperator.DEEPEN)
-        fate = CandidateFate.normalize(getattr(parent, "current_fate", ""))
-        current = raw.setdefault(action, {"pulls": 0, "reward_sum": 0.0, "risk_sum": 0.0, "fates": {}})
-        current["pulls"] += 1
-        current["reward_sum"] += _shadow_action_reward(parent, fate)
-        current["risk_sum"] += 1.0 if fate in {CandidateFate.CULLED.value, CandidateFate.FAILED.value} else 0.0
-        current["fates"][fate] = current["fates"].get(fate, 0) + 1
-    arms = tuple(
-        OperatorArmStats(arm_id=arm_id, pulls=int(data["pulls"]), reward_sum=float(data["reward_sum"]), risk_sum=float(data["risk_sum"]))
-        for arm_id, data in sorted(raw.items())
-    )
-    return {
-        "schema": "shadow-action-palette-bandit/v1",
-        "advisory_only": True,
-        "arm_count": len(arms),
-        "arms": [arm.to_dict() | {"fates": dict(raw[arm.arm_id]["fates"])} for arm in arms],
-        "allocation": [item.to_dict() for item in suggest_budget_allocation(arms)],
-    }
-
-
-def _shadow_action_reward(parent: CandidateGenome, fate: str) -> float:
-    signal = bounded_score(coerce_dict(getattr(parent, "multihead_scores", {})).get("latent_reproductive_signal", 0.0))
-    if fate == CandidateFate.ELITE.value:
-        return max(signal, 1.0)
-    if fate in {CandidateFate.ACTIVE.value, CandidateFate.INCUBATING.value}:
-        return max(signal, 0.5)
-    if fate == CandidateFate.DORMANT.value:
-        return max(signal, 0.25)
-    return signal
 
 
 def validate_move_plan(parent: CandidateGenome, plan: MutationPlan) -> None:

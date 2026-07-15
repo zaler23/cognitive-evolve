@@ -65,6 +65,7 @@ _TRUSTED_BRANCH_DIRECTIVE_KEYS = (
     "problem_model_decision_trace",
     "problem_model_snapshot_hash",
     "problem_model_ledger_cursor",
+    "move_replay",
 )
 
 _LINEAGE_ENVELOPE_METADATA_KEYS = (
@@ -91,9 +92,17 @@ def _plan_mutations(
     policy: EvolutionPolicy,
     provided_context: dict[str, Any] | None = None,
     target_count: int | None = None,
+    preferred_actions_by_parent: dict[str, str] | None = None,
+    grounded_emitter_credit_by_parent: dict[str, dict[str, Any]] | None = None,
 ) -> list[MutationPlan]:
     if model is None:
-        fallback = mutation_planner.plan_from_actions(parents, actions, rarity_seeds=archives.rarity_archive.rare_seeds(limit=max(2, len(parents))))
+        fallback = mutation_planner.plan_from_actions(
+            parents,
+            actions,
+            rarity_seeds=archives.rarity_archive.rare_seeds(limit=max(2, len(parents))),
+            preferred_actions_by_parent=preferred_actions_by_parent,
+            grounded_emitter_credit_by_parent=grounded_emitter_credit_by_parent,
+        )
         return _attach_policy_directives_to_plans(fallback, policy, parents=parents)
     if not isinstance(model, NexusMutationPlannerModelProtocol):
         raise LLMConfigurationError("configured model does not implement NexusMutationPlannerModelProtocol")
@@ -471,6 +480,17 @@ def _slot_sampling_policy(policy: EvolutionPolicy, slot: dict[str, Any]) -> LLMR
     if not isinstance(profiles, list):
         raise ValueError("slot_sampling_profiles intent value must be a list")
     profile_index = int(slot.get("variation_index") or 0) % len(profiles)
+    replay = directive.get("move_replay") if isinstance(directive.get("move_replay"), dict) else {}
+    preferred_emitter = replay.get("preferred_emitter") if isinstance(replay.get("preferred_emitter"), dict) else {}
+    preferred_profile = str(preferred_emitter.get("sampling_profile") or "")
+    prefix = f"{phase}:{profile_key}:"
+    if preferred_profile.startswith(prefix):
+        try:
+            preferred_index = int(preferred_profile.removeprefix(prefix))
+        except ValueError:
+            preferred_index = -1
+        if 0 <= preferred_index < len(profiles):
+            profile_index = preferred_index
     profile = profiles[profile_index]
     if not isinstance(profile, dict):
         raise ValueError("slot_sampling_profiles entries must be objects")

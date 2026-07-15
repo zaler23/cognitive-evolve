@@ -302,6 +302,36 @@ def test_phase_compiled_sampling_is_journaled_and_changes_replay_signature(
     assert len(list((tmp_path / "llm-responses" / "v1").glob("*.json"))) == 2
 
 
+def test_grounded_emitter_can_select_an_available_slot_sampling_profile() -> None:
+    profiles = {
+        "explore": {
+            "default": [
+                {"temperature": 0.9, "top_p": 0.95, "seed": 101},
+                {"temperature": 0.2, "top_p": 0.5, "seed": 202},
+            ],
+        }
+    }
+    policy = EvolutionPolicy(metadata={"search_phase": "explore", "slot_sampling_profiles": profiles})
+    slot = {
+        "slot_id": "slot-replay-profile",
+        "intent": "standard_variation",
+        "variation_index": 0,
+        "directive": {
+            "move_replay": {
+                "preferred_emitter": {
+                    "sampling_profile": "explore:default:1",
+                }
+            }
+        },
+    }
+
+    sampling = _slot_sampling_policy(policy, slot)
+
+    assert sampling is not None
+    assert sampling.sampling_profile_id == "explore:default:1"
+    assert (sampling.temperature, sampling.top_p, sampling.seed) == (0.2, 0.5, 202)
+
+
 def test_phase_and_profile_identity_are_part_of_replay_signature(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
