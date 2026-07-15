@@ -15,6 +15,7 @@ from cognitive_evolve_runtime.nexus.minimal_core import run_core_ablation
 from cognitive_evolve_runtime.nexus.model_errors import is_quota_error
 from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy
 from cognitive_evolve_runtime.nexus.protocols import NexusModelLike
+from cognitive_evolve_runtime.nexus.representation_shadow import RepresentationProvider, RepresentationVectorStore
 from cognitive_evolve_runtime.nexus.synthesis import SynthesizedResult, synthesize_result
 from cognitive_evolve_runtime.nexus.nextgen import best_current_direction_payload
 from cognitive_evolve_runtime.verification.ladder import VerificationStrength
@@ -62,6 +63,8 @@ class EvolutionLoopController:
         fabric_state: dict[str, Any] | None = None,
         provided_context: dict[str, Any] | None = None,
         context_provider: Callable[[list[CandidateGenome], str], dict[str, Any] | None] | None = None,
+        representation_provider: RepresentationProvider | None = None,
+        representation_store: RepresentationVectorStore | dict[str, Any] | None = None,
     ) -> None:
         self.population = population
         self.archives = archives
@@ -82,7 +85,15 @@ class EvolutionLoopController:
         )
         if verification_plan is not None:
             self.adaptive.set_verification_plan(verification_plan)
-        self.round_pipeline = EvolutionRound(model=model, budget=budget, adaptive=self.adaptive, elo_state=elo_state)
+        self.round_pipeline = EvolutionRound(
+            model=model,
+            budget=budget,
+            adaptive=self.adaptive,
+            elo_state=elo_state,
+            representation_provider=representation_provider,
+            representation_store=representation_store,
+        )
+        self.representation_store = self.round_pipeline.representation_store
         self.progress_events: list[dict[str, Any]] = []
         self.pipeline_events: list[dict[str, Any]] = [
             PipelineProgressEvent(
@@ -573,6 +584,11 @@ class EvolutionLoopController:
             fabric_state=dict(self.fabric_state),
             cost_ledger=dict(self.cost_ledger),
             search_phase=self.budget.search_phase,
+            representation_store=(
+                self.representation_store.to_dict()
+                if self.representation_store is not None
+                else {}
+            ),
         )
 
     def _notify(self, phase: str, round_index: int, progress_event: dict[str, Any], *, error: dict[str, Any] | None = None) -> None:
@@ -600,6 +616,11 @@ class EvolutionLoopController:
             adaptive_state=self.adaptive.to_dict(),
             fabric_state=self.fabric_state,
             cost_ledger=self.cost_ledger,
+            representation_store=(
+                self.representation_store.to_dict()
+                if self.representation_store is not None
+                else {}
+            ),
         )
 
 
@@ -743,6 +764,8 @@ def evolve_once(
     fabric_state: dict[str, Any] | None = None,
     provided_context: dict[str, Any] | None = None,
     context_provider: Callable[[list[CandidateGenome], str], dict[str, Any] | None] | None = None,
+    representation_provider: RepresentationProvider | None = None,
+    representation_store: RepresentationVectorStore | dict[str, Any] | None = None,
 ) -> EvolutionLoopResult:
     return EvolutionLoopController(
         population=population,
@@ -762,6 +785,8 @@ def evolve_once(
         fabric_state=fabric_state,
         provided_context=provided_context,
         context_provider=context_provider,
+        representation_provider=representation_provider,
+        representation_store=representation_store,
     ).run()
 
 

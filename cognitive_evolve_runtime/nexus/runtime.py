@@ -37,6 +37,7 @@ from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy, EvolutionPoli
 from cognitive_evolve_runtime.verification.synthesizer import VerificationSynthesizer
 from cognitive_evolve_runtime.verification.types import VerificationPlan
 from cognitive_evolve_runtime.nexus.protocols import NexusModelLike
+from cognitive_evolve_runtime.nexus.representation_shadow import RepresentationProvider
 from cognitive_evolve_runtime.nexus.project_verification import ProjectVerificationSummary
 from cognitive_evolve_runtime.nexus.fallbacks import capture_fallback_events, record_fallback
 from cognitive_evolve_runtime.nexus.runtime_options import option_bool, resolve_runtime_options, restore_runtime_options
@@ -68,10 +69,18 @@ class NexusRunResult:
 
 
 class NexusRuntime:
-    def __init__(self, *, model: NexusModelLike | None = None, model_routes: NexusModelRoutes | dict[str, Any] | None = None, output_dir: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        model: NexusModelLike | None = None,
+        model_routes: NexusModelRoutes | dict[str, Any] | None = None,
+        output_dir: str | Path | None = None,
+        representation_provider: RepresentationProvider | None = None,
+    ) -> None:
         self.model_routes = coerce_model_routes(model=model, model_routes=model_routes)
         self.model = self.model_routes.model_for(NexusModelRole.DEFAULT)
         self.output_dir = Path(output_dir) if output_dir is not None else None
+        self.representation_provider = representation_provider
         self.contract_builder = NexusObjectiveContractBuilder()
         self.policy_builder = EvolutionPolicyBuilder()
         self.context_orchestrator = ContextOrchestrator()
@@ -198,6 +207,7 @@ class NexusRuntime:
                 adaptive_config=adaptive_config,
                 verification_plan=verification_plan,
                 provided_context=provided_context,
+                representation_provider=self.representation_provider,
             )
             run = NexusRunResult(
                 mode="text",
@@ -342,6 +352,7 @@ class NexusRuntime:
                 verification_plan=verification_plan,
                 provided_context=provided_context,
                 context_provider=refresh_project_context,
+                representation_provider=self.representation_provider,
             )
             run = NexusRunResult(
                 mode="project",
@@ -493,6 +504,8 @@ class NexusRuntime:
                 fabric_state=restored.get("fabric") or {},
                 provided_context=provided_context,
                 context_provider=context_provider,
+                representation_provider=self.representation_provider,
+                representation_store=dict(restored.get("search_kernel") or {}).get("representation_shadow_store"),
             )
             world_payload = _world_to_dict_with_latent_metadata(world, contract)
             run = NexusRunResult(

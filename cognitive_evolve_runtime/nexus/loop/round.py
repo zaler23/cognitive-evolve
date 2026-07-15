@@ -9,6 +9,11 @@ from cognitive_evolve_runtime.nexus.adaptive import AdaptiveRuntimeController
 from cognitive_evolve_runtime.nexus.critique import CritiqueEngine
 from cognitive_evolve_runtime.nexus.diagnosis import PolicyUpdater, SearchStateDiagnoser
 from cognitive_evolve_runtime.nexus.protocols import NexusModelLike
+from cognitive_evolve_runtime.nexus.representation_shadow import (
+    RepresentationProvider,
+    RepresentationShadowLayer,
+    RepresentationVectorStore,
+)
 from cognitive_evolve_runtime.nexus.stop_decision import StopDecisionEngine
 from cognitive_evolve_runtime.ranking.multihead_elo import MultiHeadElo
 from cognitive_evolve_runtime.ranking.parent_selection import ParentSelector
@@ -37,7 +42,16 @@ from .round_context import RoundEvaluation
 class EvolutionRound(EvaluateStage, ReproduceStage):
     """Thin facade over the evaluation and reproduction stages."""
 
-    def __init__(self, *, model: NexusModelLike | None, budget: EvolutionBudget, adaptive: AdaptiveRuntimeController | None = None, elo_state: dict[str, Any] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        model: NexusModelLike | None,
+        budget: EvolutionBudget,
+        adaptive: AdaptiveRuntimeController | None = None,
+        elo_state: dict[str, Any] | None = None,
+        representation_provider: RepresentationProvider | None = None,
+        representation_store: RepresentationVectorStore | dict[str, Any] | None = None,
+    ) -> None:
         self.model = model
         self.budget = budget
         self.adaptive = adaptive or AdaptiveRuntimeController.from_sources()
@@ -52,6 +66,19 @@ class EvolutionRound(EvaluateStage, ReproduceStage):
         self.evaluator_runner = ExternalEvaluatorRunner()
         self.stop_decider = StopDecisionEngine()
         self.theory_layer = TheoryLayer()
+        restored_store = (
+            representation_store
+            if isinstance(representation_store, RepresentationVectorStore)
+            else RepresentationVectorStore.from_dict(representation_store)
+            if representation_store
+            else None
+        )
+        self.representation_store = restored_store or (RepresentationVectorStore() if representation_provider is not None else None)
+        self.representation_shadow = (
+            RepresentationShadowLayer(representation_provider, store=self.representation_store)
+            if representation_provider is not None and self.representation_store is not None
+            else None
+        )
         self.last_generation_plan: dict[str, Any] = {}
         self.last_completed_stage_ops: list[str] = []
         self.last_offspring_harvest_outcome: dict[str, Any] = {}
