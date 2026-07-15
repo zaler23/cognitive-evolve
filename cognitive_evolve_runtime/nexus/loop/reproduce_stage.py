@@ -24,7 +24,7 @@ from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy
 from cognitive_evolve_runtime.nexus.population_control import compact_live_population
 from cognitive_evolve_runtime.nexus.prompt_view import archive_prompt_view
 from cognitive_evolve_runtime.nexus.repair_reactivation import recover_failure_archive_repair_seeds, recover_repairable_dormant_seeds
-from cognitive_evolve_runtime.nexus.receipts import record_reproduction_receipts
+from cognitive_evolve_runtime.nexus.receipts import DONOR_ROLES, record_reproduction_receipts
 from cognitive_evolve_runtime.nexus.search_kernel.fingerprints import candidate_outcome_signature, candidate_phenotype_signature
 from cognitive_evolve_runtime.nexus.search_kernel.branch_allocator import ProductiveBranchAllocation
 from cognitive_evolve_runtime.nexus.search_kernel.islands import allocate_logical_islands, assign_candidate_islands, derive_island_count
@@ -48,6 +48,16 @@ from .offspring import _generate_offspring, _plan_mutations
 from .policy_directives import _attach_policy_directives_to_plans, _critique_actions
 from .stage_helpers import _eligibility_policy, _theory_config_from_policy
 
+
+_REQUIRED_CONTRIBUTION_MAP = {
+    "generic_space_mapping": "element-level shared structural role mapping",
+    "retained_from_primary": "primary elements retained by the child",
+    "borrowed_from_donor": "donor elements materially present in the child",
+    "structural_correspondence": "cross-parent structural relation",
+    "emergent_delta": "child-only structure",
+    "incompatibilities": "mapping conflicts",
+    "unresolved_obligations": "open merge obligations",
+}
 
 
 class ReproduceStage:
@@ -322,22 +332,46 @@ class ReproduceStage:
             }
         )[:16]
         action_palette = list(dict.fromkeys(str(action) for action in actions if str(action).strip()))
-        slot_plans = [
-            MutationPlan(
-                operator="ModelDirected",
-                parent_ids=[slot.parent_id],
-                instruction=(
-                    f"Branch intent: {slot.intent}. "
-                    + (
-                        f"Optional semantic direction: {action_palette[index % len(action_palette)]}. "
-                        if action_palette
-                        else ""
-                    )
-                    + "Choose the concrete mutation strategy that best advances the objective; the hint is not a fixed operator."
+        policy_metadata = policy.metadata if isinstance(policy.metadata, dict) else {}
+        configured_quota = policy_metadata.get("crossover_slot_quota")
+        crossover_quota = (
+            max(0, int(configured_quota))
+            if configured_quota is not None
+            else (1 if diagnosis.stagnation_detected else 0)
+        )
+        crossover_slots = _role_crossover_slots(
+            branch_allocation,
+            parent_ids=parent_ids,
+            quota=crossover_quota,
+            roles=policy_metadata.get("crossover_donor_roles"),
+        )
+        slot_plans: list[MutationPlan] = []
+        for index, slot in enumerate(branch_allocation.slots):
+            crossover_slot = crossover_slots.get(slot.slot_id, {})
+            slot_parent_ids = [slot.parent_id]
+            if crossover_slot:
+                slot_parent_ids.append(str(crossover_slot["donor_parent_id"]))
+            instruction = (
+                f"Branch intent: {slot.intent}. "
+                + (
+                    f"Optional semantic direction: {action_palette[index % len(action_palette)]}. "
+                    if action_palette
+                    else ""
+                )
+                + "Choose the concrete mutation strategy that best advances the objective; the hint is not a fixed operator."
+            )
+            if crossover_slot:
+                instruction += (
+                    " This is a role-constrained crossover slot: materially combine the primary and donor, and return "
+                    "metadata.blend_receipt with every field declared in required_contribution_map."
+                )
+            slot_plans.append(
+                MutationPlan(
+                    operator="ModelDirected",
+                    parent_ids=slot_parent_ids,
+                    instruction=instruction,
                 ),
             )
-            for index, slot in enumerate(branch_allocation.slots)
-        ]
         slot_plans = _attach_policy_directives_to_plans(slot_plans, policy, parents=parents)
         slot_plans, latent_exploration_plan = apply_latent_exploration_to_mutation_plans(
             slot_plans,
@@ -377,6 +411,7 @@ class ReproduceStage:
             branch_slots.append(
                 {
                     **slot.to_dict(),
+                    **crossover_slots.get(slot.slot_id, {}),
                     "island_id": policy.metadata.get("slot_islands", {}).get(slot.slot_id),
                     "directive": directive,
                 }
@@ -396,7 +431,8 @@ class ReproduceStage:
             instruction=(
                 "Directly evolve actual task artifacts from the allocated primary parents. "
                 "For every branch slot return exactly one materially changed artifact, copy slot_id into metadata.branch_slot_id, "
-                "and put slot.parent_id first in truthful parent_ids. You may use other selected parents as secondary sources. "
+                "and put slot.parent_id first in truthful parent_ids. A slot with donor_parent_id must receive both parents and "
+                "must return a blend receipt; otherwise use only its primary parent. "
                 "Actions and slot directives are semantic search guidance, not fixed operators; choose the mutation, transfer, "
                 "representation, probe, or crossover strategy yourself. Return artifacts, not plans, commentary, or unchanged copies."
             ),
@@ -910,6 +946,56 @@ def _percentile(values: list[float], quantile: float) -> float:
         return 0.0
     index = min(len(values) - 1, max(0, math.ceil(float(quantile or 0.0) * len(values)) - 1))
     return float(values[index])
+
+
+def _role_crossover_slots(
+    allocation: ProductiveBranchAllocation,
+    *,
+    parent_ids: list[str],
+    quota: int,
+    roles: Any = None,
+) -> dict[str, dict[str, Any]]:
+    if quota <= 0 or len(parent_ids) < 2:
+        return {}
+    role_items = (
+        [str(item) for item in roles if str(item)]
+        if isinstance(roles, list)
+        else [
+            "representation_donor",
+            "repair_pattern_donor",
+            "mechanism_fragment_donor",
+        ]
+    )
+    invalid = [role for role in role_items if role not in DONOR_ROLES]
+    if invalid:
+        raise ValueError(f"unsupported crossover donor role: {invalid[0]}")
+    if not role_items:
+        raise ValueError("crossover donor roles must not be empty")
+    assigned: dict[str, dict[str, Any]] = {}
+    for slot in allocation.slots:
+        if len(assigned) >= quota:
+            break
+        if slot.parent_id not in parent_ids:
+            continue
+        primary_index = parent_ids.index(slot.parent_id)
+        donor_id = next(
+            (
+                parent_ids[(primary_index + offset) % len(parent_ids)]
+                for offset in range(1, len(parent_ids))
+                if parent_ids[(primary_index + offset) % len(parent_ids)] != slot.parent_id
+            ),
+            "",
+        )
+        if not donor_id:
+            continue
+        role = role_items[len(assigned) % len(role_items)]
+        assigned[slot.slot_id] = {
+            "primary_parent_id": slot.parent_id,
+            "donor_parent_id": donor_id,
+            "donor_role": role,
+            "required_contribution_map": dict(_REQUIRED_CONTRIBUTION_MAP),
+        }
+    return assigned
 
 
 def _cell_activation_map(*, parents: list[CandidateGenome], plans: list[MutationPlan], offspring: list[CandidateGenome]) -> dict[str, Any]:

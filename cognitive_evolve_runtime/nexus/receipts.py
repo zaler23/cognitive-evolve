@@ -1,10 +1,11 @@
 """Receipts attached to the authoritative generation-plan evidence path."""
 from __future__ import annotations
 
+import json
 from dataclasses import asdict, dataclass
 from typing import Any, Iterable
 
-from cognitive_evolve_runtime.candidates.mutation import MutationOperator
+from cognitive_evolve_runtime.candidates.mutation import MutationOperator, TYPED_MOVE_KINDS
 from cognitive_evolve_runtime.evaluators.evidence_authority import stable_artifact_hash
 
 from ._serde import stable_hash
@@ -12,6 +13,15 @@ from ._serde import stable_hash
 
 class ReceiptValidationError(ValueError):
     """A receipt cannot enter the generation-plan evidence path."""
+
+
+DONOR_ROLES = frozenset(
+    {
+        "representation_donor",
+        "repair_pattern_donor",
+        "mechanism_fragment_donor",
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -83,6 +93,100 @@ class TransferReceipt:
 
 
 @dataclass(frozen=True)
+class BlendReceipt:
+    receipt_id: str
+    candidate_id: str
+    primary_parent_id: str
+    donor_parent_id: str
+    donor_role: str
+    generic_space_mapping: list[dict[str, str]]
+    retained_from_primary: list[str]
+    borrowed_from_donor: list[str]
+    structural_correspondence: list[str]
+    emergent_delta: list[str]
+    incompatibilities: list[str]
+    unresolved_obligations: list[str]
+    artifact_hash: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "BlendReceipt":
+        if not isinstance(data, dict):
+            raise ReceiptValidationError("blend receipt must be an object")
+        role = _required_text(data.get("donor_role"), "donor_role")
+        if role not in DONOR_ROLES:
+            raise ReceiptValidationError(f"unsupported donor_role: {role}")
+        raw_mapping = data.get("generic_space_mapping")
+        if not isinstance(raw_mapping, list) or not raw_mapping:
+            raise ReceiptValidationError("blend receipt generic_space_mapping must be a non-empty element mapping")
+        mapping = [
+            _fixed_text_map(item, ("primary", "donor", "child"), f"generic_space_mapping[{index}]")
+            for index, item in enumerate(raw_mapping)
+        ]
+        return cls(
+            receipt_id=_required_text(data.get("receipt_id"), "receipt_id"),
+            candidate_id=_required_text(data.get("candidate_id"), "candidate_id"),
+            primary_parent_id=_required_text(data.get("primary_parent_id"), "primary_parent_id"),
+            donor_parent_id=_required_text(data.get("donor_parent_id"), "donor_parent_id"),
+            donor_role=role,
+            generic_space_mapping=mapping,
+            retained_from_primary=_text_list(data.get("retained_from_primary"), "retained_from_primary"),
+            borrowed_from_donor=_text_list(data.get("borrowed_from_donor"), "borrowed_from_donor", required=True),
+            structural_correspondence=_text_list(data.get("structural_correspondence"), "structural_correspondence"),
+            emergent_delta=_text_list(data.get("emergent_delta"), "emergent_delta"),
+            incompatibilities=_text_list(data.get("incompatibilities"), "incompatibilities"),
+            unresolved_obligations=_text_list(data.get("unresolved_obligations"), "unresolved_obligations"),
+            artifact_hash=_required_text(data.get("artifact_hash"), "artifact_hash"),
+        )
+
+
+@dataclass(frozen=True)
+class MoveReceipt:
+    receipt_id: str
+    candidate_id: str
+    parent_id: str
+    move_kind: str
+    input_domain: str
+    declared_invariant_refs: list[str]
+    expected_delta: dict[str, Any]
+    actual_delta: dict[str, Any]
+    artifact_hash: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "MoveReceipt":
+        if not isinstance(data, dict):
+            raise ReceiptValidationError("move receipt must be an object")
+        move_kind = _required_text(data.get("move_kind"), "move_kind")
+        if move_kind not in TYPED_MOVE_KINDS:
+            raise ReceiptValidationError(f"move receipt has unsupported move_kind: {move_kind}")
+        input_domain = _required_text(data.get("input_domain"), "input_domain")
+        if input_domain not in {"dict", "project_patch", "proof"}:
+            raise ReceiptValidationError(f"move receipt has unsupported input_domain: {input_domain}")
+        actual_delta = data.get("actual_delta")
+        if not isinstance(actual_delta, dict) or not actual_delta:
+            raise ReceiptValidationError("move receipt actual_delta must be a non-empty object")
+        expected_delta = data.get("expected_delta")
+        if not isinstance(expected_delta, dict):
+            raise ReceiptValidationError("move receipt expected_delta must be an object")
+        return cls(
+            receipt_id=_required_text(data.get("receipt_id"), "receipt_id"),
+            candidate_id=_required_text(data.get("candidate_id"), "candidate_id"),
+            parent_id=_required_text(data.get("parent_id"), "parent_id"),
+            move_kind=move_kind,
+            input_domain=input_domain,
+            declared_invariant_refs=_text_list(data.get("declared_invariant_refs"), "declared_invariant_refs"),
+            expected_delta=dict(expected_delta),
+            actual_delta=dict(actual_delta),
+            artifact_hash=_required_text(data.get("artifact_hash"), "artifact_hash"),
+        )
+
+
+@dataclass(frozen=True)
 class TransferCreditDecision:
     eligible: bool
     productive_credit: bool
@@ -123,6 +227,77 @@ def append_transfer_receipt(
         raise
     receipts = generation_plan.setdefault("transfer_receipts", [])
     if not any(isinstance(item, dict) and item.get("artifact_hash") == receipt.artifact_hash for item in receipts):
+        receipts.append(receipt.to_dict())
+    return receipt
+
+
+def canonical_blend_receipt(
+    raw_receipt: dict[str, Any],
+    *,
+    candidate: Any,
+    primary: Any,
+    donor: Any,
+    donor_role: str,
+) -> BlendReceipt:
+    if donor_role not in DONOR_ROLES:
+        raise ReceiptValidationError(f"unsupported donor_role: {donor_role}")
+    core = {
+        **dict(raw_receipt),
+        "candidate_id": str(getattr(candidate, "id", "")),
+        "primary_parent_id": str(getattr(primary, "id", "")),
+        "donor_parent_id": str(getattr(donor, "id", "")),
+        "donor_role": donor_role,
+        "artifact_hash": stable_artifact_hash(getattr(candidate, "artifact", None)),
+    }
+    core.pop("receipt_id", None)
+    receipt = BlendReceipt.from_dict(
+        {"receipt_id": "blend-" + stable_hash(core)[:20], **core}
+    )
+    primary_text = _candidate_material_text(primary)
+    donor_text = _candidate_material_text(donor)
+    child_text = _candidate_material_text(candidate)
+    if not any(
+        item in donor_text and item in child_text and item not in primary_text
+        for item in receipt.borrowed_from_donor
+    ):
+        raise ReceiptValidationError("blend receipt has no engine-observable material donor contribution")
+    return receipt
+
+
+def append_blend_receipt(
+    generation_plan: dict[str, Any],
+    raw_receipt: BlendReceipt | dict[str, Any],
+    *,
+    artifact: Any | None = None,
+) -> BlendReceipt:
+    try:
+        receipt = raw_receipt if isinstance(raw_receipt, BlendReceipt) else BlendReceipt.from_dict(raw_receipt)
+        if artifact is not None and receipt.artifact_hash != stable_artifact_hash(artifact):
+            raise ReceiptValidationError("blend receipt artifact_hash does not match the produced artifact")
+    except ReceiptValidationError as exc:
+        _audit_rejection(generation_plan, "blend", str(exc))
+        raise
+    receipts = generation_plan.setdefault("blend_receipts", [])
+    if not any(isinstance(item, dict) and item.get("receipt_id") == receipt.receipt_id for item in receipts):
+        receipts.append(receipt.to_dict())
+    return receipt
+
+
+def append_move_receipt(
+    generation_plan: dict[str, Any],
+    raw_receipt: MoveReceipt | dict[str, Any],
+    *,
+    artifact: Any | None = None,
+) -> MoveReceipt:
+    try:
+        receipt = raw_receipt if isinstance(raw_receipt, MoveReceipt) else MoveReceipt.from_dict(raw_receipt)
+        if artifact is not None and receipt.artifact_hash != stable_artifact_hash(artifact):
+            raise ReceiptValidationError("move receipt artifact_hash does not match the produced artifact")
+    except ReceiptValidationError as exc:
+        _audit_rejection(generation_plan, "move", str(exc))
+        raise
+    receipts = generation_plan.setdefault("move_receipts", [])
+    if not any(isinstance(item, dict) and item.get("receipt_id") == receipt.receipt_id for item in receipts):
         receipts.append(receipt.to_dict())
     return receipt
 
@@ -242,6 +417,71 @@ def record_transfer_receipts(
     return recorded
 
 
+def record_blend_receipts(
+    generation_plan: dict[str, Any],
+    candidates: Iterable[Any],
+) -> list[BlendReceipt]:
+    recorded: list[BlendReceipt] = []
+    for candidate in candidates:
+        metadata = getattr(candidate, "metadata", {})
+        if not isinstance(metadata, dict):
+            continue
+        rejection = str(metadata.get("blend_receipt_rejection") or "")
+        if rejection:
+            _audit_rejection(
+                generation_plan,
+                "blend",
+                rejection,
+                candidate_id=str(getattr(candidate, "id", "")),
+            )
+        raw = metadata.get("blend_receipt")
+        if not isinstance(raw, dict):
+            continue
+        try:
+            canonical = append_blend_receipt(
+                generation_plan,
+                raw,
+                artifact=getattr(candidate, "artifact", None),
+            )
+        except ReceiptValidationError:
+            continue
+        metadata["blend_receipt"] = canonical.to_dict()
+        recorded.append(canonical)
+    return recorded
+
+
+def record_move_receipts(
+    generation_plan: dict[str, Any],
+    candidates: Iterable[Any],
+) -> list[MoveReceipt]:
+    recorded: list[MoveReceipt] = []
+    contracts = generation_plan.setdefault("move_contracts", [])
+    for candidate in candidates:
+        metadata = getattr(candidate, "metadata", {})
+        if not isinstance(metadata, dict):
+            continue
+        contract = metadata.get("move_contract")
+        if isinstance(contract, dict) and not any(
+            isinstance(item, dict) and item == contract
+            for item in contracts
+        ):
+            contracts.append(dict(contract))
+        raw = metadata.get("move_receipt")
+        if not isinstance(raw, dict):
+            continue
+        try:
+            canonical = append_move_receipt(
+                generation_plan,
+                raw,
+                artifact=getattr(candidate, "artifact", None),
+            )
+        except ReceiptValidationError:
+            continue
+        metadata["move_receipt"] = canonical.to_dict()
+        recorded.append(canonical)
+    return recorded
+
+
 def record_reproduction_receipts(
     generation_plan: dict[str, Any],
     *,
@@ -252,6 +492,8 @@ def record_reproduction_receipts(
 ) -> list[InterventionReceipt]:
     """Record reproduction facts without changing the intervention itself."""
 
+    record_blend_receipts(generation_plan, offspring)
+    record_move_receipts(generation_plan, offspring)
     record_transfer_receipts(generation_plan, offspring)
 
     if not _has_diagnosed_pressure(diagnosis):
@@ -405,6 +647,21 @@ def _audit_rejection(
     generation_plan.setdefault("receipt_audit", []).append(event)
 
 
+def _artifact_text(value: Any) -> str:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+
+
+def _candidate_material_text(candidate: Any) -> str:
+    patch_set = getattr(candidate, "patch_set", None)
+    material = {"artifact": getattr(candidate, "artifact", None)}
+    if isinstance(patch_set, list):
+        material["patch_set"] = [
+            item.to_dict() if hasattr(item, "to_dict") else item
+            for item in patch_set
+        ]
+    return _artifact_text(material)
+
+
 def _required_text(value: Any, field_name: str) -> str:
     text = str(value or "").strip()
     if not text:
@@ -439,13 +696,21 @@ def _fixed_text_map(
 
 
 __all__ = [
+    "BlendReceipt",
+    "DONOR_ROLES",
     "InterventionReceipt",
+    "MoveReceipt",
     "ReceiptValidationError",
     "TransferCreditDecision",
     "TransferReceipt",
+    "append_blend_receipt",
     "append_intervention_receipt",
+    "append_move_receipt",
     "append_transfer_receipt",
+    "canonical_blend_receipt",
     "intervention_receipts",
+    "record_blend_receipts",
+    "record_move_receipts",
     "record_reproduction_receipts",
     "record_transfer_receipts",
     "transfer_credit_decision",
