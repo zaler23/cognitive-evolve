@@ -87,10 +87,14 @@ class GenerationPlan:
     move_receipts: list[dict[str, Any]] = field(default_factory=list)
     move_contracts: list[dict[str, Any]] = field(default_factory=list)
     receipt_audit: list[dict[str, Any]] = field(default_factory=list)
+    representation_shadow: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=utc_now)
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        data = asdict(self)
+        if not self.representation_shadow:
+            data.pop("representation_shadow", None)
+        return data
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "GenerationPlan":
@@ -126,6 +130,7 @@ class GenerationPlan:
             ],
             move_contracts=[dict(item) for item in data.get("move_contracts", []) if isinstance(item, dict)],
             receipt_audit=[dict(item) for item in data.get("receipt_audit", []) if isinstance(item, dict)],
+            representation_shadow=coerce_dict(data.get("representation_shadow")),
             created_at=str(data.get("created_at") or utc_now()),
         )
 
@@ -146,6 +151,7 @@ def build_generation_plan(
     move_receipts: list[dict[str, Any]] | None = None,
     move_contracts: list[dict[str, Any]] | None = None,
     receipt_audit: list[dict[str, Any]] | None = None,
+    representation_shadow: dict[str, Any] | None = None,
     source: str = "runtime_default_generation_transition",
 ) -> GenerationPlan:
     """Build and validate the authoritative transition for a generation."""
@@ -188,7 +194,11 @@ def build_generation_plan(
         ]
     if move_contracts:
         payload["move_contracts"] = [dict(item) for item in move_contracts if isinstance(item, dict)]
-    plan = GenerationPlan(plan_id=stable_hash(payload)[:20], **payload)
+    plan = GenerationPlan(
+        plan_id=stable_hash(payload)[:20],
+        representation_shadow=dict(representation_shadow or {}),
+        **payload,
+    )
     validate_generation_plan(plan, candidates)
     return plan
 
@@ -220,6 +230,7 @@ def validate_generation_plan(plan: GenerationPlan, candidates: list[CandidateGen
         candidate_id = str(write.get("candidate_id") or "")
         if candidate_id and candidate_id not in assigned_ids:
             raise GenerationPlanError(f"generation plan archive write is not backed by fate assignment: {candidate_id}")
+    _validate_representation_shadow(plan.representation_shadow, candidate_ids)
     _validate_stage_graph(plan.stage_graph)
 
 
@@ -241,6 +252,7 @@ def validate_generation_plan_record(plan_data: dict[str, Any]) -> GenerationPlan
         candidate_id = str(write.get("candidate_id") or "")
         if candidate_id and candidate_id not in assignment_ids:
             raise GenerationPlanError(f"persisted generation plan archive write is not backed by fate assignment: {candidate_id}")
+    _validate_representation_shadow(plan.representation_shadow, assignment_ids)
     if plan.intervention_receipts:
         allocation = coerce_dict(plan_data.get("productive_branch_allocation"))
         known_slots = {
@@ -332,6 +344,24 @@ def expected_generation_plan_id(plan: GenerationPlan) -> str:
     if plan.move_contracts:
         payload["move_contracts"] = [dict(item) for item in plan.move_contracts]
     return stable_hash(payload)[:20]
+
+
+def _validate_representation_shadow(shadow: dict[str, Any], candidate_ids: set[str]) -> None:
+    if not shadow:
+        return
+    if str(shadow.get("mode") or "") != "shadow_only":
+        raise GenerationPlanError("generation plan representation shadow must remain shadow_only")
+    audit_hash = str(shadow.get("audit_hash") or "")
+    audit_payload = dict(shadow)
+    audit_payload.pop("audit_hash", None)
+    if not audit_hash or audit_hash != stable_hash(audit_payload):
+        raise GenerationPlanError("generation plan representation shadow audit_hash mismatch")
+    unknown = sorted(set(coerce_dict(shadow.get("features"))) - candidate_ids)
+    if unknown:
+        raise GenerationPlanError(f"generation plan representation shadow references unknown candidate: {unknown[0]}")
+    activation_gate = coerce_dict(shadow.get("activation_gate"))
+    if activation_gate.get("activated_for_selection") is not False or activation_gate.get("selection_consumers") != []:
+        raise GenerationPlanError("generation plan representation shadow must not have selection consumers")
 
 
 def apply_generation_plan(plan: GenerationPlan, candidates: list[CandidateGenome], archives: ArchiveManager) -> list[FateAssignment]:

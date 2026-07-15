@@ -88,6 +88,9 @@ class LiveNexusStore:
         runtime_options = dict(update.get("runtime_options") or self.runtime_options) if isinstance(update.get("runtime_options") or self.runtime_options, dict) else {}
         policy_metadata = coerce_dict(getattr(policy, "metadata", None))
         search_kernel_state = dict(update.get("search_kernel") or {}) if isinstance(update.get("search_kernel"), dict) else {}
+        representation_store = dict(update.get("representation_store") or {}) if isinstance(update.get("representation_store"), dict) else {}
+        if representation_store:
+            search_kernel_state["representation_shadow_store"] = representation_store
         sidecar_ref = persist_seed_reservoir_sidecar(self.output_dir, policy_metadata.get(SEED_RESERVOIR_SIDECAR_PAYLOAD_KEY))
         if sidecar_ref:
             if isinstance(getattr(policy, "metadata", None), dict):

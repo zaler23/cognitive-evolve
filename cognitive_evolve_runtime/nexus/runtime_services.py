@@ -124,6 +124,9 @@ class NexusPersistenceService:
             for key in ("seed_coverage", "target_perturb_seed_judgment", "algorithm_efficiency", "model_parallel_efficiency", "minimal_core_ablation", "seed_active_frontier", "seed_reservoir_ref")
             if key in policy_metadata
         }
+        representation_store = dict(getattr(result, "representation_store", {}) or {})
+        if representation_store:
+            search_kernel_state["representation_shadow_store"] = representation_store
         if result.interrupted and progress_event and not any(
             isinstance(event, dict) and event.get("type") == "evolution_progress" and int(event.get("round") or 0) == int(progress_event.get("round") or 0)
             for event in events_to_write

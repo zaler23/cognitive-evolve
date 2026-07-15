@@ -159,6 +159,8 @@ class EvaluateStage:
                 "search_phase": self.budget.search_phase,
             },
         ).to_dict()
+        if generation_plan.get("representation_shadow"):
+            progress_event["metadata"]["representation_shadow"] = dict(generation_plan["representation_shadow"])
         stage_count = self.budget.round_limit
         pipeline_event = PipelineProgressEvent(
             stage="candidate_population",
@@ -227,6 +229,15 @@ class EvaluateStage:
             branch_factor=self.budget.branch_factor,
             eligibility_policy=_eligibility_policy(policy),
         )
+        representation_shadow = (
+            self.representation_shadow.observe(
+                round_index=current_round,
+                candidates=population.candidates,
+                fate_assignments=assignments,
+            )
+            if self.representation_shadow is not None
+            else None
+        )
         generation_plan = build_generation_plan(
             round_index=current_round,
             candidates=population.candidates,
@@ -246,6 +257,7 @@ class EvaluateStage:
             {"op": "generate_offspring"},
             {"op": "verify_offspring"},
         ],
+            representation_shadow=representation_shadow,
             source="runtime_rank_archive_transition",
         )
         if latent_ranking_summary:

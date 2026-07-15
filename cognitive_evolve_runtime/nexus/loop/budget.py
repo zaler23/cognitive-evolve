@@ -81,6 +81,7 @@ class EvolutionLoopResult:
     fabric_state: dict[str, Any] = field(default_factory=dict)
     cost_ledger: dict[str, Any] = field(default_factory=dict)
     search_phase: str = "explore"
+    representation_store: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         profile = checkpoint_profile_from_env()
