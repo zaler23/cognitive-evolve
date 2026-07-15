@@ -310,6 +310,23 @@ class EvolutionLoopController:
             offspring_transport = generation_plan.get("offspring_transport")
             if isinstance(offspring_transport, dict) and offspring_transport:
                 metadata["offspring_transport"] = dict(offspring_transport)
+            replay_audit = generation_plan.get("move_replay_audit")
+            if isinstance(replay_audit, dict) and replay_audit:
+                replay_slots = [
+                    item
+                    for item in replay_audit.get("slots", [])
+                    if isinstance(item, dict)
+                ]
+                metadata["move_replay_view_id"] = str(replay_audit.get("view_id") or "")
+                metadata["move_replay_selections"] = [
+                    {
+                        "slot_id": str(item.get("slot_id") or ""),
+                        "preferred_emitter": dict(item.get("preferred_emitter") or {}),
+                        "receipt_refs": list(item.get("receipt_refs") or []),
+                        "selection_basis": dict(item.get("selection_basis") or {}),
+                    }
+                    for item in replay_slots
+                ]
         if offspring_verification:
             self.budget.history[-1]["offspring_verification"] = offspring_verification
         if reproduction_compaction:

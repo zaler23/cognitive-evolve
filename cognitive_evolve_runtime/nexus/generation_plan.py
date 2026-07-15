@@ -86,6 +86,7 @@ class GenerationPlan:
     blend_receipts: list[dict[str, Any]] = field(default_factory=list)
     move_receipts: list[dict[str, Any]] = field(default_factory=list)
     move_contracts: list[dict[str, Any]] = field(default_factory=list)
+    move_replay_audit: dict[str, Any] = field(default_factory=dict)
     receipt_audit: list[dict[str, Any]] = field(default_factory=list)
     representation_shadow: dict[str, Any] = field(default_factory=dict)
     created_at: str = field(default_factory=utc_now)
@@ -129,6 +130,7 @@ class GenerationPlan:
                 if isinstance(item, dict)
             ],
             move_contracts=[dict(item) for item in data.get("move_contracts", []) if isinstance(item, dict)],
+            move_replay_audit=coerce_dict(data.get("move_replay_audit")),
             receipt_audit=[dict(item) for item in data.get("receipt_audit", []) if isinstance(item, dict)],
             representation_shadow=coerce_dict(data.get("representation_shadow")),
             created_at=str(data.get("created_at") or utc_now()),
@@ -150,6 +152,7 @@ def build_generation_plan(
     blend_receipts: list[dict[str, Any]] | None = None,
     move_receipts: list[dict[str, Any]] | None = None,
     move_contracts: list[dict[str, Any]] | None = None,
+    move_replay_audit: dict[str, Any] | None = None,
     receipt_audit: list[dict[str, Any]] | None = None,
     representation_shadow: dict[str, Any] | None = None,
     source: str = "runtime_default_generation_transition",
@@ -180,6 +183,8 @@ def build_generation_plan(
         ],
         "receipt_audit": [dict(item) for item in receipt_audit or [] if isinstance(item, dict)],
     }
+    if move_replay_audit:
+        payload["move_replay_audit"] = coerce_dict(move_replay_audit)
     if blend_receipts:
         payload["blend_receipts"] = [
             BlendReceipt.from_dict(item).to_dict()
@@ -337,6 +342,8 @@ def expected_generation_plan_id(plan: GenerationPlan) -> str:
         "transfer_receipts": [TransferReceipt.from_dict(item).to_dict() for item in plan.transfer_receipts],
         "receipt_audit": [dict(item) for item in plan.receipt_audit],
     }
+    if plan.move_replay_audit:
+        payload["move_replay_audit"] = coerce_dict(plan.move_replay_audit)
     if plan.blend_receipts:
         payload["blend_receipts"] = [BlendReceipt.from_dict(item).to_dict() for item in plan.blend_receipts]
     if plan.move_receipts:

@@ -27,7 +27,7 @@ def test_stagnation_diagnosis_generates_action_for_auxiliary_collapse() -> None:
     assert updated.mutation_operators
 
 
-def test_shadow_action_palette_bandit_records_raw_action_advisory_without_changing_round_robin() -> None:
+def test_grounded_emitter_preference_replaces_fate_based_shadow_action_credit() -> None:
     parents = [
         CandidateGenome(id=f"P{index}", current_fate=fate, multihead_scores={"latent_reproductive_signal": signal})
         for index, (fate, signal) in enumerate(
@@ -42,22 +42,30 @@ def test_shadow_action_palette_bandit_records_raw_action_advisory_without_changi
     ]
     actions = ["repair_schema", "repair_behavior", "formal_equation", "instantiate_lemma", "rare_probe"]
 
-    plans = MutationPlanner().plan_from_actions(parents, actions)
+    plans = MutationPlanner().plan_from_actions(
+        parents,
+        actions,
+        preferred_actions_by_parent={"P0": "transfer"},
+        grounded_emitter_credit_by_parent={
+            "P0": {
+                "schema": "receipt-grounded-slot-replay/v1",
+                "receipt_refs": ["move-grounded-1"],
+            }
+        },
+    )
 
     assert len(plans) == len(parents)
     assert [plan.operator for plan in plans] == [
-        MutationOperator.REPAIR,
+        MutationOperator.TRANSFER,
         MutationOperator.REPAIR,
         MutationOperator.INSTANTIATE_FORMAL_ARTIFACT,
         MutationOperator.INSTANTIATE_FORMAL_ARTIFACT,
         MutationOperator.RARE_INJECT,
     ]
-    telemetry = plans[0].metadata["shadow_action_palette_bandit"]
-    assert telemetry["advisory_only"] is True
-    assert telemetry["arm_count"] == 5
-    assert len(telemetry["allocation"]) == 5
-    assert len({plan.operator for plan in plans}) == 3
-    assert {plan.metadata["raw_policy_action"] for plan in plans} == set(actions)
+    assert plans[0].metadata["grounded_emitter_credit"]["receipt_refs"] == ["move-grounded-1"]
+    assert all("shadow_action_palette_bandit" not in plan.metadata for plan in plans)
+    assert len({plan.operator for plan in plans}) == 4
+    assert {plan.metadata["raw_policy_action"] for plan in plans} == {*actions[1:], "transfer"}
 
 
 def test_failed_elite_frontier_triggers_verification_bottleneck() -> None:
