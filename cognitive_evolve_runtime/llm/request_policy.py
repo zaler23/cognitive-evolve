@@ -15,6 +15,8 @@ class LLMRequestPolicy:
     temperature: float | None = None
     top_p: float | None = None
     seed: int | None = None
+    search_phase: str | None = None
+    sampling_profile_id: str | None = None
 
 
 __all__ = ["LLMRequestPolicy"]

@@ -29,6 +29,7 @@ from cognitive_evolve_runtime.outcomes.runtime_bridge import (
 from cognitive_evolve_runtime.nexus._shared import MODEL_BOUNDARY_ERRORS
 from cognitive_evolve_runtime.nexus.stop_reasons import normalize_external_review_stop_reason, stop_reason_class
 from cognitive_evolve_runtime.llm.retry import provider_error_category
+from cognitive_evolve_runtime.llm.budget import budget_usd
 from cognitive_evolve_runtime.llm.session import current_llm_session, llm_round
 from cognitive_evolve_runtime.llm.telemetry import attach_round_cost_ledger, build_round_cost_ledger
 
@@ -151,6 +152,8 @@ class EvolutionLoopController:
         _raise_if_cancelled(self.cancellation_callback)
         if self.budget.current_round < planned_round:
             self.budget.current_round = planned_round
+        self.policy.metadata["search_phase"] = self.budget.search_phase
+        evaluated_phase = self.budget.search_phase
         with llm_round(planned_round):
             evaluation = self.round_pipeline.evaluate(
                 current_round=planned_round,
@@ -161,6 +164,7 @@ class EvolutionLoopController:
             )
         self.policy = evaluation.policy
         self.diagnosis = evaluation.diagnosis
+        self._apply_search_phase_boundary(planned_round, evaluation, evaluated_phase=evaluated_phase)
         self._record_evaluation(planned_round, evaluation)
         if evaluation.stop_reason:
             self.budget.stop_reason = evaluation.stop_reason
@@ -219,6 +223,10 @@ class EvolutionLoopController:
                 "critiques": [critique.to_dict() for critique in evaluation.critiques],
                 "verification": [item.to_dict() for item in evaluation.verification_results],
                 "generation_plan": evaluation.generation_plan,
+                "search_phase": str(evaluation.generation_plan.get("search_phase") or self.budget.search_phase),
+                "search_phase_evaluated": str(evaluation.generation_plan.get("search_phase_evaluated") or self.budget.search_phase),
+                "remaining_budget": dict(evaluation.generation_plan.get("remaining_budget") or {}),
+                "stagnation_receipt_refs": list(evaluation.generation_plan.get("stagnation_receipt_refs") or []),
                 "population_compaction": evaluation.population_compaction,
                 "latent_archive_feedback": latent_archive_feedback,
                 "stop_policy": self.budget.stop_policy,
@@ -226,6 +234,9 @@ class EvolutionLoopController:
                 "progress_event": event,
             }
         )
+        transition = evaluation.generation_plan.get("search_phase_transition")
+        if isinstance(transition, dict) and transition:
+            self.budget.history[-1]["search_phase_transition"] = dict(transition)
         self.round_observations[str(current_round)] = {
             "evaluator_qualified_survivors": int(self.adaptive.state.metrics.get("evaluator_passed_candidates") or 0),
         }
@@ -259,6 +270,14 @@ class EvolutionLoopController:
                     for item in transfers
                     if isinstance(item, dict) and item.get("artifact_hash")
                 ]
+            slot_sampling = generation_plan.get("slot_sampling_profiles")
+            if isinstance(slot_sampling, list) and slot_sampling:
+                metadata["sampling_profile_ids"] = [
+                    str(item.get("sampling_profile_id") or "")
+                    for item in slot_sampling
+                    if isinstance(item, dict) and item.get("sampling_profile_id")
+                ]
+                metadata["search_phase"] = self.budget.search_phase
         if offspring_verification:
             self.budget.history[-1]["offspring_verification"] = offspring_verification
         if reproduction_compaction:
@@ -308,6 +327,80 @@ class EvolutionLoopController:
         except Exception as checkpoint_exc:
             self.error["error_checkpoint_observer_error"] = f"{checkpoint_exc.__class__.__name__}: {checkpoint_exc}"
             self.budget.history[-1]["error_checkpoint_observer_error"] = self.error["error_checkpoint_observer_error"]
+
+    def _apply_search_phase_boundary(self, current_round: int, evaluation: RoundEvaluation, *, evaluated_phase: str) -> None:
+        remaining_budget = self._remaining_budget_signal(current_round)
+        receipt_refs = _unconsumed_stagnation_receipt_refs(self.budget.history)
+        transition: dict[str, Any] = {}
+        if not evaluation.stop_reason and current_round < self.budget.round_limit:
+            next_phase = evaluated_phase
+            reason = ""
+            if evaluated_phase == "exit_sweep":
+                next_phase = "explore"
+                reason = "exit_conditions_not_met"
+            elif receipt_refs:
+                next_phase = "exit_sweep"
+                reason = "stagnation_intervention_completed"
+            elif remaining_budget["rounds_remaining"] == 1 or remaining_budget.get("cost_budget_tail") is True:
+                next_phase = "exit_sweep"
+                reason = "budget_tail"
+            if next_phase != evaluated_phase:
+                transition = {
+                    "from": evaluated_phase,
+                    "to": next_phase,
+                    "reason": reason,
+                    "remaining_budget": dict(remaining_budget),
+                    "stagnation_receipt_refs": list(receipt_refs),
+                }
+                self.budget.search_phase = next_phase
+        self.policy.metadata["search_phase"] = self.budget.search_phase
+        phase_audit = {
+            "search_phase": self.budget.search_phase,
+            "search_phase_evaluated": evaluated_phase,
+            "remaining_budget": dict(remaining_budget),
+            "stagnation_receipt_refs": list(receipt_refs),
+        }
+        if transition:
+            phase_audit["search_phase_transition"] = transition
+        evaluation.generation_plan.update(phase_audit)
+        self.round_pipeline.last_generation_plan.update(phase_audit)
+        metadata = evaluation.progress_event.setdefault("metadata", {})
+        metadata.update(phase_audit)
+
+    def _remaining_budget_signal(self, current_round: int) -> dict[str, Any]:
+        session = current_llm_session()
+        self.cost_ledger = build_round_cost_ledger(
+            session.snapshot(),
+            budget_history=self.budget.history,
+            existing_ledger=self.cost_ledger,
+        )
+        estimated_cost = round(
+            sum(
+                float((item.get("totals") or {}).get("estimated_cost_usd") or 0.0)
+                for item in self.cost_ledger.get("rounds", [])
+                if isinstance(item, dict)
+            ),
+            12,
+        )
+        cost_limit = budget_usd()
+        cost_remaining = None if cost_limit is None else max(0.0, float(cost_limit) - estimated_cost)
+        observed_call_costs = [
+            float(event.get("estimated_cost_usd") or 0.0)
+            for event in session.snapshot()
+            if event.get("cache_replayed") is not True and event.get("estimated_cost_usd") is not None
+        ]
+        observed_call_headroom = max(observed_call_costs, default=0.0)
+        return {
+            "current_round": current_round,
+            "round_limit": self.budget.round_limit,
+            "rounds_remaining": max(0, self.budget.round_limit - current_round),
+            "cost_budget_usd": cost_limit,
+            "estimated_cost_usd": estimated_cost,
+            "estimated_cost_remaining_usd": cost_remaining,
+            "observed_call_headroom_usd": observed_call_headroom,
+            "cost_budget_tail": bool(cost_remaining is not None and observed_call_headroom > 0.0 and cost_remaining <= observed_call_headroom),
+            "cost_ledger_schema_version": str(self.cost_ledger.get("schema_version") or "round-cost-ledger/v1"),
+        }
 
     def _finalize(self) -> EvolutionLoopResult:
         if not self.budget.stop_reason:
@@ -462,6 +555,7 @@ class EvolutionLoopController:
             graded_output=graded_output.to_dict(),
             fabric_state=dict(self.fabric_state),
             cost_ledger=dict(self.cost_ledger),
+            search_phase=self.budget.search_phase,
         )
 
     def _notify(self, phase: str, round_index: int, progress_event: dict[str, Any], *, error: dict[str, Any] | None = None) -> None:
@@ -591,6 +685,27 @@ def _verification_threshold(contract: Any | None) -> VerificationStrength:
     if isinstance(metadata, dict):
         return VerificationStrength.from_value(metadata.get("verification_threshold") or VerificationStrength.FORMAL)
     return VerificationStrength.FORMAL
+
+
+def _unconsumed_stagnation_receipt_refs(history: list[dict[str, Any]]) -> list[str]:
+    if not history:
+        return []
+    consumed: set[str] = set()
+    for record in history:
+        transition = record.get("search_phase_transition") if isinstance(record, dict) else None
+        if not isinstance(transition, dict):
+            continue
+        consumed.update(str(item) for item in transition.get("stagnation_receipt_refs", []) if str(item))
+    plan = history[-1].get("generation_plan") if isinstance(history[-1], dict) else {}
+    receipts = plan.get("intervention_receipts") if isinstance(plan, dict) else []
+    return [
+        str(item.get("receipt_id"))
+        for item in receipts or []
+        if isinstance(item, dict)
+        and str((item.get("diagnosed_pressure") or {}).get("stagnation_type") or "").strip().lower() not in {"", "none"}
+        and item.get("receipt_id")
+        and str(item.get("receipt_id")) not in consumed
+    ]
 
 def evolve_once(
     *,

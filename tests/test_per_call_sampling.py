@@ -22,7 +22,7 @@ from cognitive_evolve_runtime.llm.session import (
 )
 from cognitive_evolve_runtime.llm.transport import llm_json
 from cognitive_evolve_runtime.nexus.loop.budget import EvolutionBudget
-from cognitive_evolve_runtime.nexus.loop.offspring import _generate_offspring
+from cognitive_evolve_runtime.nexus.loop.offspring import _generate_offspring, _slot_sampling_policy
 from cognitive_evolve_runtime.nexus.loop.round import EvolutionRound
 from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy
 from cognitive_evolve_runtime.ranking.relative_rater import RelativeRankingResult
@@ -227,11 +227,19 @@ def test_slot_sampling_profiles_are_context_local_across_parallel_workers(
     )
     policy = EvolutionPolicy(
         metadata={
+            "search_phase": "explore",
             "slot_sampling_profiles": {
-                "explore_fresh": [
-                    {"temperature": 0.9, "top_p": 0.8, "seed": 11},
-                    {"temperature": 0.4, "top_p": 0.7, "seed": 22},
-                ]
+                "explore": {
+                    "explore_fresh": [
+                        {"temperature": 0.9, "top_p": 0.8, "seed": 11},
+                        {"temperature": 0.4, "top_p": 0.7, "seed": 22},
+                    ]
+                },
+                "exit_sweep": {
+                    "explore_fresh": [
+                        {"temperature": 0.1, "top_p": 0.4, "seed": 33},
+                    ]
+                },
             }
         }
     )
@@ -254,6 +262,65 @@ def test_slot_sampling_profiles_are_context_local_across_parallel_workers(
         22: (0.4, 0.7),
     }
     assert [candidate.metadata["branch_slot_id"] for candidate in offspring] == ["slot-0", "slot-1"]
+
+
+def test_phase_compiled_sampling_is_journaled_and_changes_replay_signature(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_provider(monkeypatch)
+    provider = _CaptureProvider()
+    profiles = {
+        "explore": {
+            "explore_fresh": [{"temperature": 0.9, "top_p": 0.95, "seed": 101}],
+        },
+        "exit_sweep": {
+            "explore_fresh": [{"temperature": 0.1, "top_p": 0.4, "seed": 201}],
+        },
+    }
+    slot = {"slot_id": "slot-phase", "intent": "explore_fresh", "variation_index": 0}
+
+    with llm_session(LLMSession(run_id="phase-sampling", journal_dir=str(tmp_path))):
+        for phase in ("explore", "exit_sweep"):
+            policy = EvolutionPolicy(metadata={"search_phase": phase, "slot_sampling_profiles": profiles})
+            sampling_policy = _slot_sampling_policy(policy, slot)
+            assert sampling_policy is not None
+            with logical_llm_call("round/slot-phase", request_policy=sampling_policy):
+                llm_json("phase_sampling", {"same": "payload"}, system="Return JSON", schema_hint={}, provider=provider)
+
+    assert [(call["temperature"], call["top_p"], call["seed"]) for call in provider.calls] == [
+        (0.9, 0.95, 101),
+        (0.1, 0.4, 201),
+    ]
+    rows = [json.loads(line) for line in (tmp_path / "llm-calls.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert {row["search_phase"] for row in rows} == {"explore", "exit_sweep"}
+    assert {row["sampling_profile_id"] for row in rows} == {
+        "explore:explore_fresh:0",
+        "exit_sweep:explore_fresh:0",
+    }
+    assert len({row["request_hash"] for row in rows}) == 2
+    assert len(list((tmp_path / "llm-responses" / "v1").glob("*.json"))) == 2
+
+
+def test_phase_and_profile_identity_are_part_of_replay_signature(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_provider(monkeypatch)
+    provider = _CaptureProvider()
+    policies = [
+        LLMRequestPolicy(temperature=0.4, top_p=0.7, seed=11, search_phase="explore", sampling_profile_id="explore:default:0"),
+        LLMRequestPolicy(temperature=0.4, top_p=0.7, seed=11, search_phase="exit_sweep", sampling_profile_id="exit_sweep:default:0"),
+        LLMRequestPolicy(temperature=0.4, top_p=0.7, seed=11, search_phase="exit_sweep", sampling_profile_id="exit_sweep:default:1"),
+    ]
+
+    with llm_session(LLMSession(run_id="phase-profile-signature", journal_dir=str(tmp_path))):
+        for policy in policies:
+            with logical_llm_call("round/slot-same", request_policy=policy):
+                llm_json("phase_profile_signature", {"same": "payload"}, system="Return JSON", schema_hint={}, provider=provider)
+
+    assert len(provider.calls) == 3
+    assert len(list((tmp_path / "llm-responses" / "v1").glob("*.json"))) == 3
 
 
 def test_relative_rank_binds_run_round_logical_pass_and_template_version() -> None:

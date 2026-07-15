@@ -156,6 +156,7 @@ class EvaluateStage:
                 "incubating_candidates": len([c for c in population.candidates if CandidateFate.normalize(c.current_fate) == CandidateFate.INCUBATING.value]),
                 "population_vitality": vitality_snapshot(population.candidates, branch_factor=self.budget.branch_factor).to_dict(),
                 "adaptive_features": dict(self.adaptive.state.enabled_features),
+                "search_phase": self.budget.search_phase,
             },
         ).to_dict()
         stage_count = self.budget.round_limit
