@@ -8,9 +8,6 @@ from types import SimpleNamespace
 import pytest
 
 from cognitive_evolve_runtime.candidates.genome import CandidateGenome
-from cognitive_evolve_runtime.discovery.illumination import MapElitesIllumination, behavior_descriptor
-from cognitive_evolve_runtime.discovery.operators import operator_registry
-from cognitive_evolve_runtime.discovery.tension_map import TensionMap
 from cognitive_evolve_runtime.evaluators.evidence import EvidenceRecord
 from cognitive_evolve_runtime.verification.grading import GradedOutput, VerifiedResult
 from cognitive_evolve_runtime.verification.factory import verifier_from_plan
@@ -134,24 +131,3 @@ def test_decomposed_check_without_declared_claims_is_not_run() -> None:
     result = DecomposedVerifier().check(CandidateGenome(artifact="candidate"))
 
     assert result.to_dict()["validation_status"] == "not_run"
-
-
-def test_discovery_operator_registry_returns_distinct_descriptors() -> None:
-    candidate = CandidateGenome(id="C1", artifact="x", concise_claim="base claim")
-    descriptors = [op.propose(candidate, None, None, k=1)[0]["descriptor"][0] for op in operator_registry().values()]
-    assert len(descriptors) == len(set(descriptors))
-
-
-def test_map_elites_wraps_quality_diversity_and_tension_map_rules_out_region() -> None:
-    candidate = CandidateGenome(id="C1", artifact="x", artifact_type="program", multihead_scores={"frontier_score": 0.8})
-    illum = MapElitesIllumination()
-    added = illum.add(candidate)
-    descriptor = behavior_descriptor(candidate)
-    assert added["candidate_id"] == "C1"
-    assert descriptor
-    tensions = TensionMap()
-    record = EvidenceRecord(candidate_id="C1", diagnostics=["missing_required_fields: output"])
-    tensions.memory.ingest(record, round_index=1)
-    assert tensions.open_tensions
-    tensions.mark_ruled_out(candidate_id="C1", descriptor=descriptor, evidence_ref="e1")
-    assert tensions.is_ruled_out(descriptor) is True

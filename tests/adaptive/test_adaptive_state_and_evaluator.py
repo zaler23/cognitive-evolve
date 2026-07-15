@@ -173,7 +173,7 @@ def test_runtime_writes_adaptive_artifacts_when_enabled(tmp_path: Path) -> None:
     result = NexusRuntime(output_dir=tmp_path).run_text(
         "Return a compact answer with external review labels.",
         max_rounds=1,
-        adaptive_config={"enabled": True, "spatial": {"enabled": True, "mode": "observe"}},
+        adaptive_config={"enabled": True, "spatial": {"enabled": True}},
     )
 
     adaptive_dir = tmp_path / "adaptive"
@@ -223,7 +223,7 @@ def test_adaptive_state_persists_config_for_resume() -> None:
                 "artifact_type_aliases": {"cache_policy_json": "cache_policy"},
                 "required_fields": ["admission"],
             },
-            "spatial": {"enabled": True, "mode": "observe"},
+            "spatial": {"enabled": True},
         }
     )
     payload = controller.to_dict()

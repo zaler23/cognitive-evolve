@@ -45,7 +45,6 @@ CONFIG_ENV_MAP = {
     ("budget", "max_tokens"): "COGEV_LLM_MAX_TOKENS",
     ("budget", "stage_strict"): "COGEV_LLM_STAGE_BUDGET_STRICT",
     ("adaptive", "enabled"): "COGEV_ADAPTIVE_ENABLED",
-    ("adaptive", "spatial_mode"): "COGEV_SPATIAL_MODE",
     ("evaluator", "command"): "COGEV_EXTERNAL_EVALUATOR_COMMAND",
     ("evaluator", "timeout_seconds"): "COGEV_EXTERNAL_EVALUATOR_TIMEOUT",
 }

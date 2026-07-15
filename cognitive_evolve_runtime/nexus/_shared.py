@@ -120,20 +120,6 @@ def bounded_score_or_none(value: Any) -> float | None:
     return max(0.0, min(1.0, parsed))
 
 
-def classify_with_fallback(prompt: str, *, model: object | None = None) -> object:
-    """Call the semantic classifier while tolerating legacy fixtures without a model kwarg."""
-
-    from cognitive_evolve_runtime.nexus.semantics import classify
-
-    if model is not None:
-        try:
-            return classify(prompt, model=model)
-        except TypeError as exc:
-            if "model" not in str(exc):
-                raise
-    return classify(prompt)
-
-
 def call_with_optional_context(method: Callable[..., Any], /, *, provided_context: dict[str, Any] | None = None, **kwargs: Any) -> Any:
     """Call a model method with ``provided_context`` only when it accepts it."""
 
@@ -157,7 +143,6 @@ __all__ = [
     "bounded_score",
     "bounded_score_or_none",
     "call_with_optional_context",
-    "classify_with_fallback",
     "demote_model_candidate_runtime_payload",
     "demote_model_runtime_metadata",
     "positive_int",

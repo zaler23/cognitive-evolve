@@ -13,7 +13,7 @@ from .boed import produce_boed_signals
 from .causal import causal_advisory_signals
 from .cellular import cellular_advisory_signals
 from .config import TheoryConfig
-from .errors import TheoryCancelled, TheoryProducerError, TheoryTimeout
+from .errors import TheoryCancelled, TheoryTimeout
 from .geometry import geometry_advisory_signals
 from .mdl import produce_mdl_signals
 from .observer import observe_completed_events
@@ -120,7 +120,9 @@ class TheoryLayer:
             if cfg.telemetry_enabled:
                 self.telemetry.record(cycle_id=population.cycle_id, producer="cellular", signals=signals)
             return signals
-        except (TheoryCancelled, TheoryTimeout, TheoryProducerError, Exception):
+        except Exception as exc:
+            if cfg.telemetry_enabled:
+                self.telemetry.record(cycle_id=population.cycle_id, producer="cellular", signals=(), diagnostics=(type(exc).__name__,))
             return ()
 
     def budget_suggestions(
@@ -141,7 +143,9 @@ class TheoryLayer:
             if time.monotonic() - started > cfg.per_producer_timeout_seconds:
                 raise TheoryTimeout("bandit")
             return suggestions
-        except (TheoryCancelled, TheoryTimeout, TheoryProducerError, Exception):
+        except Exception as exc:
+            if cfg.telemetry_enabled:
+                self.telemetry.record(cycle_id="cycle:unknown", producer="bandit", signals=(), diagnostics=(type(exc).__name__,))
             return ()
 
     def stability_advisories(
@@ -175,7 +179,9 @@ class TheoryLayer:
             if config.telemetry_enabled:
                 self.telemetry.record(cycle_id=population.cycle_id, producer=name, signals=signals)
             return signals
-        except (TheoryCancelled, TheoryTimeout, TheoryProducerError, Exception):
+        except Exception as exc:
+            if config.telemetry_enabled:
+                self.telemetry.record(cycle_id=population.cycle_id, producer=name, signals=(), diagnostics=(type(exc).__name__,))
             return ()
 
     def _run_event_producer(
@@ -198,7 +204,10 @@ class TheoryLayer:
                 cycle_id = events[0].cycle_id if events else "cycle:unknown"
                 self.telemetry.record(cycle_id=cycle_id, producer=name, signals=signals)
             return signals
-        except (TheoryCancelled, TheoryTimeout, TheoryProducerError, Exception):
+        except Exception as exc:
+            cycle_id = events[0].cycle_id if events else "cycle:unknown"
+            if config.telemetry_enabled:
+                self.telemetry.record(cycle_id=cycle_id, producer=name, signals=(), diagnostics=(type(exc).__name__,))
             return ()
 
 

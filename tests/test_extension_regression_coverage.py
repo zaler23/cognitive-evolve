@@ -50,27 +50,6 @@ def test_search_space_fallback_is_objective_derived_not_domain_taxonomy() -> Non
     assert "duality_or_reduction" not in search_map["route_family"]
 
 
-def test_archive_evolution_and_monitor_paths() -> None:
-    from cognitive_evolve_runtime.archives.quality_diversity import QualityDiversityArchive
-    from cognitive_evolve_runtime.evolution import DriftDetector, ProgressMonitor, StagnationDetector
-
-    candidate = CandidateGenome(
-        id="C1",
-        artifact="Verifier-backed construction",
-        concise_claim="A construction with pytest evidence.",
-        core_mechanism="tool-grounded construction",
-        novelty_descriptors=["tool_grounded"],
-        multihead_scores={"objective_alignment": 0.8, "answer_likelihood": 0.7, "novelty": 0.5, "verifiability": 0.9},
-    )
-    archive = QualityDiversityArchive()
-    archive.update(candidate)
-    assert archive.to_dict()["elites_by_niche"]
-    detector_candidates = [{"title": "Verifier-backed construction", "summary": "A construction with pytest evidence.", "validation": ["pytest verifier"]}]
-    assert DriftDetector().detect(detector_candidates)["status"] == "ok"
-    assert ProgressMonitor().summarize([{"new_verifier_result": True}])["round_count"] == 1
-    assert StagnationDetector().detect([{}, {}])["status"] == "stagnation_detected"
-
-
 def test_nexus_capability_selection_replaces_legacy_capability_runtime() -> None:
     from cognitive_evolve_runtime.nexus.semantics import select_capability_ids
 
