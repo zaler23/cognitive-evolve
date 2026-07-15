@@ -133,15 +133,60 @@ class ExplorationAction:
     risk: float = 0.0
     cost: float = 0.0
     evidence_ref: str = ""
+    hypothesis_outcomes: dict[str, tuple[str, ...]] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "target_intent_ids", tuple(str(item) for item in self.target_intent_ids if str(item)))
         for field_name in ["expected_improvement", "information_gain", "diversity_gain", "risk", "cost"]:
             object.__setattr__(self, field_name, max(0.0, float(getattr(self, field_name))))
+        object.__setattr__(
+            self,
+            "hypothesis_outcomes",
+            {
+                str(hypothesis_id): tuple(dict.fromkeys(str(outcome) for outcome in outcomes if str(outcome)))
+                for hypothesis_id, outcomes in coerce_dict(self.hypothesis_outcomes).items()
+                if str(hypothesis_id) and isinstance(outcomes, (list, tuple))
+            },
+        )
+
+    def hypothesis_partition(self, intents: tuple[IntentHypothesis, ...]) -> dict[str, tuple[str, ...]]:
+        alive = tuple(intent.id for intent in intents if intent.posterior > 0)
+        if not self.hypothesis_outcomes:
+            return {}
+        partition: dict[str, list[str]] = {}
+        for hypothesis_id in alive:
+            for outcome in self.hypothesis_outcomes.get(hypothesis_id, ()):
+                partition.setdefault(outcome, []).append(hypothesis_id)
+        missing = [hypothesis_id for hypothesis_id in alive if not self.hypothesis_outcomes.get(hypothesis_id)]
+        if missing:
+            partition["__unobserved__"] = list(alive)
+        return {outcome: tuple(hypotheses) for outcome, hypotheses in sorted(partition.items())}
+
+    def robust_information_gain(self, intents: tuple[IntentHypothesis, ...]) -> float:
+        if not self.hypothesis_outcomes:
+            return self.information_gain
+        alive = tuple(intent for intent in intents if intent.posterior > 0)
+        if len(alive) <= 1 or any(not self.hypothesis_outcomes.get(intent.id) for intent in alive):
+            return 0.0
+        prior_entropy = -sum(intent.posterior * math.log(intent.posterior) for intent in alive)
+        if prior_entropy <= 0:
+            return 0.0
+        posterior_by_id = {intent.id: intent.posterior for intent in alive}
+        worst_posterior_entropy = 0.0
+        for hypotheses in self.hypothesis_partition(intents).values():
+            mass = sum(posterior_by_id[hypothesis_id] for hypothesis_id in hypotheses)
+            conditional_entropy = -sum(
+                (posterior_by_id[hypothesis_id] / mass) * math.log(posterior_by_id[hypothesis_id] / mass)
+                for hypothesis_id in hypotheses
+                if posterior_by_id[hypothesis_id] > 0
+            )
+            worst_posterior_entropy = max(worst_posterior_entropy, conditional_entropy)
+        return min(1.0, max(0.0, (prior_entropy - worst_posterior_entropy) / prior_entropy))
 
     def acquisition_score(
         self,
         *,
+        intents: tuple[IntentHypothesis, ...] = (),
         posterior_entropy: float = 0.0,
         beta: float = 1.0,
         gamma: float = 0.3,
@@ -149,13 +194,47 @@ class ExplorationAction:
         cost_weight: float = 1.0,
     ) -> float:
         ambiguity_bonus = 1.0 + max(0.0, posterior_entropy)
+        effective_gain = self.robust_information_gain(intents) if intents else self.information_gain
         return (
             self.expected_improvement
-            + beta * ambiguity_bonus * self.information_gain
+            + beta * ambiguity_bonus * effective_gain
             + gamma * self.diversity_gain
             - risk_weight * self.risk
             - cost_weight * self.cost
         )
+
+    def acquisition_audit(
+        self,
+        intents: tuple[IntentHypothesis, ...],
+        *,
+        posterior_entropy: float,
+        beta: float = 1.0,
+        gamma: float = 0.3,
+        risk_weight: float = 1.0,
+        cost_weight: float = 1.0,
+    ) -> dict[str, Any]:
+        partition = self.hypothesis_partition(intents)
+        robust_gain = self.robust_information_gain(intents)
+        return {
+            "action_id": self.action_id,
+            "kind": self.kind,
+            "surviving_hypothesis_count": len([intent for intent in intents if intent.posterior > 0]),
+            "partition_outcome_count": len(partition),
+            "hypothesis_partition": {outcome: list(hypotheses) for outcome, hypotheses in partition.items()},
+            "plausible_outcomes": {key: list(value) for key, value in sorted(self.hypothesis_outcomes.items())},
+            "gain_source": "hypothesis_partition" if self.hypothesis_outcomes else "declared_heuristic",
+            "robustness_rule": "minimum_normalized_entropy_reduction_over_plausible_outcomes",
+            "robust_information_gain": robust_gain,
+            "cost": self.cost,
+            "acquisition_score": self.acquisition_score(
+                intents=intents,
+                posterior_entropy=posterior_entropy,
+                beta=beta,
+                gamma=gamma,
+                risk_weight=risk_weight,
+                cost_weight=cost_weight,
+            ),
+        }
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -315,13 +394,15 @@ def select_exploration_action(
         admissible,
         key=lambda action: (
             action.acquisition_score(
+                intents=state.intents,
                 posterior_entropy=entropy,
                 beta=beta,
                 gamma=gamma,
                 risk_weight=risk_weight,
                 cost_weight=cost_weight,
             ),
-            action.information_gain,
+            action.robust_information_gain(state.intents),
+            -action.cost,
             action.action_id,
         ),
     )
@@ -356,7 +437,7 @@ def assess_convergence(
     best_candidate_id = ranked[0].candidate_id if ranked else ""
     best_action = select_exploration_action(state)
     entropy = state.posterior_entropy()
-    best_action_score = best_action.acquisition_score(posterior_entropy=entropy) if best_action else 0.0
+    best_action_score = best_action.acquisition_score(intents=state.intents, posterior_entropy=entropy) if best_action else 0.0
     certificate_verified = bool(getattr(improvement_certificate, "verified", False))
     top_intent = state.top_intent()
 

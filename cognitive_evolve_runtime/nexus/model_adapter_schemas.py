@@ -331,7 +331,7 @@ def _candidate_item_schema(required: tuple[str, ...] | None = None) -> dict[str,
             },
             "proof_obligations": {
                 "type": "array",
-                "description": "Named obligations with id/status/description. Use status introduced, blocked, decomposed, discharged, refuted, or open. Engine-owned tool probes use probe_cases containing only probe_template_id=artifact_json_relation/v2, typed args.path, and expected_relation; command/cwd/shell/timeout are never model-controlled.",
+                "description": "Named obligations with id/status/description. Use status introduced, blocked, decomposed, discharged, refuted, or open. Engine-owned tool probes use typed allowlisted templates: artifact_json_relation/v2 accepts args.path plus expected_relation; metamorphic_json_relation/v1 accepts relation_id=dict_numeric_summary_permutation_invariance/v1 plus args.mapping_path/summary_path. Models cannot provide relation bodies, commands, cwd, shell, or timeout.",
                 "items": {"type": "object", "additionalProperties": True},
             },
             "obligation_delta": {

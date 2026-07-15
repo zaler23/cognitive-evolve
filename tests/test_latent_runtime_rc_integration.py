@@ -18,6 +18,7 @@ from cognitive_evolve_runtime.outcomes import (
     audit_latent_decision_replay,
     freeze_improvement_certificate_from_trials,
     ingest_latent_feedback,
+    latent_exploration_plan_for_contract,
     materialize_contract_latent_posterior,
 )
 from cognitive_evolve_runtime.nexus.runtime import _enable_project_latent_exploration
@@ -85,6 +86,46 @@ def test_exploration_action_reaches_mutation_plan_metadata() -> None:
     assert plans[0].metadata["latent_exploration_action"]["action_id"] == "probe_impact"
     assert "Latent exploration directive probe_impact" in plans[0].instruction
     assert plans[0].metadata["latent_decision_trace"]["latent_posterior_snapshot_hash"]
+
+
+def test_exploration_acquisition_decision_is_audited() -> None:
+    state = LatentProblemState(
+        intents=tuple(
+            IntentHypothesis(id=f"h{index}", statement=f"hypothesis {index}", posterior=0.25)
+            for index in range(1, 5)
+        ),
+        actions=(
+            ExplorationAction(
+                action_id="split",
+                kind="intent_disambiguation",
+                hypothesis_outcomes={"h1": ("left",), "h2": ("left",), "h3": ("right",), "h4": ("right",)},
+                cost=0.05,
+            ),
+            ExplorationAction(
+                action_id="constant",
+                kind="intent_disambiguation",
+                hypothesis_outcomes={f"h{index}": ("same",) for index in range(1, 5)},
+                cost=0.01,
+            ),
+        ),
+    )
+    contract = NexusObjectiveContract(
+        original_user_goal="choose a probe",
+        normalized_goal="choose a probe",
+        metadata={"latent_problem_state": state.to_dict(), "latent_ledger": LatentLedger().to_dict()},
+    )
+
+    plan = latent_exploration_plan_for_contract(contract)
+    acquisition = plan["latent_decision_trace"]["acquisition"]
+
+    assert acquisition["selected_action_ids"] == ["split"]
+    assert acquisition["selection_rule"]
+    assert {item["action_id"] for item in acquisition["candidates"]} == {"split", "constant"}
+    selected = next(item for item in acquisition["candidates"] if item["selected"])
+    assert selected["hypothesis_partition"] == {"left": ["h1", "h2"], "right": ["h3", "h4"]}
+    assert selected["robust_information_gain"] > 0
+    assert selected["cost"] == 0.05
+    assert selected["selected_reason"] == "highest_acquisition_score_with_low_cost_tiebreak"
 
 
 def test_project_runtime_marks_latent_objective_enabled_without_completion_gate() -> None:
