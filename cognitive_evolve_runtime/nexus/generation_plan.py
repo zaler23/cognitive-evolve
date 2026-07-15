@@ -7,7 +7,7 @@ from typing import Any
 from cognitive_evolve_runtime.archives.manager import ArchiveManager, FateAssignment
 from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome
 from cognitive_evolve_runtime.nexus._serde import coerce_dict, coerce_str_list, stable_hash, utc_now
-from cognitive_evolve_runtime.nexus.receipts import InterventionReceipt, TransferReceipt
+from cognitive_evolve_runtime.nexus.receipts import BlendReceipt, InterventionReceipt, MoveReceipt, TransferReceipt
 
 KNOWN_STAGE_OPS = {
     "critique_and_verify",
@@ -83,6 +83,9 @@ class GenerationPlan:
     ranking_summary: dict[str, Any] = field(default_factory=dict)
     intervention_receipts: list[dict[str, Any]] = field(default_factory=list)
     transfer_receipts: list[dict[str, Any]] = field(default_factory=list)
+    blend_receipts: list[dict[str, Any]] = field(default_factory=list)
+    move_receipts: list[dict[str, Any]] = field(default_factory=list)
+    move_contracts: list[dict[str, Any]] = field(default_factory=list)
     receipt_audit: list[dict[str, Any]] = field(default_factory=list)
     created_at: str = field(default_factory=utc_now)
 
@@ -111,6 +114,17 @@ class GenerationPlan:
                 for item in data.get("transfer_receipts", [])
                 if isinstance(item, dict)
             ],
+            blend_receipts=[
+                BlendReceipt.from_dict(item).to_dict()
+                for item in data.get("blend_receipts", [])
+                if isinstance(item, dict)
+            ],
+            move_receipts=[
+                MoveReceipt.from_dict(item).to_dict()
+                for item in data.get("move_receipts", [])
+                if isinstance(item, dict)
+            ],
+            move_contracts=[dict(item) for item in data.get("move_contracts", []) if isinstance(item, dict)],
             receipt_audit=[dict(item) for item in data.get("receipt_audit", []) if isinstance(item, dict)],
             created_at=str(data.get("created_at") or utc_now()),
         )
@@ -128,6 +142,9 @@ def build_generation_plan(
     stage_graph: list[dict[str, Any]] | None = None,
     intervention_receipts: list[dict[str, Any]] | None = None,
     transfer_receipts: list[dict[str, Any]] | None = None,
+    blend_receipts: list[dict[str, Any]] | None = None,
+    move_receipts: list[dict[str, Any]] | None = None,
+    move_contracts: list[dict[str, Any]] | None = None,
     receipt_audit: list[dict[str, Any]] | None = None,
     source: str = "runtime_default_generation_transition",
 ) -> GenerationPlan:
@@ -157,6 +174,20 @@ def build_generation_plan(
         ],
         "receipt_audit": [dict(item) for item in receipt_audit or [] if isinstance(item, dict)],
     }
+    if blend_receipts:
+        payload["blend_receipts"] = [
+            BlendReceipt.from_dict(item).to_dict()
+            for item in blend_receipts
+            if isinstance(item, dict)
+        ]
+    if move_receipts:
+        payload["move_receipts"] = [
+            MoveReceipt.from_dict(item).to_dict()
+            for item in move_receipts
+            if isinstance(item, dict)
+        ]
+    if move_contracts:
+        payload["move_contracts"] = [dict(item) for item in move_contracts if isinstance(item, dict)]
     plan = GenerationPlan(plan_id=stable_hash(payload)[:20], **payload)
     validate_generation_plan(plan, candidates)
     return plan
@@ -294,6 +325,12 @@ def expected_generation_plan_id(plan: GenerationPlan) -> str:
         "transfer_receipts": [TransferReceipt.from_dict(item).to_dict() for item in plan.transfer_receipts],
         "receipt_audit": [dict(item) for item in plan.receipt_audit],
     }
+    if plan.blend_receipts:
+        payload["blend_receipts"] = [BlendReceipt.from_dict(item).to_dict() for item in plan.blend_receipts]
+    if plan.move_receipts:
+        payload["move_receipts"] = [MoveReceipt.from_dict(item).to_dict() for item in plan.move_receipts]
+    if plan.move_contracts:
+        payload["move_contracts"] = [dict(item) for item in plan.move_contracts]
     return stable_hash(payload)[:20]
 
 

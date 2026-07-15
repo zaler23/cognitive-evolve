@@ -8,11 +8,14 @@ from cognitive_evolve_runtime.archives.manager import ArchiveManager
 from cognitive_evolve_runtime.candidates.crossover import crossover, neighborhood_crossover_partner
 from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome, candidate_from_dict
 from cognitive_evolve_runtime.candidates.mutation import (
+    attach_semantic_move_contract,
+    MoveContractError,
     MutationEngine,
     MutationOperator,
     MutationPlan,
     MutationPlanner,
     apply_strategy_restart,
+    validate_move_plan,
 )
 from cognitive_evolve_runtime.contracts.objective_contract import NexusObjectiveContract
 from cognitive_evolve_runtime.nexus._serde import coerce_str_list, stable_hash
@@ -22,6 +25,11 @@ from cognitive_evolve_runtime.llm.session import logical_llm_call
 from cognitive_evolve_runtime.nexus.diagnosis import SearchDiagnosis
 from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy
 from cognitive_evolve_runtime.nexus.protocols import NexusModelLike, NexusMutationPlannerModelProtocol, NexusOffspringModelProtocol
+from cognitive_evolve_runtime.nexus.receipts import (
+    DONOR_ROLES,
+    ReceiptValidationError,
+    canonical_blend_receipt,
+)
 from cognitive_evolve_runtime.nexus._shared import (
     MODEL_BOUNDARY_ERRORS,
     call_with_optional_context,
@@ -95,6 +103,7 @@ def _plan_mutations(
     seen: set[str] = set()
     low_gain_streak = 0
     valid_parent_ids = {parent.id for parent in parents}
+    parent_by_id = {parent.id: parent for parent in parents}
     for batch_index in range(_mutation_plan_batch_limit(target)):
         raw = call_with_optional_context(
             model.plan_mutations,
@@ -140,6 +149,18 @@ def _plan_mutations(
             if claimed_plan_source:
                 metadata["model_claimed_plan_source"] = claimed_plan_source
             plan = MutationPlan.from_dict({**plan.to_dict(), "metadata": metadata})
+            try:
+                validate_move_plan(parent_by_id[bound_parent_ids[0]], plan)
+            except MoveContractError as exc:
+                rejected.append(
+                    {
+                        "batch": batch_index,
+                        "reason": "invalid_move_contract",
+                        "parent_ids": bound_parent_ids,
+                        "error": str(exc),
+                    }
+                )
+                continue
             sig = plan_signature(plan)
             plan.metadata["search_kernel_plan_signature"] = sig
             plan.metadata["plan_id"] = sig
@@ -330,8 +351,17 @@ def _generate_slot_offspring(
 
     def _request_slot(slot: dict[str, Any]) -> tuple[CandidateGenome | None, Exception | None]:
         slot_id = str(slot["slot_id"])
-        parent_id = str(slot["parent_id"])
-        parent = parent_by_id[parent_id]
+        parent_id = str(slot.get("primary_parent_id") or slot["parent_id"])
+        slot_parent_ids = [parent_id]
+        donor_id = str(slot.get("donor_parent_id") or "")
+        if donor_id:
+            donor_role = str(slot.get("donor_role") or "")
+            if donor_role not in DONOR_ROLES:
+                raise ModelResponseSchemaError(f"offspring slot {slot_id} has unsupported donor_role: {donor_role}")
+            if donor_id == parent_id or donor_id not in parent_by_id:
+                raise ModelResponseSchemaError(f"offspring slot {slot_id} has unavailable donor parent")
+            slot_parent_ids.append(donor_id)
+        slot_parents = [parent_by_id[item] for item in slot_parent_ids]
         slot_plan_id = stable_hash({"parent_plan_id": parent_plan_id, "slot_id": slot_id})[:20]
         slot_metadata = {
             **dict(source_plan.metadata or {}),
@@ -342,7 +372,7 @@ def _generate_slot_offspring(
         slot_plan = MutationPlan.from_dict(
             {
                 **source_plan.to_dict(),
-                "parent_ids": [parent_id],
+                "parent_ids": slot_parent_ids,
                 "metadata": slot_metadata,
             }
         )
@@ -359,7 +389,7 @@ def _generate_slot_offspring(
                 raw = call_with_optional_context(
                     model.generate_offspring,
                     plans=[slot_plan],
-                    parents=[parent],
+                    parents=slot_parents,
                     world=world,
                     contract=contract,
                     policy=slot_policy,
@@ -369,7 +399,16 @@ def _generate_slot_offspring(
             if len(raw_items) != 1 or not isinstance(raw_items[0], (CandidateGenome, dict)):
                 raise ModelResponseSchemaError(f"offspring slot {slot_id} must return exactly one candidate")
             candidate = _candidate_from_model_offspring(raw_items[0])
-            _merge_plan_metadata_into_model_offspring([candidate], [slot_plan], [parent])
+            claimed_parent_ids = list(dict.fromkeys(coerce_str_list(candidate.parent_ids)))
+            if not claimed_parent_ids or claimed_parent_ids[0] != parent_id:
+                raise ModelResponseSchemaError(
+                    f"offspring slot {slot_id} must put its primary parent first"
+                )
+            claimed_slot_id = str(candidate.metadata.get("branch_slot_id") or "")
+            if claimed_slot_id and claimed_slot_id != slot_id:
+                candidate.metadata["model_claimed_branch_slot_id"] = claimed_slot_id
+            candidate.metadata["branch_slot_id"] = slot_id
+            _merge_plan_metadata_into_model_offspring([candidate], [slot_plan], slot_parents)
             return candidate, None
         except MODEL_BOUNDARY_ERRORS as exc:
             return None, exc
@@ -652,6 +691,7 @@ def _demote_model_offspring_runtime_controls(candidate: CandidateGenome) -> None
         metadata["model_claimed_runtime_controls"] = controls
     candidate.metadata = metadata
 
+
 def _merge_plan_metadata_into_model_offspring(offspring: list[CandidateGenome], plans: list[MutationPlan], parents: list[CandidateGenome] | None = None) -> None:
     if not plans:
         if offspring:
@@ -736,16 +776,26 @@ def _merge_plan_metadata_into_model_offspring(offspring: list[CandidateGenome], 
         if len(bound_parents) != len(claimed_parent_ids):
             raise ModelResponseSchemaError(f"model offspring {candidate.id} references an unavailable parent")
         candidate.parent_ids = claimed_parent_ids
-        candidate.generation = max(parent.generation for parent in bound_parents) + 1
         _demote_model_offspring_runtime_controls(candidate)
-        _bind_branch_slot(
+        claimed_move_evidence = {
+            key: candidate.metadata.pop(key)
+            for key in ("move_contract", "move_receipt")
+            if key in candidate.metadata
+        }
+        if claimed_move_evidence:
+            candidate.metadata["model_claimed_move_evidence"] = claimed_move_evidence
+        selected_slot = _bind_branch_slot(
             candidate,
             branch_slots=branch_slots,
             used_slot_ids=used_branch_slot_ids,
             parent_by_id=parent_by_id,
         )
+        _bind_crossover_parentage(candidate, slot=selected_slot, parent_by_id=parent_by_id)
+        bound_parents = [parent_by_id[item] for item in candidate.parent_ids if item in parent_by_id]
+        candidate.generation = max(parent.generation for parent in bound_parents) + 1
         candidate.lineage = list(dict.fromkeys([item for parent in bound_parents for item in parent.lineage] + [candidate.id]))
         _merge_parent_edge_lineage(candidate, bound_parents)
+        attach_semantic_move_contract(candidate, plan)
         directive = candidate.metadata.get("branch_slot_directive")
         action_hint = str(directive.get("action_hint") or "") if isinstance(directive, dict) else ""
         if _restart_action(action_hint):
@@ -782,9 +832,9 @@ def _bind_branch_slot(
     branch_slots: list[dict[str, Any]],
     used_slot_ids: set[str],
     parent_by_id: dict[str, CandidateGenome],
-) -> None:
+) -> dict[str, Any] | None:
     if not branch_slots:
-        return
+        return None
     metadata = candidate.metadata
     claimed_id = str(metadata.get("branch_slot_id") or "")
     primary_parent_id = str(candidate.parent_ids[0] if candidate.parent_ids else "")
@@ -818,7 +868,7 @@ def _bind_branch_slot(
         metadata.pop("branch_arm_id", None)
         metadata.pop("branch_slot_parent_id", None)
         metadata.pop("branch_intent", None)
-        return
+        return None
     used_slot_ids.add(selected_id)
     metadata["branch_slot_id"] = selected_id
     metadata["branch_arm_id"] = str(selected.get("arm_id") or "")
@@ -835,6 +885,70 @@ def _bind_branch_slot(
     for key in _TRUSTED_BRANCH_DIRECTIVE_KEYS:
         if key in directive:
             metadata[key] = directive[key]
+    donor_id = str(selected.get("donor_parent_id") or "")
+    if donor_id:
+        metadata["primary_parent_id"] = str(selected.get("primary_parent_id") or selected.get("parent_id") or "")
+        metadata["donor_parent_id"] = donor_id
+        metadata["donor_role"] = str(selected.get("donor_role") or "")
+        metadata["required_contribution_map"] = dict(selected.get("required_contribution_map") or {})
+    return selected
+
+
+def _bind_crossover_parentage(
+    candidate: CandidateGenome,
+    *,
+    slot: dict[str, Any] | None,
+    parent_by_id: dict[str, CandidateGenome],
+) -> None:
+    if not slot or not slot.get("donor_parent_id"):
+        return
+    metadata = candidate.metadata
+    primary_id = str(slot.get("primary_parent_id") or slot.get("parent_id") or "")
+    donor_id = str(slot.get("donor_parent_id") or "")
+    donor_role = str(slot.get("donor_role") or "")
+    primary = parent_by_id[primary_id]
+    donor = parent_by_id[donor_id]
+    raw = metadata.get("blend_receipt")
+    try:
+        if not isinstance(raw, dict):
+            raise ReceiptValidationError("crossover candidate is missing blend_receipt")
+        receipt = canonical_blend_receipt(
+            raw,
+            candidate=candidate,
+            primary=primary,
+            donor=donor,
+            donor_role=donor_role,
+        )
+    except ReceiptValidationError as exc:
+        candidate.parent_ids = [primary_id]
+        metadata.pop("blend_receipt", None)
+        metadata["blend_receipt_rejection"] = str(exc)
+        return
+    candidate.parent_ids = [primary_id, donor_id]
+    metadata["blend_receipt"] = receipt.to_dict()
+    obligations = list(receipt.incompatibilities) + list(receipt.unresolved_obligations)
+    if not obligations:
+        return
+    introduced = list(candidate.obligation_delta.get("introduced", []))
+    for index, description in enumerate(obligations):
+        obligation_id = "blend-obligation-" + stable_hash(
+            {
+                "candidate_id": candidate.id,
+                "receipt_id": receipt.receipt_id,
+                "index": index,
+                "description": description,
+            }
+        )[:16]
+        candidate.proof_obligations.append(
+            {
+                "id": obligation_id,
+                "status": "pending",
+                "description": description,
+                "source": "blend_receipt",
+            }
+        )
+        introduced.append(obligation_id)
+    candidate.obligation_delta["introduced"] = list(dict.fromkeys(introduced))
 
 
 def _artifact_has_content(value: Any) -> bool:

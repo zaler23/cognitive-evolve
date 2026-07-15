@@ -4,6 +4,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
+from cognitive_evolve_runtime.core.serialization import stable_hash
+
 from .project_candidate import PatchOperation, ProjectCandidateGenome
 
 
@@ -81,6 +83,16 @@ def merge_patch_sets(left: list[PatchOperation], right: list[PatchOperation]) ->
 def project_patch_crossover(parent_a: ProjectCandidateGenome, parent_b: ProjectCandidateGenome, *, instruction: str = "combine complementary project patch genes") -> ProjectCandidateGenome:
     merge = merge_patch_sets(parent_a.patch_set, parent_b.patch_set)
     risk_notes = list(dict.fromkeys(parent_a.risk_notes + parent_b.risk_notes))
+    conflict_obligations = [
+        {
+            "id": "patch-conflict-" + stable_hash(conflict.to_dict())[:16],
+            "status": "pending",
+            "description": f"Resolve incompatible patch operations for {conflict.path}",
+            "source": "patch_merge",
+            "conflict": conflict.to_dict(),
+        }
+        for conflict in merge.conflicts
+    ]
     if merge.conflicts:
         risk_notes.append("patch_merge_conflicts_require_model_or_human_resolution")
     return ProjectCandidateGenome(
@@ -101,9 +113,15 @@ def project_patch_crossover(parent_a: ProjectCandidateGenome, parent_b: ProjectC
         tool_results=[],
         verification_trace=[],
         formal_artifacts=list(parent_a.formal_artifacts) + list(parent_b.formal_artifacts),
-        proof_obligations=list(parent_a.proof_obligations) + list(parent_b.proof_obligations),
+        proof_obligations=list(parent_a.proof_obligations) + list(parent_b.proof_obligations) + conflict_obligations,
         obligation_delta={
-            "introduced": list(dict.fromkeys(_delta_items(parent_a, "introduced") + _delta_items(parent_b, "introduced"))),
+            "introduced": list(
+                dict.fromkeys(
+                    _delta_items(parent_a, "introduced")
+                    + _delta_items(parent_b, "introduced")
+                    + [item["id"] for item in conflict_obligations]
+                )
+            ),
             "targeted": list(dict.fromkeys(_delta_items(parent_a, "targeted") + _delta_items(parent_b, "targeted"))),
             "decomposed": list(dict.fromkeys(_delta_items(parent_a, "decomposed") + _delta_items(parent_b, "decomposed"))),
             "discharged": list(dict.fromkeys(_delta_items(parent_a, "discharged") + _delta_items(parent_b, "discharged"))),

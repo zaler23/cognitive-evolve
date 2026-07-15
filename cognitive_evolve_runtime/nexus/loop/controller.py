@@ -278,6 +278,23 @@ class EvolutionLoopController:
                     if isinstance(item, dict) and item.get("sampling_profile_id")
                 ]
                 metadata["search_phase"] = self.budget.search_phase
+            blends = generation_plan.get("blend_receipts")
+            if isinstance(blends, list) and blends:
+                metadata["blend_receipt_ids"] = [
+                    str(item.get("receipt_id") or "")
+                    for item in blends
+                    if isinstance(item, dict) and item.get("receipt_id")
+                ]
+            moves = generation_plan.get("move_receipts")
+            if isinstance(moves, list) and moves:
+                metadata["move_receipt_ids"] = [
+                    str(item.get("receipt_id") or "")
+                    for item in moves
+                    if isinstance(item, dict) and item.get("receipt_id")
+                ]
+            move_contracts = generation_plan.get("move_contracts")
+            if isinstance(move_contracts, list) and move_contracts:
+                metadata["move_contracts"] = [dict(item) for item in move_contracts if isinstance(item, dict)]
         if offspring_verification:
             self.budget.history[-1]["offspring_verification"] = offspring_verification
         if reproduction_compaction:
