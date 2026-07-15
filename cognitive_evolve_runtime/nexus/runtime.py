@@ -375,6 +375,18 @@ class NexusRuntime:
                 if restored is None:
                     raise FileNotFoundError(checkpoint_path)
                 checkpoint = restored["checkpoint"]
+                mode = restore_mode_specific(restored, checkpoint)
+                snapshot: ProjectSnapshot | None = None
+                if mode == "project":
+                    snapshot_data = _snapshot_payload_from_world(restored.get("world") or {})
+                    if snapshot_data:
+                        snapshot = ProjectSnapshot.from_dict(snapshot_data)
+                        current_root_hash = ProjectSnapshot.from_path(snapshot.root_path).root_hash
+                        if current_root_hash != snapshot.root_hash:
+                            raise ValueError(
+                                "project source drift detected on resume: "
+                                f"checkpoint root_hash={snapshot.root_hash}, current root_hash={current_root_hash}"
+                            )
                 budget_data = dict(getattr(checkpoint, "budget", {}) or {})
                 terminal_stop = normalize_external_review_stop_reason(budget_data.get("stop_reason"))
                 resume_does_not_extend = max_rounds is None or int(max_rounds) <= int(checkpoint.max_rounds or 0)
@@ -386,7 +398,6 @@ class NexusRuntime:
                     return NexusRunResult(**payload)
             runtime_options = restore_runtime_options(persisted=restored.get("runtime_options") or getattr(checkpoint, "runtime_options", {}), overrides={})
             _restore_legacy_search_mechanics(runtime_options)
-            mode = restore_mode_specific(restored, checkpoint)
             population = restore_population(restored)
             archives = restore_archives(restored)
             policy = restored["policy"]
@@ -402,9 +413,7 @@ class NexusRuntime:
             offspring_verifier = None
             context_provider = None
             if mode == "project":
-                snapshot_data = _snapshot_payload_from_world(restored.get("world") or {})
-                if snapshot_data:
-                    snapshot = ProjectSnapshot.from_dict(snapshot_data)
+                if snapshot is not None:
                     # Re-ground source-binding resolution after resume (runtime-only).
                     archives.project_root = snapshot.root_path
 

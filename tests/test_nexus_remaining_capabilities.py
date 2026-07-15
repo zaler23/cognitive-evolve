@@ -13,6 +13,7 @@ from cognitive_evolve_runtime.nexus.model_adapter import ModelResponseSchemaErro
 from cognitive_evolve_runtime.nexus.context_protocol import ContextOrchestrator
 from cognitive_evolve_runtime.nexus.protocols import NexusModelProtocol
 from cognitive_evolve_runtime.nexus.runtime import NexusRuntime
+from cognitive_evolve_runtime.inputs.project_snapshot import ProjectSnapshot
 from cognitive_evolve_runtime.persistence.checkpoint import CheckpointStore
 
 
@@ -132,6 +133,29 @@ def test_nexus_project_runtime_verifies_context_and_resume(
         parents and instruction != "resume_project_context"
         for instruction, parents in context_calls[resume_index + 1 :]
     )
+
+
+def test_project_resume_rejects_source_root_drift_with_both_hashes(tmp_path: Path) -> None:
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    source = repo / "mod.py"
+    source.write_text("def value():\n    return 1\n", encoding="utf-8")
+    out = tmp_path / "out"
+
+    NexusRuntime(output_dir=out).run_project(repo, user_goal="Improve mod.py safely", max_rounds=1)
+    checkpoint = CheckpointStore(out / "checkpoint.json").load()
+    assert checkpoint is not None
+    checkpoint_hash = checkpoint.world["snapshot"]["root_hash"]
+
+    source.write_text("def value():\n    return 2\n", encoding="utf-8")
+    current_hash = ProjectSnapshot.from_path(repo).root_hash
+
+    with pytest.raises(ValueError, match="project source drift detected") as exc_info:
+        NexusRuntime(output_dir=out).resume_from_checkpoint(max_rounds=3)
+
+    message = str(exc_info.value)
+    assert checkpoint_hash in message
+    assert current_hash in message
 
 
 def test_model_project_seed_population_preserves_project_candidate_type() -> None:

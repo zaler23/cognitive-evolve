@@ -36,6 +36,8 @@ _SANDBOX_SENSITIVE_PATTERNS = {
     "*.p12",
     "*.pem",
     "*.pfx",
+    "*key*.json",
+    "*keys*",
 }
 
 
