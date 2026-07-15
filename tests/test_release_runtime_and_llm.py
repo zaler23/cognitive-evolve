@@ -152,6 +152,25 @@ def test_llm_fixture_json_budget_governor_and_reporting_paths(tmp_path: Path, mo
         llm_json("score_candidate", {}, system="x", schema_hint={})
 
 
+def test_fixture_missing_response_records_failed_call_ledger(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    fixture = tmp_path / "missing-response-fixture.json"
+    fixture.write_text(json.dumps({"responses": {}}), encoding="utf-8")
+    ledger = tmp_path / "llm-call-ledger.jsonl"
+    monkeypatch.setenv("COGEV_LLM_PROVIDER", "fixture")
+    monkeypatch.setenv("COGEV_LLM_FIXTURE", str(fixture))
+    monkeypatch.delenv("COGEV_LLM_BUDGET_USD", raising=False)
+
+    with llm_session(LLMSession(call_ledger_path=str(ledger), journal_dir=str(tmp_path / "llm"))):
+        with pytest.raises(LLMResponseError, match="Fixture has no response for request_type=missing_response"):
+            llm_json("missing_response", {}, system="Return JSON", schema_hint={})
+
+    rows = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
+    assert [row["status"] for row in rows] == ["started", "failed"]
+    assert rows[0]["call_id"] == rows[1]["call_id"]
+    assert rows[1]["request_type"] == "missing_response"
+    assert rows[1]["error"] == "Fixture has no response for request_type=missing_response"
+
+
 def test_llm_retry_error_classification_and_cli(monkeypatch: pytest.MonkeyPatch) -> None:
     class RateLimitError(RuntimeError):
         status_code = 429
