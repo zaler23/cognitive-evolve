@@ -8,6 +8,7 @@ from cognitive_evolve_runtime.archives.quality_diversity import pareto_frontier_
 from cognitive_evolve_runtime.nexus.adaptive_signals import mean_percentile, percentile_rank
 from cognitive_evolve_runtime.nexus.obligations import candidate_has_obligation_or_evidence_delta
 from cognitive_evolve_runtime.core.serialization import coerce_dict
+from cognitive_evolve_runtime.evaluators.evidence import evaluator_selection_key
 from cognitive_evolve_runtime.nexus.population_vitality import repair_slot_count
 from cognitive_evolve_runtime.nexus.nextgen import (
     budget_eligible_candidates,
@@ -101,27 +102,6 @@ def reproductive_value(
         - deprioritized_penalty
         - reserve_penalty
     )
-
-
-def evaluator_selection_key(candidate: CandidateGenome) -> tuple[int, float, str]:
-    """Return the runtime-grounded lexicographic evaluator tier and score."""
-
-    metadata = candidate.metadata if isinstance(candidate.metadata, dict) else {}
-    evaluator = metadata.get("evaluator") if isinstance(metadata.get("evaluator"), dict) else {}
-    status = str(evaluator.get("status") or "").strip().lower()
-    if evaluator.get("passed") is True or status in {"passed", "pass", "ok", "success"}:
-        tier = 2
-    elif evaluator.get("passed") is False or status in {"failed", "fail", "error", "invalid", "rejected"}:
-        tier = 0
-    else:
-        tier = 1
-    metrics = evaluator.get("metrics") if isinstance(evaluator.get("metrics"), dict) else {}
-    raw_score = metrics.get("score", candidate.multihead_scores.get("evaluator_score", candidate.multihead_scores.get("objective_score", 0.0)))
-    try:
-        score = float(raw_score)
-    except (TypeError, ValueError):
-        score = 0.0
-    return tier, score if score == score else 0.0, candidate.id
 
 
 def _archive_directive_adjustment(candidate: CandidateGenome, archives: object | None) -> float:
@@ -496,4 +476,4 @@ def _int(value: object, *, default: int) -> int:
         return default
 
 
-__all__ = ["ParentSelector", "reproductive_value"]
+__all__ = ["ParentSelector", "evaluator_selection_key", "reproductive_value"]

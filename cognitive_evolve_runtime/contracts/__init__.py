@@ -1,4 +1,6 @@
 from .objective_contract import (
+    CriterionSpec,
+    EvaluatorBinding,
     ObjectiveContractCompiler,
     TaskContract,
     TaskContractValidator,
@@ -9,6 +11,8 @@ from .objective_contract import (
 from .schemas import ContractItem, ContractValidationReport, EvaluationContract, MATERIAL_DELTA_TYPES, META_CONTRACT_VERSION, RUN_STATUSES
 
 __all__ = [
+    "CriterionSpec",
+    "EvaluatorBinding",
     "contract_from_any",
     "objective_contract_from_task",
     "ObjectiveContractCompiler",

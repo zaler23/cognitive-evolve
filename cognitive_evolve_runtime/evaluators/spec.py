@@ -12,6 +12,8 @@ from cognitive_evolve_runtime.core.serialization import coerce_dict
 class EvaluatorMetricSpec:
     name: str
     direction: str = "maximize"
+    value_type: str = "number"
+    source_span: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -21,7 +23,12 @@ class EvaluatorMetricSpec:
         direction = str(data.get("direction") or "maximize").strip().lower()
         if direction not in {"maximize", "minimize", "pass"}:
             direction = "maximize"
-        return cls(name=str(data.get("name") or "score"), direction=direction)
+        return cls(
+            name=str(data.get("name") or "score"),
+            direction=direction,
+            value_type=str(data.get("value_type") or "number").strip().lower(),
+            source_span=coerce_dict(data.get("source_span")),
+        )
 
 
 @dataclass(frozen=True)

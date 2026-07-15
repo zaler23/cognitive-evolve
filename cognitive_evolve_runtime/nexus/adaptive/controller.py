@@ -43,6 +43,7 @@ class AdaptiveRuntimeController:
             restored_config = coerce_dict(explicit)
         config = AdaptiveConfig.from_sources(explicit=restored_config or None, contract=contract, policy=policy, world=world)
         controller = cls(config=config, state=AdaptiveRuntimeState.from_dict(restored_state))
+        controller.record_contract_criterion_binding_audit(contract=contract)
         controller.record_contract_artifact_policy_conflicts(contract=contract)
         return controller
 
@@ -168,6 +169,21 @@ class AdaptiveRuntimeController:
         self.challenge_memory.ingest(record, round_index=int(self.state.round_index or 0))
         self.state.challenge_memory = self.challenge_memory.to_dict()
         self.state.metrics["contract_artifact_policy_conflict_count"] = len(diagnostics)
+
+    def record_contract_criterion_binding_audit(self, *, contract: Any | None) -> None:
+        metadata = getattr(contract, "metadata", None)
+        audit = metadata.get("criterion_binding_audit") if isinstance(metadata, dict) else None
+        rejected = [dict(item) for item in audit or [] if isinstance(item, dict) and item.get("status") == "rejected"]
+        existing = {
+            (item.get("criterion_index"), item.get("reason"), item.get("frozen_input_sha256"))
+            for item in self.state.events
+            if item.get("type") == "criterion_binding_rejected"
+        }
+        for item in rejected:
+            identity = (item.get("criterion_index"), item.get("reason"), item.get("frozen_input_sha256"))
+            if identity in existing:
+                continue
+            self.state.record_event(adaptive_event("criterion_binding_rejected", **item))
 
     def set_verification_plan(self, plan: Any | None) -> None:
         if plan is None:

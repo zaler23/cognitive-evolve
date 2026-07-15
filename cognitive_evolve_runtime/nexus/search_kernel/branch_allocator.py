@@ -11,6 +11,7 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Iterable, Mapping
 
 from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome
+from cognitive_evolve_runtime.evaluators.evidence import evaluator_selection_key
 from cognitive_evolve_runtime.nexus._serde import coerce_dict, stable_hash
 from cognitive_evolve_runtime.nexus.search_kernel.fingerprints import (
     base_mechanism_family,
@@ -104,7 +105,7 @@ def productive_outcomes(
 ) -> tuple[ProductiveOutcome, ...]:
     """Score candidates in causal order using post-evaluation observations."""
 
-    directions = {str(key): str(value) for key, value in (metric_directions or {}).items()}
+    selection_binding = _binding_from_metric_directions(metric_directions)
     ordered = sorted(_dedupe_candidates(candidates), key=_candidate_order)
     prior: list[CandidateGenome] = []
     seen_phenotypes: set[str] = set()
@@ -175,7 +176,7 @@ def productive_outcomes(
                 continue
             cell = str(facts[index]["cell"] or "")
             candidate = facts[index]["candidate"]
-            if cell and _same_cell_elite_improvement(candidate, prior, cell=cell, directions=directions):
+            if cell and _same_cell_elite_improvement(candidate, prior, cell=cell, binding=selection_binding):
                 improvement_groups.setdefault(cell, []).append(index)
         improvement_rewards = {
             index: 1.0 / len(indices)
@@ -519,44 +520,29 @@ def _same_cell_elite_improvement(
     prior: list[CandidateGenome],
     *,
     cell: str,
-    directions: dict[str, str],
+    binding: dict[str, Any] | None,
 ) -> bool:
-    vector = _metric_vector(candidate, directions)
-    if not vector:
+    candidate_key = evaluator_selection_key(candidate, binding)[:2]
+    if candidate_key[0] < 0:
         return False
-    peers = [_metric_vector(item, directions) for item in prior if observed_outcome_cell(item) == cell]
-    peers = [item for item in peers if item]
-    return bool(peers) and any(_dominates(vector, item, directions) for item in peers) and not any(_dominates(item, vector, directions) for item in peers)
+    peer_keys = [
+        evaluator_selection_key(item, binding)[:2]
+        for item in prior
+        if observed_outcome_cell(item) == cell
+    ]
+    peer_keys = [item for item in peer_keys if item[0] >= 0]
+    return bool(peer_keys) and candidate_key > max(peer_keys)
 
 
-def _metric_vector(candidate: CandidateGenome, directions: dict[str, str]) -> dict[str, float]:
-    evaluator = coerce_dict(coerce_dict(candidate.metadata).get("evaluator"))
-    metrics = coerce_dict(evaluator.get("metrics"))
-    out: dict[str, float] = {}
-    for name, direction in directions.items():
-        value = metrics.get(name)
-        if isinstance(value, bool):
-            out[name] = float(value)
-        elif isinstance(value, (int, float)) and math.isfinite(float(value)):
-            out[name] = float(value)
-        elif direction == "pass" and name == "correctness" and isinstance(evaluator.get("passed"), bool):
-            out[name] = float(evaluator["passed"])
-    return out
-
-
-def _dominates(left: dict[str, float], right: dict[str, float], directions: dict[str, str]) -> bool:
-    required = set(directions)
-    if not required or set(left) != required or set(right) != required:
-        return False
-    shared = sorted(required)
-    no_worse = True
-    strictly_better = False
-    for name in shared:
-        minimize = directions.get(name) == "minimize"
-        a, b = left[name], right[name]
-        no_worse = no_worse and (a <= b if minimize else a >= b)
-        strictly_better = strictly_better or (a < b if minimize else a > b)
-    return no_worse and strictly_better
+def _binding_from_metric_directions(metric_directions: dict[str, str] | None) -> dict[str, Any] | None:
+    if not metric_directions:
+        return None
+    metric, direction = next(iter(metric_directions.items()))
+    return {
+        "metric": str(metric),
+        "direction": str(direction),
+        "value_type": "boolean" if str(direction) == "pass" else "number",
+    }
 
 
 def _verification_state(candidate: CandidateGenome) -> str:
