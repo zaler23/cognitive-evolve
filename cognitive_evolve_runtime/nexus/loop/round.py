@@ -36,12 +36,12 @@ from .round_context import RoundEvaluation
 class EvolutionRound(EvaluateStage, ReproduceStage):
     """Thin facade over the evaluation and reproduction stages."""
 
-    def __init__(self, *, model: NexusModelLike | None, budget: EvolutionBudget, adaptive: AdaptiveRuntimeController | None = None) -> None:
+    def __init__(self, *, model: NexusModelLike | None, budget: EvolutionBudget, adaptive: AdaptiveRuntimeController | None = None, elo_state: dict[str, Any] | None = None) -> None:
         self.model = model
         self.budget = budget
         self.adaptive = adaptive or AdaptiveRuntimeController.from_sources()
         self.rater = RelativeRater(model=model)
-        self.elo = MultiHeadElo()
+        self.elo = MultiHeadElo.from_dict(elo_state or {})
         self.diagnoser = SearchStateDiagnoser(model=model)
         self.updater = PolicyUpdater()
         self.selector = ParentSelector()
