@@ -299,6 +299,52 @@ def test_diminishing_returns_checkpoint_stops_as_external_review_boundary() -> N
         synthesis=SynthesizedResult(status="model_synthesized", final_answer="review candidate"),
     ) == "completed"
 
+
+def test_same_best_convergence_does_not_stop_during_current_stagnation() -> None:
+    budget = EvolutionBudget(
+        max_rounds=8,
+        history=[
+            {"ranking": {"best_final_answer_id": "C1"}, "diagnosis": {"stagnation_type": "None"}},
+            {"ranking": {"best_final_answer_id": "C1"}, "diagnosis": {"stagnation_type": "None"}},
+        ],
+        stop_policy="adaptive_until_solved",
+        min_rounds_before_stop=1,
+    )
+
+    reason = StopDecisionEngine().stop_reason_after_round(
+        budget=budget,
+        completed_round=3,
+        diagnosis=SearchDiagnosis(stagnation_detected=True, stagnation_type="SemanticLooping"),
+        best_answer_id="C1",
+        population=CandidatePopulation([CandidateGenome(id="C1")]),
+        model=None,
+    )
+
+    assert reason == ""
+
+
+def test_same_best_convergence_still_stops_without_current_stagnation() -> None:
+    budget = EvolutionBudget(
+        max_rounds=8,
+        history=[
+            {"ranking": {"best_final_answer_id": "C1"}, "diagnosis": {"stagnation_type": "None"}},
+            {"ranking": {"best_final_answer_id": "C1"}, "diagnosis": {"stagnation_type": "converged"}},
+        ],
+        stop_policy="adaptive_until_solved",
+        min_rounds_before_stop=1,
+    )
+
+    reason = StopDecisionEngine().stop_reason_after_round(
+        budget=budget,
+        completed_round=3,
+        diagnosis=SearchDiagnosis(stagnation_detected=False, stagnation_type="None"),
+        best_answer_id="C1",
+        population=CandidatePopulation([CandidateGenome(id="C1")]),
+        model=None,
+    )
+
+    assert reason == "candidate_ready_for_external_review"
+
 def test_public_bind_rejects_default_or_weak_service_api_key(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
     monkeypatch.setenv("COGEV_HERMETIC_TEST", "1")
     monkeypatch.setenv("COGEV_RUNTIME_ROOT", str(tmp_path / "runtime"))
