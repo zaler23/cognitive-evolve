@@ -327,7 +327,12 @@ def _budgeted_llm_json(request_type: str, payload: dict[str, Any], *, system: st
         "started_at": started,
     })
     if status["provider"] == "fixture":
-        response = load_fixture_response(request_type, payload, str(status["fixture"]))
+        try:
+            response = load_fixture_response(request_type, payload, str(status["fixture"]))
+        except (LLMConfigurationError, LLMResponseError) as exc:
+            safe_error = public_error_message(exc)
+            record_call_state("failed", call_id=call_id, request_type=request_type, request_hash=request_hash, round_id=os.environ.get("COGEV_ROUND_ID", "runtime"), step_id=os.environ.get("COGEV_STEP_ID", request_type), extra={"attempt": 1, "error": safe_error, "category": provider_error_category(exc), "reasoning_effort": call_identity.reasoning_effort, "llm_call_identity": call_identity.to_dict(), "model_profile_id": call_identity.profile_id, **resolved_sampling})
+            raise
         response.setdefault("provider", "fixture")
         response.setdefault("model", "fixture")
         if logical_context is not None:

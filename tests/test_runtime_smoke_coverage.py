@@ -11,15 +11,16 @@ from cognitive_evolve_runtime.persistence.transactional_snapshot import NexusSna
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_fixture_backed_runtime_run_writes_valid_artifacts(tmp_path, monkeypatch, capsys) -> None:
+def test_fixture_backed_four_round_runtime_run_writes_valid_artifacts(tmp_path, monkeypatch, capsys) -> None:
     task_dir = tmp_path / "task"
     task_dir.mkdir()
     fixture = ROOT / "tests" / "fixtures" / "llm_fixture.json"
     monkeypatch.setenv("COGEV_LLM_PROVIDER", "fixture")
     monkeypatch.setenv("COGEV_LLM_FIXTURE", str(fixture))
     monkeypatch.setenv("COGEV_RUNTIME_ROOT", str(tmp_path / "runtime-root"))
+    monkeypatch.setenv("COGEV_INTERNAL_ROUND_CAP", "4")
 
-    rc = runtime_run(str(task_dir), "agent system evolution tuning architecture conflict", activate_all=True, rounds=2)
+    rc = runtime_run(str(task_dir), "agent system evolution tuning architecture conflict", activate_all=True, rounds=4)
 
     assert rc == 0
     state = json.loads((task_dir / "runtime-state.json").read_text(encoding="utf-8"))
@@ -27,8 +28,21 @@ def test_fixture_backed_runtime_run_writes_valid_artifacts(tmp_path, monkeypatch
     assert state["single_runtime"]["source_of_truth"] == "NexusRuntime"
     assert state["interaction_mode"] == "one_shot"
     assert state["external_questions_allowed"] is False
-    assert state["nexus_evolution"]["actual_rounds"] >= 1
-    assert (task_dir / "nexus-runtime" / "run-result.json").exists()
+    assert state["nexus_evolution"]["actual_rounds"] == 4
+    run_result = json.loads((task_dir / "nexus-runtime" / "run-result.json").read_text(encoding="utf-8"))
+    coverage = run_result["policy"]["metadata"]["seed_coverage"]
+    assert coverage["contract_coverage_status"] == "complete"
+    assert coverage["covered_slot_count"] == coverage["required_slot_count"] == 18
+    assert coverage["missing_slot_ids"] == []
+    assert coverage["missing_edge_slot_ids"] == []
+    assert coverage["missing_lens_slot_ids"] == []
+    assert coverage["redundant_lens_slot_ids"] == []
+    assert coverage["missing_outcome_slot_ids"] == []
+    self_check = json.loads(
+        (task_dir / "nexus-runtime" / "nexus-runtime-self-check.json").read_text(encoding="utf-8")
+    )
+    assert self_check["status"] == "pass"
+    assert self_check["passed"] == self_check["total"]
     assert (task_dir / "nexus-runtime" / "population.json").exists()
 
     validation = write_runtime_validation_report(task_dir)
