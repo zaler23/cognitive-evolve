@@ -430,7 +430,10 @@ def _inherited_mutation_metadata(parent: CandidateGenome, plan: MutationPlan) ->
     """Preserve non-final/repair lane constraints across deterministic mutation."""
 
     parent_metadata = coerce_dict(getattr(parent, "metadata", {}))
-    metadata: dict[str, Any] = {"mutation_instruction": plan.instruction}
+    metadata: dict[str, Any] = {
+        "mutation_instruction": plan.instruction,
+        "mutation_operator": plan.operator if plan.operator in MutationOperator.ALL else MutationOperator.DEEPEN,
+    }
     for key in (
         "search_seed_not_final",
         "final_answer_blocked_until_repaired",

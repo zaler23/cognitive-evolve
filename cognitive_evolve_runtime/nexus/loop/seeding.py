@@ -561,7 +561,7 @@ def _seed_portfolio_contract() -> dict[str, Any]:
         "required_axes": [axis["id"] for axis in SEED_COGNITIVE_AXES],
         "discipline_policy": "model_selects_relevant_disciplines_no_runtime_discipline_ontology",
         "slot_receipt": "metadata.seed_type must equal slot_id",
-        "axis_declaration": "metadata.search_space must include matching family_id and seed_axis; direct mainstream requires seed_axis_claim, cross-domain transfer_source_domain, counterexample probe_target_assumption, representation shift from/to, tool probe tool_probe_plan, and edge knowledge non-empty edge_knowledge_seeds.",
+        "axis_declaration": "metadata.search_space must include matching family_id and seed_axis; direct mainstream requires seed_axis_claim, cross-domain transfer_source_domain plus metadata.transfer_receipt structure mapping, counterexample probe_target_assumption, representation shift from/to, tool probe tool_probe_plan, and edge knowledge non-empty edge_knowledge_seeds.",
         "axis_required_claims": dict(SEED_AXIS_REQUIRED_CLAIMS),
         "outcome_readiness": "Each slot needs a materially distinct artifact, pairwise non-redundant model-chosen niche_memberships, and non-empty evaluation_dimensions; edge_knowledge_seeds are required only for edge_knowledge slots.",
         "acceptance_policy": "Missing declarations create coverage shortfall but do not hard-reject a candidate.",
@@ -632,7 +632,7 @@ def _policy_for_seed_batch(
         "In this single seed call return exactly one materially distinct candidate per seed_portfolio slot. "
         "For every candidate set metadata.seed_type to slot_id and metadata.search_space to the slot family_id, "
         "and seed_axis. For direct_mainstream add a non-empty seed_axis_claim explaining the mainstream mechanism. "
-        "For cross_domain_transfer add transfer_source_domain; for counterexample_probe add probe_target_assumption; "
+        "For cross_domain_transfer add transfer_source_domain plus metadata.transfer_receipt with source/target relations, element-level mapping, preserved invariant, predicted break condition, probe_ref, and artifact_hash; for counterexample_probe add probe_target_assumption; "
         "for representation_shift add representation_shift.from and .to; for tool_probe add a concrete tool_probe_plan; "
         "only edge_knowledge slots require non-empty, pairwise non-redundant edge_knowledge_seeds. Use pairwise non-redundant niche_memberships for model-chosen angles, "
         "perspectives, and disciplines; and provide non-empty evaluation_dimensions tied to observable outcomes. "

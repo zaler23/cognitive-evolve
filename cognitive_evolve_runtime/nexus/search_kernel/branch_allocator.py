@@ -12,6 +12,7 @@ from typing import Any, Iterable, Mapping
 
 from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome
 from cognitive_evolve_runtime.nexus._serde import coerce_dict, stable_hash
+from cognitive_evolve_runtime.nexus.receipts import transfer_credit_for_candidate
 from cognitive_evolve_runtime.nexus.search_kernel.fingerprints import (
     base_mechanism_family,
     candidate_phenotype_signature,
@@ -56,6 +57,7 @@ class ProductiveBranchAllocation:
     arms: tuple[OperatorArmStats, ...]
     credit_summary: dict[str, int]
     observed_family_counts: dict[str, int] = field(default_factory=dict)
+    credited_transfer_artifact_hashes: tuple[str, ...] = ()
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -72,6 +74,7 @@ class ProductiveBranchAllocation:
             ],
             "credit_summary": dict(self.credit_summary),
             "observed_family_counts": dict(self.observed_family_counts),
+            "credited_transfer_artifact_hashes": list(self.credited_transfer_artifact_hashes),
         }
 
 
@@ -101,6 +104,7 @@ def productive_outcomes(
     candidates: Iterable[CandidateGenome],
     *,
     metric_directions: dict[str, str] | None = None,
+    credited_transfer_artifact_hashes: Iterable[str] = (),
 ) -> tuple[ProductiveOutcome, ...]:
     """Score candidates in causal order using post-evaluation observations."""
 
@@ -110,6 +114,7 @@ def productive_outcomes(
     seen_phenotypes: set[str] = set()
     seen_cells: set[str] = set()
     seen_resolved: set[str] = set()
+    credited_transfer_hashes = {str(item) for item in credited_transfer_artifact_hashes if str(item)}
     outcomes: list[ProductiveOutcome] = []
     start = 0
     while start < len(ordered):
@@ -147,8 +152,21 @@ def productive_outcomes(
                     "unbound": unbound,
                     "observed_failure": _observed_failure(candidate),
                     "patch_verified": _patch_state(candidate) == "applied" and verification == "passed",
+                    "transfer_credit": None,
                 }
             )
+        for fact in facts:
+            if (
+                not fact["duplicate"]
+                and not fact["terminal"]
+                and not fact["unbound"]
+                and not fact["observed_failure"]
+                and fact["verification"] != "failed"
+            ):
+                fact["transfer_credit"] = transfer_credit_for_candidate(
+                    fact["candidate"],
+                    credited_artifact_hashes=credited_transfer_hashes,
+                )
         eligible = [
             index
             for index, fact in enumerate(facts)
@@ -157,6 +175,7 @@ def productive_outcomes(
             and not fact["unbound"]
             and not fact["observed_failure"]
             and fact["verification"] != "failed"
+            and (fact["transfer_credit"] is None or fact["transfer_credit"].productive_credit)
         ]
         eligible_set = set(eligible)
         new_cell_groups: dict[str, list[int]] = {}
@@ -245,6 +264,8 @@ def productive_outcomes(
             elif fact["terminal"] or fact["verification"] == "failed":
                 reasons.append("terminal_or_verification_failure")
                 risk = 1.0
+            elif fact["transfer_credit"] is not None and not fact["transfer_credit"].productive_credit:
+                reasons.append("transfer_" + fact["transfer_credit"].reason)
             elif index in new_cell_rewards:
                 reasons.append("new_grounded_outcome_cell")
                 reward = new_cell_rewards[index]
@@ -265,6 +286,12 @@ def productive_outcomes(
                 reward = probe_rewards[index]
             else:
                 reasons.append("no_grounded_productive_event")
+
+            if fact["transfer_credit"] is not None and fact["transfer_credit"].productive_credit:
+                if reasons == ["no_grounded_productive_event"]:
+                    reasons.clear()
+                reasons.append("transfer_invariant_probe_survived")
+                reward = max(0.5, reward)
 
             # Seeds establish baselines but are not reproduction pulls.
             if candidate.parent_ids:
@@ -303,6 +330,7 @@ def allocate_productive_branches(
     metric_directions: dict[str, str] | None = None,
     total_slots: int,
     observed_family_counts: Mapping[str, int] | None = None,
+    credited_transfer_artifact_hashes: Iterable[str] = (),
 ) -> ProductiveBranchAllocation:
     """Allocate real branch slots with lineage-root UCB and an exploration floor."""
 
@@ -319,8 +347,14 @@ def allocate_productive_branches(
             credit_summary={},
             observed_family_counts=family_counts,
         )
-    outcomes = productive_outcomes(candidate_list, metric_directions=metric_directions)
     history = [dict(item) for item in budget_history if isinstance(item, dict)]
+    historical_transfer_hashes = _historical_transfer_credit_hashes(history)
+    historical_transfer_hashes.update(str(item) for item in credited_transfer_artifact_hashes if str(item))
+    outcomes = productive_outcomes(
+        candidate_list,
+        metric_directions=metric_directions,
+        credited_transfer_artifact_hashes=historical_transfer_hashes,
+    )
     planned_slots, rejected_slots = _historical_slot_events(history)
     allocation_epoch = max((_history_round(item) for item in history), default=-1) + 1
     planned_ids = {str(item.get("slot_id") or "") for item in planned_slots}
@@ -449,11 +483,17 @@ def allocate_productive_branches(
         virtual[arm_id] = _virtual_pull(virtual[arm_id])
 
     active_arms = tuple(stats[arm_id] for arm_id in arm_order)
+    credited_transfer_artifact_hashes = tuple(sorted({
+        str(coerce_dict(by_id[outcome.candidate_id].metadata).get("transfer_receipt", {}).get("artifact_hash") or "")
+        for outcome in outcomes
+        if outcome.candidate_id in by_id and "transfer_invariant_probe_survived" in outcome.reason_codes
+    } - {""}))
     return ProductiveBranchAllocation(
         slots=tuple(slots),
         arms=active_arms,
         credit_summary=reason_counts,
         observed_family_counts=family_counts,
+        credited_transfer_artifact_hashes=credited_transfer_artifact_hashes,
     )
 
 
@@ -700,6 +740,15 @@ def _historical_slot_events(history: Iterable[dict[str, Any]]) -> tuple[list[dic
         rejected.extend(dict(event) for event in harvest.get("rejected", []) if isinstance(event, dict) and str(event.get("reason") or "").startswith("duplicate"))
         rejected.extend(dict(event) for event in plan.get("duplicate_offspring", []) if isinstance(event, dict))
     return slots, rejected
+
+
+def _historical_transfer_credit_hashes(history: Iterable[dict[str, Any]]) -> set[str]:
+    hashes: set[str] = set()
+    for item in history:
+        plan = coerce_dict(item.get("generation_plan")) if isinstance(item, dict) else {}
+        allocation = coerce_dict(plan.get("productive_branch_allocation"))
+        hashes.update(str(value) for value in allocation.get("credited_transfer_artifact_hashes", []) if str(value))
+    return hashes
 
 
 def _history_round(item: dict[str, Any]) -> int:

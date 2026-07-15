@@ -7,6 +7,7 @@ from typing import Any
 from cognitive_evolve_runtime.archives.manager import ArchiveManager, FateAssignment
 from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome
 from cognitive_evolve_runtime.nexus._serde import coerce_dict, coerce_str_list, stable_hash, utc_now
+from cognitive_evolve_runtime.nexus.receipts import InterventionReceipt, TransferReceipt
 
 KNOWN_STAGE_OPS = {
     "critique_and_verify",
@@ -66,8 +67,9 @@ class GenerationPlan:
     """A single authority for one generation's state transition.
 
     The first production slice owns the rank → fate → archive transition.  The
-    schema already reserves parent, mutation, and stage-graph fields so later
-    slices extend the same authority instead of adding another competing one.
+    schema already reserves parent, mutation, stage-graph, and receipt fields so
+    later slices extend the same authority instead of adding another competing
+    one.
     """
 
     plan_id: str
@@ -79,6 +81,9 @@ class GenerationPlan:
     archive_writes: list[dict[str, Any]] = field(default_factory=list)
     stage_graph: list[dict[str, Any]] = field(default_factory=list)
     ranking_summary: dict[str, Any] = field(default_factory=dict)
+    intervention_receipts: list[dict[str, Any]] = field(default_factory=list)
+    transfer_receipts: list[dict[str, Any]] = field(default_factory=list)
+    receipt_audit: list[dict[str, Any]] = field(default_factory=list)
     created_at: str = field(default_factory=utc_now)
 
     def to_dict(self) -> dict[str, Any]:
@@ -96,6 +101,17 @@ class GenerationPlan:
             archive_writes=[dict(item) for item in data.get("archive_writes", []) if isinstance(item, dict)],
             stage_graph=_coerce_stage_graph(data.get("stage_graph")),
             ranking_summary=coerce_dict(data.get("ranking_summary")),
+            intervention_receipts=[
+                InterventionReceipt.from_dict(item).to_dict()
+                for item in data.get("intervention_receipts", [])
+                if isinstance(item, dict)
+            ],
+            transfer_receipts=[
+                TransferReceipt.from_dict(item).to_dict()
+                for item in data.get("transfer_receipts", [])
+                if isinstance(item, dict)
+            ],
+            receipt_audit=[dict(item) for item in data.get("receipt_audit", []) if isinstance(item, dict)],
             created_at=str(data.get("created_at") or utc_now()),
         )
 
@@ -110,6 +126,9 @@ def build_generation_plan(
     mutation_objectives: list[str] | None = None,
     archive_writes: list[dict[str, Any]] | None = None,
     stage_graph: list[dict[str, Any]] | None = None,
+    intervention_receipts: list[dict[str, Any]] | None = None,
+    transfer_receipts: list[dict[str, Any]] | None = None,
+    receipt_audit: list[dict[str, Any]] | None = None,
     source: str = "runtime_default_generation_transition",
 ) -> GenerationPlan:
     """Build and validate the authoritative transition for a generation."""
@@ -126,6 +145,17 @@ def build_generation_plan(
         "archive_writes": writes,
         "stage_graph": stage_ops,
         "ranking_summary": _ranking_summary(ranking),
+        "intervention_receipts": [
+            InterventionReceipt.from_dict(item).to_dict()
+            for item in intervention_receipts or []
+            if isinstance(item, dict)
+        ],
+        "transfer_receipts": [
+            TransferReceipt.from_dict(item).to_dict()
+            for item in transfer_receipts or []
+            if isinstance(item, dict)
+        ],
+        "receipt_audit": [dict(item) for item in receipt_audit or [] if isinstance(item, dict)],
     }
     plan = GenerationPlan(plan_id=stable_hash(payload)[:20], **payload)
     validate_generation_plan(plan, candidates)
@@ -180,6 +210,18 @@ def validate_generation_plan_record(plan_data: dict[str, Any]) -> GenerationPlan
         candidate_id = str(write.get("candidate_id") or "")
         if candidate_id and candidate_id not in assignment_ids:
             raise GenerationPlanError(f"persisted generation plan archive write is not backed by fate assignment: {candidate_id}")
+    if plan.intervention_receipts:
+        allocation = coerce_dict(plan_data.get("productive_branch_allocation"))
+        known_slots = {
+            str(item.get("slot_id") or "")
+            for item in allocation.get("slots", [])
+            if isinstance(item, dict) and item.get("slot_id")
+        }
+        for raw in plan.intervention_receipts:
+            receipt = InterventionReceipt.from_dict(raw)
+            unknown = [slot_id for slot_id in receipt.recipient_branch_slot_ids if slot_id not in known_slots]
+            if unknown:
+                raise GenerationPlanError(f"persisted intervention receipt references unknown branch slot: {unknown[0]}")
     _validate_completed_stage_ops(plan, coerce_str_list(plan_data.get("completed_stage_ops")))
     return plan
 
@@ -248,6 +290,9 @@ def expected_generation_plan_id(plan: GenerationPlan) -> str:
         "archive_writes": [dict(item) for item in plan.archive_writes],
         "stage_graph": _coerce_stage_graph(plan.stage_graph),
         "ranking_summary": coerce_dict(plan.ranking_summary),
+        "intervention_receipts": [InterventionReceipt.from_dict(item).to_dict() for item in plan.intervention_receipts],
+        "transfer_receipts": [TransferReceipt.from_dict(item).to_dict() for item in plan.transfer_receipts],
+        "receipt_audit": [dict(item) for item in plan.receipt_audit],
     }
     return stable_hash(payload)[:20]
 

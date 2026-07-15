@@ -351,7 +351,7 @@ def _candidate_item_schema(required: tuple[str, ...] | None = None) -> dict[str,
             "multihead_scores": {"type": "object"},
             "metadata": {
                 "type": "object",
-                "description": "For seed portfolio responses, set seed_type to the exact slot_id as a contract receipt. A label alone is not evidence of capability.",
+                "description": "For seed portfolio responses, set seed_type to the exact slot_id as a contract receipt. A label alone is not evidence of capability. For cross_domain_transfer or a Transfer mutation, add transfer_receipt with source_relations, target_relations, element-level mapping[{source,target}], preserved_invariant, predicted_break_condition, probe_ref, and artifact_hash.",
             },
         },
         "additionalProperties": True,
