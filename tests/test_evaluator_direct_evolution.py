@@ -121,6 +121,24 @@ def _evaluator_controller() -> AdaptiveRuntimeController:
     )
 
 
+def _single_batch_gate_budget(*, max_rounds: int, branch_factor: int, stop_policy: str) -> EvolutionBudget:
+    return EvolutionBudget(
+        max_rounds=max_rounds,
+        branch_factor=branch_factor,
+        stop_policy=stop_policy,
+        history=[
+            {
+                "round": -1,
+                "cost_ledger": {
+                    "round": -1,
+                    "totals": {"physical_calls": 4, "completion_tokens": 200, "total_tokens": 400},
+                    "observations": {"unique_valid_children": 2, "truncation_count": 0},
+                },
+            }
+        ],
+    )
+
+
 def _apply_fake_external_evaluation(candidates: list[CandidateGenome], **_: Any) -> list[Any]:
     results: list[Any] = []
     for index, candidate in enumerate(candidates):
@@ -347,6 +365,10 @@ def test_full_evaluator_led_loop_calls_only_direct_offspring_model(monkeypatch) 
     assert all(candidate.lineage == ["parent", candidate.id] for candidate in children)
     generation_plan = result.budget_history[0]["generation_plan"]
     assert generation_plan["mutation_plan_source"] == "runtime_lineage_envelope"
+    assert generation_plan["offspring_transport"]["selected_mode"] == "slot"
+    assert generation_plan["pre_rank_admission"]["effect"].startswith("evaluation_order_and_round_only")
+    assert result.progress_events[0]["metadata"]["offspring_transport"] == generation_plan["offspring_transport"]
+    assert result.budget_history[0]["gain_token_control"]["authority_boundary"] == "budget_width_transport_retry_only"
     assert generation_plan["completed_stage_ops"][-4:] == [
         "select_parents",
         "plan_mutations",
@@ -380,7 +402,7 @@ def test_schema_valid_empty_direct_offspring_continues_to_second_attempt(monkeyp
             frozen_spec={"problem_text": "Return the best machine artifact."},
         ),
         world={},
-        budget=EvolutionBudget(max_rounds=3, branch_factor=1, stop_policy="max_rounds"),
+        budget=_single_batch_gate_budget(max_rounds=3, branch_factor=1, stop_policy="max_rounds"),
         model=model,
         adaptive_config={
             "enabled": True,
@@ -400,7 +422,11 @@ def test_schema_valid_empty_direct_offspring_continues_to_second_attempt(monkeyp
     assert result.current_round == 3
     assert result.stop_reason == "max_rounds"
     assert result.completion_status == "completed"
-    assert [item["generation_plan"]["offspring_outcome"] for item in result.budget_history[:2]] == [
+    assert [
+        item["generation_plan"]["offspring_outcome"]
+        for item in result.budget_history
+        if isinstance(item.get("generation_plan"), dict) and item["generation_plan"].get("offspring_outcome")
+    ] == [
         "model_abstained_empty_batch",
         "model_abstained_empty_batch",
     ]
@@ -430,7 +456,7 @@ def test_schema_valid_empty_direct_offspring_without_incumbent_checkpoints(monke
             frozen_spec={"problem_text": "Return the best machine artifact."},
         ),
         world={},
-        budget=EvolutionBudget(max_rounds=3, branch_factor=1, stop_policy="max_rounds"),
+        budget=_single_batch_gate_budget(max_rounds=3, branch_factor=1, stop_policy="max_rounds"),
         model=model,
         adaptive_config={
             "enabled": True,
@@ -478,7 +504,7 @@ def test_deduped_direct_output_is_not_an_empty_abstention(monkeypatch) -> None:
             frozen_spec={"problem_text": "Return the best machine artifact."},
         ),
         world={},
-        budget=EvolutionBudget(max_rounds=3, branch_factor=1, stop_policy="max_rounds"),
+        budget=_single_batch_gate_budget(max_rounds=3, branch_factor=1, stop_policy="max_rounds"),
         model=model,
         adaptive_config={
             "enabled": True,

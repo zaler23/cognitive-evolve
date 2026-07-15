@@ -434,6 +434,7 @@ def _round_observations(round_acc: dict[str, Any], history: list[dict[str, Any]]
         failed_slots = harvest.get("failed_slot_ids") if isinstance(harvest.get("failed_slot_ids"), list) else harvest.get("slot_errors")
         if isinstance(failed_slots, list):
             blast_radius = max(blast_radius, len(failed_slots))
+        blast_radius = max(blast_radius, int(harvest.get("partial_failure_blast_radius") or 0))
     existing = round_acc["existing_observations"]
     return {
         "physical_calls": int(round_acc["totals"]["physical_calls"]),

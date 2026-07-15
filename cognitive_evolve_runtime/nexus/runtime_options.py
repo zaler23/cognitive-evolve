@@ -71,6 +71,16 @@ def resolve_runtime_options(
             raise ValueError("COGEV_SLOT_SAMPLING_PROFILES must be valid JSON") from exc
         sampling_source = "environment:COGEV_SLOT_SAMPLING_PROFILES"
     _set_default(options, sources, "search.slot_sampling_profiles", sampling_profiles, sampling_source)
+    truncation_threshold = float(env.get("COGEV_SINGLE_BATCH_TRUNCATION_RATE_THRESHOLD") or 0.05)
+    _set_default(
+        options,
+        sources,
+        "search.single_batch_truncation_rate_threshold",
+        truncation_threshold,
+        "environment:COGEV_SINGLE_BATCH_TRUNCATION_RATE_THRESHOLD"
+        if "COGEV_SINGLE_BATCH_TRUNCATION_RATE_THRESHOLD" in env
+        else "default",
+    )
     _set_default(
         options,
         sources,
@@ -81,6 +91,9 @@ def resolve_runtime_options(
     _validate_choice(options, "search.offspring_parallel_mode", OFFSPRING_PARALLEL_MODES)
     _validate_choice(options, "persistence.mode", PERSISTENCE_MODES)
     _validate_slot_sampling_profiles(options.get("search.slot_sampling_profiles"))
+    threshold = float(options.get("search.single_batch_truncation_rate_threshold", 0.05))
+    if not 0.0 <= threshold <= 1.0:
+        raise ValueError("search.single_batch_truncation_rate_threshold must be between 0 and 1")
     if "COGEV_VERIFY_INCLUDE_TESTS" in env and "verification.include_tests" not in options:
         options["verification.include_tests"] = _env_bool(env.get("COGEV_VERIFY_INCLUDE_TESTS"))
         sources["verification.include_tests"] = "environment:COGEV_VERIFY_INCLUDE_TESTS"

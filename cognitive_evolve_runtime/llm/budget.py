@@ -20,13 +20,12 @@ def total_estimated_cost_usd() -> float:
 
 @contextmanager
 def budget_reservation() -> Iterator[None]:
-    """Serialize budgeted calls and reserve observed per-call headroom.
+    """Reserve observed per-call headroom without serializing priced calls.
 
     Providers report dollar cost only after completion, so this guard
     uses the largest completed call as the next-call estimate. It closes the
-    concurrent check-then-act race without pretending that estimate is a
-    provider hard limit: the first or a larger call may still cross remaining
-    headroom, matching the existing serial-call semantics.
+    concurrent check-then-act race. The first unpriced call remains serialized;
+    after one priced observation, additive reservations allow safe fanout.
     """
 
     budget = budget_usd()
@@ -34,31 +33,36 @@ def budget_reservation() -> Iterator[None]:
         yield
         return
     session = current_llm_session()
-    # Generic providers expose cost only after a response, so budgeted calls in
-    # one session must be serialized.  The largest observed call is the only
-    # defensible pre-call estimate; the first call may still cross the remaining
-    # budget, matching the existing serial semantics.
-    with session.budget_call_lock:
+    session.budget_call_lock.acquire()
+    hold_unpriced_lock = True
+    reservation = 0.0
+    try:
         with session.lock:
             costs = [
                 float(event.get("estimated_cost_usd") or 0.0)
                 for event in session.events
-                if event.get("cache_replayed") is not True
+                if event.get("cache_replayed") is not True and event.get("estimated_cost_usd") is not None
             ]
             completed = sum(costs)
             reservation = max(costs, default=0.0)
-            committed = completed + reservation
+            committed = completed + float(session.budget_reservation_usd or 0.0) + reservation
             if completed >= budget or (reservation > 0 and committed > budget):
                 raise LLMResponseError(
                     f"LLM cost budget already exhausted or lacks observed per-call headroom: estimated ${round(committed, 6)} "
                     f"> ${budget}. Increase {LLM_BUDGET_USD_ENV} or reduce rounds/candidates."
                 )
-            session.budget_reservation_usd = reservation
+            session.budget_reservation_usd += reservation
+        if reservation > 0.0:
+            session.budget_call_lock.release()
+            hold_unpriced_lock = False
         try:
             yield
         finally:
             with session.lock:
-                session.budget_reservation_usd = 0.0
+                session.budget_reservation_usd = max(0.0, session.budget_reservation_usd - reservation)
+    finally:
+        if hold_unpriced_lock:
+            session.budget_call_lock.release()
 
 
 def stage_budget_strict() -> bool:

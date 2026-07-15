@@ -4,10 +4,10 @@ from __future__ import annotations
 from typing import Any
 
 from cognitive_evolve_runtime.archives.manager import ArchiveManager
-from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidatePopulation
+from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome, CandidatePopulation
 from cognitive_evolve_runtime.contracts.objective_contract import NexusObjectiveContract
 from cognitive_evolve_runtime.events.progress import EvolutionProgressEvent, PipelineProgressEvent
-from cognitive_evolve_runtime.evaluators import EvaluatorSpec, ProgressiveEvaluator, apply_evidence_record
+from cognitive_evolve_runtime.evaluators import EvaluatorSpec, ProgressiveEvaluator, apply_evidence_record, latest_evidence_record
 from cognitive_evolve_runtime.evaluators.evidence import select_preliminary_incumbent
 from cognitive_evolve_runtime.llm.session import current_llm_session, logical_llm_call
 from cognitive_evolve_runtime.nexus.critique import CandidateCritique
@@ -28,6 +28,7 @@ from cognitive_evolve_runtime.outcomes.runtime_bridge import (
 from cognitive_evolve_runtime.verification.information_gain import population_information_gain_report
 from cognitive_evolve_runtime.nexus.v23_theory_config import V23TheoryRuntimeConfig
 from cognitive_evolve_runtime.ranking.relative_rater import RelativeRankingResult, RelativeRater
+from cognitive_evolve_runtime.nexus.search_kernel.branch_allocator import productive_outcomes
 
 from .offspring import _best_auxiliary_id
 from .stage_helpers import _eligibility_policy
@@ -55,10 +56,46 @@ class EvaluateStage:
             evaluator_config.setdefault("evidence", dict(self.adaptive.config.evidence))
         evaluator_spec = EvaluatorSpec.from_mapping(evaluator_config)
         evaluator_led = self._evaluator_led(evaluator_spec)
-        evaluator_results = self.evaluator_runner.evaluate_population_if_configured(
+        previously_evaluated_ids = {
+            candidate.id
+            for candidate in population.candidates
+            if isinstance(candidate.metadata, dict) and isinstance(candidate.metadata.get("evaluator"), dict)
+        }
+        configured_admission_limit = int(policy.metadata.get("pre_rank_admission_limit") or len(population.candidates))
+        evaluation_candidates, admission_audit = _pre_rank_admission_view(
             population.candidates,
+            limit=configured_admission_limit if evaluator_spec.enabled else len(population.candidates),
+            history=self.budget.history,
+            uncertainty_floor=max(1, int(policy.metadata.get("pre_rank_uncertainty_floor") or 1)),
+        )
+        evaluator_results = self.evaluator_runner.evaluate_population_if_configured(
+            evaluation_candidates,
             spec=evaluator_spec,
             round_index=current_round,
+        )
+        newly_evaluated = [
+            candidate
+            for candidate in evaluation_candidates
+            if candidate.id not in previously_evaluated_ids
+            and isinstance(candidate.metadata, dict)
+            and isinstance(candidate.metadata.get("evaluator"), dict)
+        ]
+        metric_directions = {item.name: item.direction for item in evaluator_spec.metrics}
+        grounded_outcomes = productive_outcomes(newly_evaluated, metric_directions=metric_directions)
+        direction_aware_gain = {
+            "schema": "cogev.direction_aware_gain.v1",
+            "total_gain": round(sum(max(0.0, item.reward) for item in grounded_outcomes), 12),
+            "sample_count": len(grounded_outcomes),
+            "candidate_ids": [item.candidate_id for item in grounded_outcomes],
+            "outcomes": [item.to_dict() for item in grounded_outcomes],
+            "authority": "post_evaluator_observation_only",
+        }
+        admission_audit.update(
+            {
+                "evaluator_enabled": evaluator_spec.enabled,
+                "evaluator_result_count": len(evaluator_results),
+                "newly_evaluated_candidate_ids": [candidate.id for candidate in newly_evaluated],
+            }
         )
         if not evaluator_results and self.adaptive.enabled:
             progressive = ProgressiveEvaluator()
@@ -88,6 +125,8 @@ class EvaluateStage:
                 candidates=population.candidates,
             )
         rankings = self.rank(population=population, archives=archives, policy=policy, contract=contract, current_round=current_round)
+        self.last_generation_plan["pre_rank_admission"] = admission_audit
+        self.last_generation_plan["direction_aware_gain"] = direction_aware_gain
         self.adaptive.observe_population(population=population, round_index=current_round)
         plan = GenerationPlan.from_dict(self.last_generation_plan)
         completed_stage_ops = list(self.last_completed_stage_ops)
@@ -157,6 +196,8 @@ class EvaluateStage:
                 "population_vitality": vitality_snapshot(population.candidates, branch_factor=self.budget.branch_factor).to_dict(),
                 "adaptive_features": dict(self.adaptive.state.enabled_features),
                 "search_phase": self.budget.search_phase,
+                "pre_rank_admission": admission_audit,
+                "direction_aware_gain": direction_aware_gain,
             },
         ).to_dict()
         stage_count = self.budget.round_limit
@@ -322,6 +363,133 @@ class EvaluateStage:
             diagnosis.metadata["v23_theory_config_diagnostics"] = list(v23_config.diagnostics)
         self.adaptive.record_honesty_control_signal(signal, history_limit=v23_config.honesty_control.history_limit)
         return diagnosis, self.updater.update(policy, diagnosis, model=control_model, archives=archives)
+
+
+def _pre_rank_admission_view(
+    candidates: list[CandidateGenome],
+    *,
+    limit: int,
+    history: list[dict[str, Any]],
+    uncertainty_floor: int,
+) -> tuple[list[CandidateGenome], dict[str, Any]]:
+    deferred_counts: dict[str, int] = {}
+    for record in history:
+        if not isinstance(record, dict):
+            continue
+        plan = record.get("generation_plan") if isinstance(record.get("generation_plan"), dict) else {}
+        audit = plan.get("pre_rank_admission") if isinstance(plan.get("pre_rank_admission"), dict) else {}
+        for candidate_id in audit.get("deferred_candidate_ids", []):
+            candidate_id = str(candidate_id or "")
+            if candidate_id:
+                deferred_counts[candidate_id] = deferred_counts.get(candidate_id, 0) + 1
+
+    signals = {candidate.id: _admission_signals(candidate, deferred_counts.get(candidate.id, 0)) for candidate in candidates}
+
+    def priority(candidate: CandidateGenome) -> tuple[float, ...]:
+        signal = signals[candidate.id]
+        return (
+            float(signal["deferred_rounds"]),
+            float(not signal["evaluated"]),
+            float(signal["uncertainty"]),
+            float(signal["value"]),
+            -float(signal["confidence"]),
+        )
+
+    floor_reasons: dict[str, set[str]] = {}
+
+    def reserve(candidate: CandidateGenome, reason: str) -> None:
+        floor_reasons.setdefault(candidate.id, set()).add(reason)
+
+    axes: dict[str, list[CandidateGenome]] = {}
+    families: dict[str, list[CandidateGenome]] = {}
+    for candidate in candidates:
+        metadata = candidate.metadata if isinstance(candidate.metadata, dict) else {}
+        search_space = metadata.get("search_space") if isinstance(metadata.get("search_space"), dict) else {}
+        axis = str(search_space.get("seed_axis") or "").strip()
+        family = str(search_space.get("family_id") or search_space.get("plane_id") or "").strip()
+        if axis:
+            axes.setdefault(axis, []).append(candidate)
+        if family:
+            families.setdefault(family, []).append(candidate)
+    for axis, group in axes.items():
+        reserve(max(group, key=lambda candidate: (*priority(candidate), candidate.id)), f"axis:{axis}")
+    for family, group in families.items():
+        reserve(max(group, key=lambda candidate: (*priority(candidate), candidate.id)), f"family:{family}")
+    for candidate in sorted(
+        candidates,
+        key=lambda item: (float(signals[item.id]["uncertainty"]), *priority(item), item.id),
+        reverse=True,
+    )[: max(0, int(uncertainty_floor))]:
+        reserve(candidate, "uncertainty")
+
+    protected_ids = set(floor_reasons)
+    effective_limit = min(len(candidates), max(max(0, int(limit)), len(protected_ids)))
+    ordered = sorted(candidates, key=lambda candidate: (*priority(candidate), candidate.id), reverse=True)
+    admitted = [candidate for candidate in ordered if candidate.id in protected_ids]
+    admitted.extend(candidate for candidate in ordered if candidate.id not in protected_ids and len(admitted) < effective_limit)
+    admitted_ids = {candidate.id for candidate in admitted}
+    deferred = [candidate for candidate in ordered if candidate.id not in admitted_ids]
+
+    decisions = []
+    for candidate in [*admitted, *deferred]:
+        signal = signals[candidate.id]
+        if candidate.id in floor_reasons:
+            reason = "floor:" + ",".join(sorted(floor_reasons[candidate.id]))
+        elif candidate.id in admitted_ids and signal["deferred_rounds"]:
+            reason = "deferred_reentry"
+        elif candidate.id in admitted_ids:
+            reason = "high_value_or_uncertainty"
+        elif signal["confidence"] >= 0.8 and signal["value"] < 0.5:
+            reason = "high_confidence_low_value"
+        else:
+            reason = "budget_deferred"
+        decisions.append(
+            {
+                "candidate_id": candidate.id,
+                "decision": "admitted" if candidate.id in admitted_ids else "deferred",
+                "reason": reason,
+                **signal,
+            }
+        )
+    axis_floor_ids = sorted(candidate_id for candidate_id, reasons in floor_reasons.items() if any(reason.startswith("axis:") for reason in reasons))
+    family_floor_ids = sorted(candidate_id for candidate_id, reasons in floor_reasons.items() if any(reason.startswith("family:") for reason in reasons))
+    uncertainty_floor_ids = sorted(candidate_id for candidate_id, reasons in floor_reasons.items() if "uncertainty" in reasons)
+    audit = {
+        "schema": "cogev.pre_rank_admission.v1",
+        "requested_limit": max(0, int(limit)),
+        "effective_limit": effective_limit,
+        "admitted_candidate_ids": [candidate.id for candidate in admitted],
+        "deferred_candidate_ids": [candidate.id for candidate in deferred],
+        "floor_candidate_ids": sorted(protected_ids),
+        "axis_floor_candidate_ids": axis_floor_ids,
+        "family_floor_candidate_ids": family_floor_ids,
+        "uncertainty_floor_candidate_ids": uncertainty_floor_ids,
+        "decisions": decisions,
+        "effect": "evaluation_order_and_round_only_candidates_preserved_evaluator_authority_unchanged",
+    }
+    return admitted, audit
+
+
+def _admission_signals(candidate: CandidateGenome, deferred_rounds: int) -> dict[str, Any]:
+    metadata = candidate.metadata if isinstance(candidate.metadata, dict) else {}
+    evaluator = metadata.get("evaluator") if isinstance(metadata.get("evaluator"), dict) else {}
+    evidence = latest_evidence_record(candidate)
+    confidence = float(evidence.confidence) if evidence is not None else (1.0 if evaluator else 0.0)
+    uncertainty_items = len(candidate.uncertainty_notes) + len(candidate.missing_parts)
+    uncertainty = min(1.0, uncertainty_items / max(1.0, uncertainty_items + 2.0))
+    scores = candidate.multihead_scores if isinstance(candidate.multihead_scores, dict) else {}
+    value = max(
+        float(scores.get("answer_likelihood", 0.0) or 0.0),
+        float(scores.get("objective_alignment", 0.0) or 0.0),
+        float(scores.get("objective_score", 0.0) or 0.0),
+    )
+    return {
+        "deferred_rounds": max(0, int(deferred_rounds)),
+        "evaluated": bool(evaluator),
+        "uncertainty": round(uncertainty, 6),
+        "confidence": round(max(0.0, min(1.0, confidence)), 6),
+        "value": round(max(0.0, min(1.0, value)), 6),
+    }
 
 
 

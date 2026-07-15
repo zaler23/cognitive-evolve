@@ -279,6 +279,7 @@ class ReproduceStage:
             completed_stage_ops.append("generate_offspring")
             self.last_generation_plan["offspring_ids"] = [candidate.id for candidate in offspring]
             self.last_generation_plan["offspring_harvest"] = dict(self.last_offspring_harvest_outcome)
+            self.last_generation_plan["offspring_transport"] = dict(self.last_offspring_harvest_outcome.get("transport") or {})
             self.last_generation_plan["duplicate_offspring"] = duplicate_offspring
             self.last_generation_plan["cell_activation_map"] = activation_map
             self._record_generation_stage_progress(completed_stage_ops)
@@ -740,6 +741,7 @@ class ReproduceStage:
             provided_context=provided_context,
             target_size=requested_offspring_count,
             harvest_outcome=harvest_outcome,
+            budget_history=self.budget.history,
         )
         self.last_offspring_harvest_outcome = harvest_outcome
         if self.model is None:
