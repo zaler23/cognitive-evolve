@@ -14,6 +14,7 @@ from typing import Any, Iterator
 
 from cognitive_evolve_runtime.durable.file_lock import _fsync_dir, atomic_write_json, atomic_write_text, file_lock
 from cognitive_evolve_runtime.core.serialization import utc_now
+from cognitive_evolve_runtime.persistence.event_store import EventStore
 
 
 _CURRENT = "CURRENT"
@@ -57,6 +58,7 @@ class NexusSnapshotTransaction:
         generation = generations / transaction_id
         lock_path = self.root / ".snapshot-transaction.lock"
         with file_lock(lock_path):
+            event_watermark = EventStore(self.root / "events.jsonl").watermark()
             generations.mkdir(parents=True, exist_ok=True)
             previous_root = resolve_snapshot_root(self.root)
             previous_transaction_id = previous_root.name if previous_root.parent == generations else ""
@@ -84,6 +86,7 @@ class NexusSnapshotTransaction:
                     "schema": "cogev.nexus_snapshot_transaction.v1",
                     "transaction_id": transaction_id,
                     "created_at": utc_now(),
+                    "event_watermark": event_watermark,
                     "files": manifest_files,
                 }
                 atomic_write_json(staging / _MANIFEST, manifest, sort_keys=True)

@@ -14,6 +14,7 @@ from cognitive_evolve_runtime.nexus.live_store import LiveNexusStore
 from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy
 from cognitive_evolve_runtime.persistence import transactional_snapshot as snapshot_module
 from cognitive_evolve_runtime.persistence.checkpoint import CheckpointStore
+from cognitive_evolve_runtime.persistence.event_store import EventStore
 from cognitive_evolve_runtime.persistence.transactional_snapshot import (
     NexusSnapshotTransaction,
     SnapshotWrite,
@@ -77,6 +78,49 @@ def test_snapshot_transaction_publishes_manifest_and_files_atomically(tmp_path):
     assert snapshot_root == tmp_path / "generations" / result.transaction_id
     assert result.manifest_path == str(snapshot_root / "snapshot-transaction.json")
     assert not list(snapshot_root.rglob("*.lock"))
+
+
+def test_event_store_append_isolates_unterminated_tail(tmp_path):
+    path = tmp_path / "events.jsonl"
+    damaged = b'{"type": "committed"}\n{"type": "broken"'
+    path.write_bytes(damaged)
+    store = EventStore(path)
+
+    assert store.watermark() == {"path": "events.jsonl", "offset": len(b'{"type": "committed"}\n')}
+    store.append({"type": "after-damage"})
+
+    raw = path.read_bytes()
+    lines = raw.splitlines()
+    assert raw.startswith(damaged)
+    assert lines[1] == b'{"type": "broken"'
+    assert json.loads(lines[2])["type"] == "event_store_tail_quarantined"
+    assert json.loads(lines[2])["tail_end_offset"] == len(damaged)
+    assert json.loads(lines[3])["type"] == "after-damage"
+
+
+def test_snapshot_event_watermark_reconciles_committed_post_snapshot_and_truncated(tmp_path):
+    store = EventStore(tmp_path / "events.jsonl")
+    store.append({"type": "committed-1"})
+    store.append({"type": "committed-2"})
+    NexusSnapshotTransaction(tmp_path).commit([SnapshotWrite("checkpoint.json", "json", {"round": 2})])
+    snapshot_root = resolve_snapshot_root(tmp_path)
+    manifest = json.loads((snapshot_root / "snapshot-transaction.json").read_text(encoding="utf-8"))
+
+    assert manifest["event_watermark"] == {"path": "events.jsonl", "offset": (tmp_path / "events.jsonl").stat().st_size}
+
+    store.append({"type": "post-snapshot-1"})
+    store.append({"type": "post-snapshot-2"})
+    path = tmp_path / "events.jsonl"
+    path.write_bytes(path.read_bytes()[:-5])
+    truncated_bytes = path.read_bytes()
+
+    report = store.reconcile(manifest["event_watermark"])
+
+    assert path.read_bytes() == truncated_bytes
+    assert [event["type"] for event in report["committed"]] == ["committed-1", "committed-2"]
+    assert [event["type"] for event in report["post-snapshot"]] == ["post-snapshot-1"]
+    assert len(report["truncated"]) == 1
+    assert report["truncated"][0]["reason"] == "incomplete_line"
 
 
 def test_snapshot_transaction_does_not_overwrite_existing_files_on_staging_failure(tmp_path):
@@ -268,6 +312,21 @@ def test_checkpoint_restore_accepts_matching_snapshot_manifest(tmp_path):
 
     assert restored is not None
     assert restored["checkpoint"].round == 1
+
+
+def test_checkpoint_restore_legacy_flat_layout_logs_and_skips_manifest_verification(tmp_path, caplog):
+    source = tmp_path / "source"
+    _write_live_checkpoint(source, 1)
+    legacy = tmp_path / "legacy"
+    legacy.mkdir()
+    (legacy / "checkpoint.json").write_bytes((resolve_snapshot_root(source) / "checkpoint.json").read_bytes())
+
+    with caplog.at_level("INFO", logger="cognitive_evolve_runtime.persistence.transactional_snapshot"):
+        restored = CheckpointStore(legacy / "checkpoint.json").restore_state()
+
+    assert restored is not None
+    assert restored["checkpoint"].round == 1
+    assert "snapshot manifest missing; skipping hash verification for legacy snapshot file" in caplog.text
 
 
 def test_checkpoint_restore_rejects_manifest_without_target_hash(tmp_path):
