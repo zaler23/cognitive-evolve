@@ -72,12 +72,19 @@ def allocate_logical_islands(
     current_round: int = 0,
 ) -> LogicalIslandAllocation:
     candidate_list = list(candidates)
+    island_config = dict(config or {})
+    coverage_floor_targets = [
+        dict(target)
+        for target in island_config.get("coverage_floor_targets", [])
+        if isinstance(target, dict)
+    ]
+    coverage_floor_slots = max(0, int(island_config.get("coverage_floor_slots", 0)))
     observed_family_counts = count_observed_mechanism_families(candidate_list)
     parent_roots = sorted({lineage_root(parent) for parent in parents})
     island_count = derive_island_count(
         total_slots=total_slots,
         lineage_count=len(parent_roots),
-        configured=dict(config or {}).get("count", "auto"),
+        configured=island_config.get("count", "auto"),
     )
     if island_count <= 1:
         branches = allocate_productive_branches(
@@ -87,6 +94,8 @@ def allocate_logical_islands(
             metric_directions=metric_directions,
             total_slots=total_slots,
             observed_family_counts=observed_family_counts,
+            coverage_floor_targets=coverage_floor_targets,
+            coverage_floor_slots=coverage_floor_slots,
         )
         candidate_islands = {candidate.id: 0 for candidate in candidate_list}
         return LogicalIslandAllocation(
@@ -125,7 +134,7 @@ def allocate_logical_islands(
         for island_id in range(island_count)
     }
     borrowed: dict[int, tuple[str, ...]] = {}
-    migration_interval = _positive_int(dict(config or {}).get("migration_interval"))
+    migration_interval = _positive_int(island_config.get("migration_interval"))
     if migration_interval is not None and current_round > 0 and current_round % migration_interval == 0:
         for island_id in range(island_count):
             donor_id = (island_id - 1) % island_count
@@ -140,8 +149,12 @@ def allocate_logical_islands(
     credit: dict[str, int] = {}
     credited_transfer_artifact_hashes: set[str] = set()
     slot_islands: dict[str, int] = {}
+    coverage_floor_reserved: list[str] = []
+    remaining_floor_slots = coverage_floor_slots
+    remaining_floor_targets = list(coverage_floor_targets)
     for island_id in range(island_count):
         island_slots = base_slots + int(island_id < extra_slots)
+        island_floor_slots = min(island_slots, remaining_floor_slots, len(remaining_floor_targets))
         allocation = allocate_productive_branches(
             parents=parent_groups[island_id],
             candidates=candidate_groups[island_id],
@@ -150,6 +163,8 @@ def allocate_logical_islands(
             total_slots=island_slots,
             observed_family_counts=observed_family_counts,
             credited_transfer_artifact_hashes=credited_transfer_artifact_hashes,
+            coverage_floor_targets=remaining_floor_targets[:island_floor_slots],
+            coverage_floor_slots=island_floor_slots,
         )
         island_branches = [
             replace(
@@ -163,6 +178,18 @@ def allocate_logical_islands(
         for key, value in allocation.credit_summary.items():
             credit[key] = credit.get(key, 0) + int(value)
         credited_transfer_artifact_hashes.update(allocation.credited_transfer_artifact_hashes)
+        reserved_ids = {
+            str(item)
+            for item in allocation.coverage_floor.get("reserved_slot_ids", [])
+            if str(item)
+        }
+        coverage_floor_reserved.extend(
+            slot.slot_id
+            for original, slot in zip(allocation.slots, island_branches)
+            if original.slot_id in reserved_ids
+        )
+        remaining_floor_slots -= island_floor_slots
+        remaining_floor_targets = remaining_floor_targets[island_floor_slots:]
         slot_islands.update({slot.slot_id: island_id for slot in island_branches})
     return LogicalIslandAllocation(
         branches=ProductiveBranchAllocation(
@@ -171,6 +198,12 @@ def allocate_logical_islands(
             credit_summary=credit,
             observed_family_counts=observed_family_counts,
             credited_transfer_artifact_hashes=tuple(sorted(credited_transfer_artifact_hashes)),
+            coverage_floor={
+                "configured_slots": coverage_floor_slots,
+                "targets": coverage_floor_targets,
+                "reserved_slot_ids": coverage_floor_reserved,
+                "effect": "ordinary_reproduction_slots_only_evaluator_authority_unchanged",
+            },
         ),
         candidate_islands=candidate_islands,
         slot_islands=slot_islands,

@@ -1,6 +1,7 @@
 """Reproduction half of one Nexus evolution round."""
 from __future__ import annotations
 
+import copy
 import math
 from typing import Any, Callable
 
@@ -11,7 +12,7 @@ from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateG
 from cognitive_evolve_runtime.candidates.mutation import MutationOperator, MutationPlan
 from cognitive_evolve_runtime.contracts.objective_contract import NexusObjectiveContract
 from cognitive_evolve_runtime.evaluators import EvaluatorSpec, evidence_advisory_features
-from cognitive_evolve_runtime.evaluators.evidence import select_preliminary_incumbent
+from cognitive_evolve_runtime.evaluators.evidence import evaluator_selection_key, select_preliminary_incumbent
 from cognitive_evolve_runtime.nexus.critique import CandidateCritique
 from cognitive_evolve_runtime.nexus.activation_reseed import emergency_activation_reseed
 from cognitive_evolve_runtime.nexus._serde import stable_hash
@@ -73,6 +74,16 @@ class ReproduceStage:
         if plan is not None:
             assert_stage_ready(plan, "select_parents", completed_stage_ops)
         island_config = dict(policy.metadata.get("islands") or {}) if isinstance(policy.metadata, dict) and isinstance(policy.metadata.get("islands"), dict) else {}
+        coverage_floor = diagnosis.metadata.get("axis_family_coverage_floor") if isinstance(diagnosis.metadata, dict) else None
+        if isinstance(coverage_floor, dict):
+            island_config["coverage_floor_targets"] = list(coverage_floor.get("targets") or [])
+            island_config["coverage_floor_slots"] = int(coverage_floor.get("floor_slots") or 0)
+        archive_admission, archive_admission_audit = _archive_elite_admission_view(
+            population=population.candidates,
+            archives=archives,
+            limit=_archive_elite_reentry_limit(policy),
+            current_round=current_round,
+        )
         active_lineages = {
             candidate.lineage[0] if candidate.lineage else candidate.id
             for candidate in population.candidates
@@ -94,6 +105,7 @@ class ReproduceStage:
             rankings=rankings,
             diagnosis=diagnosis,
             repair_parent_candidates=repair_parent_candidates,
+            archive_admission_candidates=archive_admission,
         )
         if not parents:
             return "no_parents_available", [], {}
@@ -121,11 +133,22 @@ class ReproduceStage:
         parent_by_id = {parent.id: parent for parent in parents}
         allocated_parent_ids = list(dict.fromkeys(slot.parent_id for slot in branch_allocation.slots))
         parents = [parent_by_id[parent_id] for parent_id in allocated_parent_ids]
+        archive_admission_audit["selected_candidate_ids"] = [
+            parent.id
+            for parent in parents
+            if bool(parent.metadata.get("archive_elite_reentry"))
+        ]
         if plan is not None:
             completed_stage_ops.append("select_parents")
             self.last_generation_plan["parent_ids"] = [parent.id for parent in parents]
             self.last_generation_plan["productive_branch_allocation"] = branch_allocation.to_dict()
             self.last_generation_plan["logical_islands"] = island_allocation.to_dict()
+            self.last_generation_plan["archive_elite_reentry"] = archive_admission_audit
+            if isinstance(coverage_floor, dict):
+                self.last_generation_plan["axis_family_coverage_floor"] = {
+                    **coverage_floor,
+                    "reserved_slot_ids": list(branch_allocation.coverage_floor.get("reserved_slot_ids") or []),
+                }
             self._refresh_generation_plan_id()
             self._record_generation_stage_progress(completed_stage_ops)
         generation_policy = EvolutionPolicy.from_dict(policy.to_dict())
@@ -346,6 +369,13 @@ class ReproduceStage:
                 instruction=(
                     f"Branch intent: {slot.intent}. "
                     + (
+                        "Fill the zero-occupancy coverage target "
+                        f"axis={slot.coverage_target.get('axis') or 'unchanged'}, "
+                        f"family={slot.coverage_target.get('family') or 'unchanged'}. "
+                        if slot.coverage_target
+                        else ""
+                    )
+                    + (
                         f"Optional semantic direction: {action_palette[index % len(action_palette)]}. "
                         if action_palette
                         else ""
@@ -452,6 +482,7 @@ class ReproduceStage:
         rankings: RelativeRankingResult,
         diagnosis: SearchDiagnosis,
         repair_parent_candidates: list[CandidateGenome] | None,
+        archive_admission_candidates: list[CandidateGenome] | None = None,
         limit_override: int | None = None,
     ) -> list[CandidateGenome]:
         limit = max(1, int(limit_override or self._branch_limit()))
@@ -468,9 +499,10 @@ class ReproduceStage:
             return list({candidate.id: candidate for candidate in ordered}.values())[:limit]
 
         advisory_features = self._combined_advisory_features(policy=policy, candidates=population.candidates, current_round=current_round)
-        selection_candidates = list(population.candidates)
+        selection_candidates = [*population.candidates, *(archive_admission_candidates or [])]
         if self.budget.search_phase == "explore" and repair_parent_candidates:
-            selection_candidates = list({candidate.id: candidate for candidate in [*selection_candidates, *repair_parent_candidates]}.values())
+            selection_candidates = [*selection_candidates, *repair_parent_candidates]
+        selection_candidates = list({candidate.id: candidate for candidate in selection_candidates}.values())
         parents = self.selector.select(
             selection_candidates,
             archives,
@@ -515,6 +547,7 @@ class ReproduceStage:
         rankings: RelativeRankingResult,
         diagnosis: SearchDiagnosis,
         repair_parent_candidates: list[CandidateGenome] | None,
+        archive_admission_candidates: list[CandidateGenome] | None = None,
     ) -> list[CandidateGenome]:
         if island_count <= 1:
             return self._select_reproduction_parents(
@@ -527,8 +560,9 @@ class ReproduceStage:
                 rankings=rankings,
                 diagnosis=diagnosis,
                 repair_parent_candidates=repair_parent_candidates,
+                archive_admission_candidates=archive_admission_candidates,
             )
-        all_candidates = [*population.candidates, *(repair_parent_candidates or [])]
+        all_candidates = [*population.candidates, *(repair_parent_candidates or []), *(archive_admission_candidates or [])]
         assignments = assign_candidate_islands(all_candidates, island_count=island_count)
         for candidate in all_candidates:
             candidate.metadata["island_id"] = assignments[candidate.id]
@@ -543,6 +577,11 @@ class ReproduceStage:
                 for candidate in repair_parent_candidates or []
                 if assignments[candidate.id] == island_id
             ]
+            island_admission = [
+                candidate
+                for candidate in archive_admission_candidates or []
+                if assignments[candidate.id] == island_id
+            ]
             parents = self._select_reproduction_parents(
                 current_round=current_round,
                 population=island_population,
@@ -553,6 +592,7 @@ class ReproduceStage:
                 rankings=rankings,
                 diagnosis=diagnosis,
                 repair_parent_candidates=island_repair,
+                archive_admission_candidates=island_admission,
                 limit_override=base_slots + int(island_id < extra_slots),
             )
             if not parents:
@@ -566,6 +606,7 @@ class ReproduceStage:
                     rankings=rankings,
                     diagnosis=diagnosis,
                     repair_parent_candidates=repair_parent_candidates,
+                    archive_admission_candidates=archive_admission_candidates,
                 )
             selected.extend(parents)
         return list({candidate.id: candidate for candidate in selected}.values())
@@ -835,12 +876,71 @@ def _attach_branch_allocation_to_plans(
                     "branch_slot_parent_id": slot.parent_id,
                     "branch_intent": slot.intent,
                     "branch_slot_binding_status": "planned",
+                    "coverage_target": dict(slot.coverage_target),
                 }
             )
         if include_manifest and not out:
             metadata["branch_slots"] = [item.to_dict() for item in allocation.slots]
         out.append(MutationPlan.from_dict({**plan.to_dict(), "metadata": metadata}))
     return out
+
+
+def _archive_elite_reentry_limit(policy: EvolutionPolicy) -> int:
+    metadata = policy.metadata if isinstance(policy.metadata, dict) else {}
+    return max(0, int(metadata.get("archive_elite_reentry_limit", 1)))
+
+
+def _archive_elite_admission_view(
+    *,
+    population: list[CandidateGenome],
+    archives: ArchiveManager,
+    limit: int,
+    current_round: int,
+) -> tuple[list[CandidateGenome], dict[str, Any]]:
+    existing_ids = {candidate.id for candidate in population}
+    by_id: dict[str, tuple[float, CandidateGenome]] = {}
+    stores = (
+        archives.quality_diversity.elites_by_niche,
+        archives.quality_diversity.cell_elites,
+    )
+    excluded: list[dict[str, str]] = []
+    for store in stores:
+        for raw in store.values():
+            if not isinstance(raw, dict) or not isinstance(raw.get("candidate"), dict):
+                continue
+            candidate = candidate_from_dict(copy.deepcopy(raw["candidate"]))
+            if candidate.id in existing_ids:
+                continue
+            if structurally_blocked(candidate):
+                excluded.append({"candidate_id": candidate.id, "reason": "structural_or_safety_blocked"})
+                continue
+            score = max(float(raw.get("search_quality", -1.0)), float(raw.get("final_quality", -1.0)))
+            current = by_id.get(candidate.id)
+            if current is None or score > current[0]:
+                by_id[candidate.id] = (score, candidate)
+    ranked = sorted(
+        by_id.values(),
+        key=lambda item: (*evaluator_selection_key(item[1])[:2], item[0], item[1].id),
+        reverse=True,
+    )
+    admitted: list[CandidateGenome] = []
+    for score, candidate in ranked[: max(0, int(limit))]:
+        candidate.current_fate = CandidateFate.ELITE.value
+        candidate.metadata["archive_elite_reentry"] = {
+            "source": "quality_diversity_archive",
+            "round": int(current_round),
+            "archive_quality": score,
+            "effect": "parent_selection_admission_only",
+        }
+        admitted.append(candidate)
+    audit = {
+        "limit": max(0, int(limit)),
+        "admitted_candidate_ids": [candidate.id for candidate in admitted],
+        "selected_candidate_ids": [],
+        "excluded": excluded,
+        "effect": "parent_selector_admission_only_archive_unchanged",
+    }
+    return admitted, audit
 
 
 def _branch_credit_candidates(

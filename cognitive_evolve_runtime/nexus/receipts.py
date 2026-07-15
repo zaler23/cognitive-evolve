@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
-from typing import Any, Iterable
+from typing import Any, Iterable, cast
 
 from cognitive_evolve_runtime.candidates.mutation import MutationOperator
 from cognitive_evolve_runtime.evaluators.evidence_authority import stable_artifact_hash
@@ -153,6 +153,61 @@ def intervention_receipts(
             seen.add(receipt.receipt_id)
             found.append(receipt)
     return found
+
+
+def intervention_credit_records(
+    source: dict[str, Any] | Iterable[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Resolve intervention outcomes from the existing round-history evidence path."""
+
+    items: Iterable[dict[str, Any]] = (
+        (cast(dict[str, Any], source),) if isinstance(source, dict) else source
+    )
+    records: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        raw_plan = item.get("generation_plan")
+        plan: dict[str, Any] = raw_plan if isinstance(raw_plan, dict) else item
+        outcomes = item.get("offspring_verification") or plan.get("offspring_verification") or []
+        by_ref = {
+            _outcome_ref(outcome): outcome
+            for outcome in outcomes
+            if isinstance(outcome, dict)
+        }
+        for raw in plan.get("intervention_receipts", []):
+            receipt = InterventionReceipt.from_dict(raw)
+            if receipt.receipt_id in seen:
+                continue
+            resolved = [by_ref[ref] for ref in receipt.outcome_refs if ref in by_ref]
+            decisions = [_explicit_outcome_passed(outcome) for outcome in resolved]
+            grounded = [decision for decision in decisions if decision is not None]
+            if not grounded:
+                continue
+            seen.add(receipt.receipt_id)
+            succeeded = any(grounded)
+            record = {
+                "receipt_id": receipt.receipt_id,
+                "intervention_type": receipt.intervention_type,
+                "diagnosed_pressure": dict(receipt.diagnosed_pressure),
+                "target": dict(receipt.target),
+                "outcome_refs": list(receipt.outcome_refs),
+                "resolved_outcome_refs": [
+                    _outcome_ref(outcome)
+                    for outcome, decision in zip(resolved, decisions)
+                    if decision is not None
+                ],
+                "outcome": "success" if succeeded else "failure",
+                "decision": "attenuate_pressure" if succeeded else "escalate_executor",
+            }
+            if succeeded:
+                record["pressure_scale"] = 0.5
+            else:
+                failed_action = str(receipt.target.get("action") or "").lower()
+                record["next_action"] = "rare_inject" if "restart" in failed_action else "strategy_restart"
+            records.append(record)
+    return records
 
 
 def transfer_receipts(
@@ -370,6 +425,17 @@ def _outcome_ref(outcome: dict[str, Any]) -> str:
     return "outcome-" + stable_hash(outcome)[:20]
 
 
+def _explicit_outcome_passed(outcome: dict[str, Any]) -> bool | None:
+    if isinstance(outcome.get("passed"), bool):
+        return bool(outcome["passed"])
+    status = str(outcome.get("status") or "").strip().lower()
+    if status in {"passed", "success", "verified"}:
+        return True
+    if status in {"failed", "failure", "rejected"}:
+        return False
+    return None
+
+
 def _known_branch_slot_ids(generation_plan: dict[str, Any]) -> set[str]:
     allocation = generation_plan.get("productive_branch_allocation")
     allocation = allocation if isinstance(allocation, dict) else {}
@@ -445,6 +511,7 @@ __all__ = [
     "TransferReceipt",
     "append_intervention_receipt",
     "append_transfer_receipt",
+    "intervention_credit_records",
     "intervention_receipts",
     "record_reproduction_receipts",
     "record_transfer_receipts",

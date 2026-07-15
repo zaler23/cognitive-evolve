@@ -7,7 +7,13 @@ from typing import Any
 from cognitive_evolve_runtime.archives.manager import ArchiveManager
 from cognitive_evolve_runtime.candidates.crossover import crossover, neighborhood_crossover_partner
 from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome, candidate_from_dict
-from cognitive_evolve_runtime.candidates.mutation import MutationEngine, MutationOperator, MutationPlan, MutationPlanner
+from cognitive_evolve_runtime.candidates.mutation import (
+    MutationEngine,
+    MutationOperator,
+    MutationPlan,
+    MutationPlanner,
+    apply_strategy_restart,
+)
 from cognitive_evolve_runtime.contracts.objective_contract import NexusObjectiveContract
 from cognitive_evolve_runtime.nexus._serde import coerce_str_list, stable_hash
 from cognitive_evolve_runtime.llm.fanout import run_ordered_fanout
@@ -404,9 +410,13 @@ def _generate_slot_offspring(
 
 
 def _slot_sampling_policy(policy: EvolutionPolicy, slot: dict[str, Any]) -> LLMRequestPolicy | None:
+    raw_directive = slot.get("directive")
+    directive = raw_directive if isinstance(raw_directive, dict) else {}
+    restart = _restart_action(directive.get("action_hint"))
+    restart_temperature = float((policy.metadata or {}).get("strategy_restart_temperature", 1.0)) if restart else 1.0
     configured = (policy.metadata or {}).get("slot_sampling_profiles")
     if not isinstance(configured, dict):
-        return None
+        return LLMRequestPolicy(temperature=restart_temperature) if restart else None
     phase = str((policy.metadata or {}).get("search_phase") or "explore").strip().lower()
     phase_profiles = configured.get(phase)
     phase_aware = isinstance(phase_profiles, dict)
@@ -418,15 +428,18 @@ def _slot_sampling_policy(policy: EvolutionPolicy, slot: dict[str, Any]) -> LLMR
         profiles = available.get("default")
         profile_key = "default"
     if profiles in (None, []):
-        return None
+        return LLMRequestPolicy(temperature=restart_temperature) if restart else None
     if not isinstance(profiles, list):
         raise ValueError("slot_sampling_profiles intent value must be a list")
     profile_index = int(slot.get("variation_index") or 0) % len(profiles)
     profile = profiles[profile_index]
     if not isinstance(profile, dict):
         raise ValueError("slot_sampling_profiles entries must be objects")
+    temperature = float(profile["temperature"]) if profile.get("temperature") is not None else None
+    if restart:
+        temperature = max(restart_temperature, temperature or restart_temperature)
     return LLMRequestPolicy(
-        temperature=float(profile["temperature"]) if profile.get("temperature") is not None else None,
+        temperature=temperature,
         top_p=float(profile["top_p"]) if profile.get("top_p") is not None else None,
         seed=int(profile["seed"]) if profile.get("seed") is not None else None,
         search_phase=phase,
@@ -467,6 +480,12 @@ def _bind_deterministic_branch_slot(candidate: CandidateGenome, plan: MutationPl
     arm_id = str(plan_metadata.get("branch_arm_id") or "")
     parent_id = str(plan_metadata.get("branch_slot_parent_id") or "")
     root_id = str(candidate.lineage[0] if candidate.lineage else candidate.id)
+    if plan.operator == MutationOperator.LINEAGE_RESTART and candidate.metadata.get("strategy_restart"):
+        metadata["branch_slot_binding_status"] = "bound"
+        metadata["branch_slot_parent_id"] = parent_id
+        metadata["branch_arm_id"] = root_id
+        candidate.metadata = metadata
+        return
     if candidate.parent_ids and candidate.parent_ids[0] == parent_id and arm_id == root_id:
         metadata["branch_slot_binding_status"] = "bound"
     else:
@@ -727,6 +746,17 @@ def _merge_plan_metadata_into_model_offspring(offspring: list[CandidateGenome], 
         )
         candidate.lineage = list(dict.fromkeys([item for parent in bound_parents for item in parent.lineage] + [candidate.id]))
         _merge_parent_edge_lineage(candidate, bound_parents)
+        directive = candidate.metadata.get("branch_slot_directive")
+        action_hint = str(directive.get("action_hint") or "") if isinstance(directive, dict) else ""
+        if _restart_action(action_hint):
+            apply_strategy_restart(candidate, bound_parents[0], reset_inherited_state=False)
+
+
+def _restart_action(action: Any) -> bool:
+    return "".join(character for character in str(action or "").lower() if character.isalnum()) in {
+        "strategyrestart",
+        "lineagerestart",
+    }
 
 
 def _branch_slots_from_plans(plans: list[MutationPlan]) -> list[dict[str, Any]]:
