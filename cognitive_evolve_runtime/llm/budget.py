@@ -40,7 +40,11 @@ def budget_reservation() -> Iterator[None]:
     # budget, matching the existing serial semantics.
     with session.budget_call_lock:
         with session.lock:
-            costs = [float(event.get("estimated_cost_usd") or 0.0) for event in session.events]
+            costs = [
+                float(event.get("estimated_cost_usd") or 0.0)
+                for event in session.events
+                if event.get("cache_replayed") is not True
+            ]
             completed = sum(costs)
             reservation = max(costs, default=0.0)
             committed = completed + reservation
@@ -80,6 +84,8 @@ def enforce_stage_budget(*, preflight: bool = False) -> None:
         return
     group_cost = 0.0
     for event in current_llm_session().snapshot():
+        if event.get("cache_replayed") is True:
+            continue
         if stage_group_for(str(event.get("stage") or "")) == current_group:
             group_cost += float(event.get("estimated_cost_usd") or 0.0)
     allowance = total_budget * stage_budget_percentages()[current_group]

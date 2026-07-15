@@ -741,7 +741,11 @@ def _attach_fallback_events(evolution: dict[str, Any], events: list[dict[str, st
 
 def _attach_limit_pressure(evolution: dict[str, Any], observer: Any | None) -> None:
     events = current_llm_session().snapshot()
-    physical_ids = {str(event.get("physical_call_id")) for event in events if str(event.get("physical_call_id") or "")}
+    physical_ids = {
+        str(event.get("physical_call_id"))
+        for event in events
+        if event.get("cache_replayed") is not True and str(event.get("physical_call_id") or "")
+    }
     physical_without_id = sum(
         1
         for event in events

@@ -84,6 +84,7 @@ class LiveNexusStore:
         adaptive_state = dict(update.get("adaptive_state") or {}) if isinstance(update.get("adaptive_state"), dict) else {}
         elo_state = dict(update.get("elo") or {}) if isinstance(update.get("elo"), dict) else {}
         fabric_state = dict(update.get("fabric") or {}) if isinstance(update.get("fabric"), dict) else {}
+        cost_ledger = dict(update.get("cost_ledger") or {}) if isinstance(update.get("cost_ledger"), dict) else {}
         runtime_options = dict(update.get("runtime_options") or self.runtime_options) if isinstance(update.get("runtime_options") or self.runtime_options, dict) else {}
         policy_metadata = coerce_dict(getattr(policy, "metadata", None))
         search_kernel_state = dict(update.get("search_kernel") or {}) if isinstance(update.get("search_kernel"), dict) else {}
@@ -133,6 +134,7 @@ class LiveNexusStore:
                 adaptive_state=adaptive_state,
                 elo=elo_state,
                 fabric=fabric_state,
+                cost_ledger=cost_ledger,
                 search_kernel=search_kernel_state,
                 runtime_options=runtime_options,
                 allow_progress_round_repair=allow_round_repair,
@@ -166,6 +168,7 @@ class LiveNexusStore:
             "progress_event": progress_event,
             "adaptive_state": adaptive_state,
             "fabric": fabric_state,
+            "cost_ledger": cost_ledger,
             "runtime_options": runtime_options,
             "search_kernel": search_kernel_state,
             "monitor_state": monitor_state,

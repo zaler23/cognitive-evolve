@@ -44,12 +44,14 @@ def _stage_usage(existing_events: list[Any], new_events: list[dict[str, Any]]) -
             continue
         stage = str(event.get("stage") or "unscoped")
         usage_item = event.get("usage") if isinstance(event.get("usage"), dict) else {}
+        billable = event.get("cache_replayed") is not True
         bucket = buckets.setdefault(stage, {"event_count": 0, "estimated_cost_usd": 0.0, "usage": {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}, "request_types": []})
         bucket["event_count"] += 1
-        bucket["estimated_cost_usd"] = round(float(bucket["estimated_cost_usd"]) + float(event.get("estimated_cost_usd") or 0.0), 6)
-        bucket["usage"]["prompt_tokens"] += int(usage_item.get("prompt_tokens") or 0)
-        bucket["usage"]["completion_tokens"] += int(usage_item.get("completion_tokens") or 0)
-        bucket["usage"]["total_tokens"] += int(usage_item.get("total_tokens") or 0)
+        bucket["estimated_cost_usd"] = round(float(bucket["estimated_cost_usd"]) + (float(event.get("estimated_cost_usd") or 0.0) if billable else 0.0), 6)
+        if billable:
+            bucket["usage"]["prompt_tokens"] += int(usage_item.get("prompt_tokens") or 0)
+            bucket["usage"]["completion_tokens"] += int(usage_item.get("completion_tokens") or 0)
+            bucket["usage"]["total_tokens"] += int(usage_item.get("total_tokens") or 0)
         request_type = str(event.get("request_type") or "")
         if request_type and request_type not in bucket["request_types"]:
             bucket["request_types"].append(request_type)
@@ -80,9 +82,9 @@ def write_llm_runtime_report(task_dir: Path) -> None:
     current_request_types = {str(event.get("request_type")) for event in new_events}
     existing_usage = existing.get("usage") if isinstance(existing.get("usage"), dict) else {}
     current_usage = {
-        "prompt_tokens": sum(int((event.get("usage") or {}).get("prompt_tokens") or 0) for event in new_events),
-        "completion_tokens": sum(int((event.get("usage") or {}).get("completion_tokens") or 0) for event in new_events),
-        "total_tokens": sum(int((event.get("usage") or {}).get("total_tokens") or 0) for event in new_events),
+        "prompt_tokens": sum(int((event.get("usage") or {}).get("prompt_tokens") or 0) for event in new_events if event.get("cache_replayed") is not True),
+        "completion_tokens": sum(int((event.get("usage") or {}).get("completion_tokens") or 0) for event in new_events if event.get("cache_replayed") is not True),
+        "total_tokens": sum(int((event.get("usage") or {}).get("total_tokens") or 0) for event in new_events if event.get("cache_replayed") is not True),
     }
     usage = {
         "prompt_tokens": int(existing_usage.get("prompt_tokens") or 0) + current_usage["prompt_tokens"],
@@ -105,7 +107,7 @@ def write_llm_runtime_report(task_dir: Path) -> None:
         "event_count": int(existing.get("event_count") or 0) + len(new_events),
         "request_types": sorted(existing_request_types | current_request_types),
         "usage": usage,
-        "estimated_cost_usd": round(float(existing.get("estimated_cost_usd") or 0.0) + sum(float(event.get("estimated_cost_usd") or 0.0) for event in new_events), 6),
+        "estimated_cost_usd": round(float(existing.get("estimated_cost_usd") or 0.0) + sum(float(event.get("estimated_cost_usd") or 0.0) for event in new_events if event.get("cache_replayed") is not True), 6),
         "budget_usd": budget_usd(),
         "governor_config": llm_governor_status(),
         "inflight_registry": provider_inflight_status(),

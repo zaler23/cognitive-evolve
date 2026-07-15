@@ -40,6 +40,8 @@ class LLMSession:
         total = 0.0
         seen_physical: set[str] = set()
         for event in self.snapshot():
+            if event.get("cache_replayed") is True:
+                continue
             physical_call_id = str(event.get("physical_call_id") or "")
             if physical_call_id and physical_call_id in seen_physical:
                 continue
@@ -53,6 +55,7 @@ _DEFAULT_SESSION = LLMSession(EVENTS)
 _CURRENT_SESSION: ContextVar[LLMSession | None] = ContextVar("cogev_llm_session", default=None)
 _LAST_RETRY_HISTORY: ContextVar[list[dict[str, Any]]] = ContextVar("cogev_llm_retry_history", default=[])
 _LOGICAL_CALL: ContextVar[tuple[str, str, LLMRequestPolicy | None] | None] = ContextVar("cogev_llm_logical_call", default=None)
+_LLM_ROUND: ContextVar[str | None] = ContextVar("cogev_llm_round", default=None)
 
 
 def current_llm_session() -> LLMSession:
@@ -91,3 +94,16 @@ def logical_llm_call(
 
 def current_logical_llm_call() -> tuple[str, str, LLMRequestPolicy | None] | None:
     return _LOGICAL_CALL.get()
+
+
+@contextmanager
+def llm_round(round_id: int | str) -> Iterator[None]:
+    token = _LLM_ROUND.set(str(round_id))
+    try:
+        yield
+    finally:
+        _LLM_ROUND.reset(token)
+
+
+def current_llm_round() -> str | None:
+    return _LLM_ROUND.get()
