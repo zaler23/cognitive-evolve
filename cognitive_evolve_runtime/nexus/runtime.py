@@ -587,6 +587,9 @@ def _apply_search_mechanics(policy: EvolutionPolicy, runtime_options: dict[str, 
     metadata = policy.metadata if isinstance(policy.metadata, dict) else {}
     metadata["offspring_parallel_mode"] = str(runtime_options["search.offspring_parallel_mode"])
     metadata["slot_sampling_profiles"] = dict(runtime_options["search.slot_sampling_profiles"])
+    metadata["single_batch_truncation_rate_threshold"] = float(
+        runtime_options.get("search.single_batch_truncation_rate_threshold", 0.05)
+    )
     policy.metadata = metadata
 
 

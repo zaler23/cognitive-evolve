@@ -577,7 +577,10 @@ def test_generation_event_exposes_complete_move_contract() -> None:
     )
     controller = object.__new__(EvolutionLoopController)
     controller.round_pipeline = SimpleNamespace(last_generation_plan=generation_plan)
-    controller.budget = SimpleNamespace(history=[{}], stop_reason="")
+    controller.budget = SimpleNamespace(history=[{}], stop_reason="", branch_factor=1)
+    controller.round_observations = {}
+    controller.cost_ledger = {}
+    controller.policy = SimpleNamespace(metadata={})
     evaluation = SimpleNamespace(progress_event={"metadata": {}})
 
     controller._record_reproduction_result(1, evaluation, "stop", [], {}, None)

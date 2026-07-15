@@ -469,7 +469,15 @@ def _budgeted_llm_json(request_type: str, payload: dict[str, Any], *, system: st
         {"role": "system", "content": system + "\nReturn only valid JSON."},
         {"role": "user", "content": user_content},
     ]
-    total_attempt_budget = max(1, configured_retry_attempts())
+    logical_request_policy = logical_context[2] if logical_context is not None else None
+    configured_call_attempts = (
+        logical_request_policy.retry_attempts
+        if logical_request_policy is not None and logical_request_policy.retry_attempts is not None
+        else request_policy.retry_attempts
+        if request_policy is not None and request_policy.retry_attempts is not None
+        else configured_retry_attempts()
+    )
+    total_attempt_budget = max(1, int(configured_call_attempts or 1))
     json_attempts = max(1, env_int(LLM_JSON_RETRY_ATTEMPTS_ENV, total_attempt_budget))
     attempts = 0
     estimated_cost: float | None = None

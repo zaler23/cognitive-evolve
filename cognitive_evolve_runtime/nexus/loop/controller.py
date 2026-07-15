@@ -234,6 +234,7 @@ class EvolutionLoopController:
                 "critiques": [critique.to_dict() for critique in evaluation.critiques],
                 "verification": [item.to_dict() for item in evaluation.verification_results],
                 "generation_plan": evaluation.generation_plan,
+                "direction_aware_gain": dict(evaluation.generation_plan.get("direction_aware_gain") or {}),
                 "search_phase": str(evaluation.generation_plan.get("search_phase") or self.budget.search_phase),
                 "search_phase_evaluated": str(evaluation.generation_plan.get("search_phase_evaluated") or self.budget.search_phase),
                 "remaining_budget": dict(evaluation.generation_plan.get("remaining_budget") or {}),
@@ -306,10 +307,14 @@ class EvolutionLoopController:
             move_contracts = generation_plan.get("move_contracts")
             if isinstance(move_contracts, list) and move_contracts:
                 metadata["move_contracts"] = [dict(item) for item in move_contracts if isinstance(item, dict)]
+            offspring_transport = generation_plan.get("offspring_transport")
+            if isinstance(offspring_transport, dict) and offspring_transport:
+                metadata["offspring_transport"] = dict(offspring_transport)
         if offspring_verification:
             self.budget.history[-1]["offspring_verification"] = offspring_verification
         if reproduction_compaction:
             self.budget.history[-1]["reproduction_compaction"] = reproduction_compaction
+        self._record_gain_token_control(current_round, evaluation)
         if reproduction_stop:
             self.budget.stop_reason = reproduction_stop
             self._record_terminal_stop_reason(reproduction_stop)
@@ -338,6 +343,30 @@ class EvolutionLoopController:
         })
         event["metadata"] = metadata
         event["next_action"] = reason
+
+    def _record_gain_token_control(self, current_round: int, evaluation: RoundEvaluation) -> None:
+        observed_history = [dict(item) for item in self.budget.history]
+        for record in observed_history:
+            record.update(self.round_observations.get(str(record.get("round")), {}))
+        self.cost_ledger = build_round_cost_ledger(
+            current_llm_session().snapshot(),
+            budget_history=observed_history,
+            existing_ledger=self.cost_ledger,
+        )
+        attach_round_cost_ledger(self.budget.history, self.cost_ledger)
+        metadata = self.policy.metadata if isinstance(self.policy.metadata, dict) else {}
+        decision = _gain_token_control(
+            history=self.budget.history,
+            cost_ledger=self.cost_ledger,
+            current_width=max(1, int(self.budget.branch_factor or 1)),
+            current_transport=str(metadata.get("offspring_parallel_mode") or "slot"),
+            current_retry_limit=max(1, int(metadata.get("offspring_retry_attempts") or 5)),
+            config=dict(metadata.get("gain_token_controller") or {}),
+        )
+        _apply_gain_token_control(budget=self.budget, policy=self.policy, decision=decision)
+        self.budget.history[-1]["gain_token_control"] = decision
+        event_metadata = evaluation.progress_event.setdefault("metadata", {})
+        event_metadata["gain_token_control"] = decision
 
     def _checkpoint_interruption(self, current_round: int, exc: Exception, *, stop_reason: str, stagnation_type: str, actions: list[str]) -> None:
         self.error = {"type": exc.__class__.__name__, "message": str(exc), "round": current_round}
@@ -402,6 +431,7 @@ class EvolutionLoopController:
             budget_history=self.budget.history,
             existing_ledger=self.cost_ledger,
         )
+        attach_round_cost_ledger(self.budget.history, self.cost_ledger)
         estimated_cost = round(
             sum(
                 float((item.get("totals") or {}).get("estimated_cost_usd") or 0.0)
@@ -744,6 +774,104 @@ def _unconsumed_stagnation_receipt_refs(history: list[dict[str, Any]]) -> list[s
         and item.get("receipt_id")
         and str(item.get("receipt_id")) not in consumed
     ]
+
+
+def _gain_token_control(
+    *,
+    history: list[dict[str, Any]],
+    cost_ledger: dict[str, Any],
+    current_width: int,
+    current_transport: str,
+    current_retry_limit: int,
+    config: dict[str, Any],
+) -> dict[str, Any]:
+    width = max(1, int(current_width or 1))
+    transport = current_transport if current_transport in {"slot", "single_batch"} else "slot"
+    retry_limit = max(1, int(current_retry_limit or 1))
+    low = float(config.get("low_gain_per_token", 0.00001))
+    high = max(low, float(config.get("high_gain_per_token", 0.00005)))
+    min_width = max(1, int(config.get("min_width", 1)))
+    max_width = max(min_width, int(config.get("max_width", max(8, width))))
+    min_retry = max(1, int(config.get("min_retry_limit", 1)))
+    max_retry = max(min_retry, int(config.get("max_retry_limit", 5)))
+    gain_record: dict[str, Any] = {}
+    source_round: Any = None
+    for record in reversed(history):
+        if not isinstance(record, dict):
+            continue
+        candidate = record.get("direction_aware_gain")
+        if isinstance(candidate, dict):
+            gain_record = candidate
+        source_round = record.get("round")
+        break
+    ledger_round = next(
+        (
+            item
+            for item in cost_ledger.get("rounds", [])
+            if isinstance(item, dict) and str(item.get("round")) == str(source_round)
+        ),
+        {},
+    )
+    totals = ledger_round.get("totals") if isinstance(ledger_round.get("totals"), dict) else {}
+    gain = max(0.0, float(gain_record.get("total_gain") or 0.0))
+    sample_count = max(0, int(gain_record.get("sample_count") or 0))
+    tokens = max(0, int(totals.get("total_tokens") or 0))
+    cost_usd = max(0.0, float(totals.get("estimated_cost_usd") or 0.0))
+    gain_per_token = gain / tokens if tokens and sample_count else None
+    action = "hold"
+    reason = "insufficient_direction_aware_gain_or_token_history"
+    next_width = width
+    next_transport = transport
+    next_retry = retry_limit
+    enabled = config.get("enabled", True) is not False
+    if enabled and gain_per_token is not None and gain_per_token < low:
+        action = "contract"
+        reason = "gain_per_token_below_low_threshold"
+        next_width = max(min_width, width - 1)
+        next_transport = "single_batch"
+        next_retry = max(min_retry, retry_limit - 1)
+    elif enabled and gain_per_token is not None and gain_per_token >= high:
+        action = "expand"
+        reason = "gain_per_token_at_or_above_high_threshold"
+        next_width = min(max_width, width + 1)
+        next_transport = "slot"
+        next_retry = min(max_retry, retry_limit + 1)
+    elif not enabled:
+        reason = "controller_disabled"
+    elif gain_per_token is not None:
+        reason = "gain_per_token_inside_hold_band"
+    return {
+        "schema": "cogev.gain_token_control.v1",
+        "source_round": source_round,
+        "action": action,
+        "reason": reason,
+        "gain": gain,
+        "sample_count": sample_count,
+        "total_tokens": tokens,
+        "estimated_cost_usd": cost_usd,
+        "gain_per_token": round(gain_per_token, 12) if gain_per_token is not None else None,
+        "gain_per_usd": round(gain / cost_usd, 12) if cost_usd > 0.0 else None,
+        "thresholds": {"low_gain_per_token": low, "high_gain_per_token": high},
+        "current": {"width": width, "transport": transport, "retry_limit": retry_limit},
+        "next": {
+            "width": next_width,
+            "transport": next_transport,
+            "retry_limit": next_retry,
+            "pre_rank_admission_limit": next_width,
+        },
+        "authority_boundary": "budget_width_transport_retry_only",
+    }
+
+
+def _apply_gain_token_control(*, budget: EvolutionBudget, policy: EvolutionPolicy, decision: dict[str, Any]) -> None:
+    if decision.get("action") == "hold":
+        return
+    controls = decision["next"]
+    budget.branch_factor = int(controls["width"])
+    policy.metadata["offspring_parallel_mode"] = str(controls["transport"])
+    policy.metadata["offspring_retry_attempts"] = int(controls["retry_limit"])
+    policy.metadata["pre_rank_admission_limit"] = int(controls["pre_rank_admission_limit"])
+
 
 def evolve_once(
     *,

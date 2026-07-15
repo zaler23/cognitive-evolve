@@ -125,6 +125,30 @@ def test_each_resolved_sampling_field_changes_replay_signature(
     assert len(provider.calls) == 2
 
 
+def test_logical_call_retry_limit_overrides_global_transport_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _configure_provider(monkeypatch)
+
+    class _TruncatedThenCompleteProvider(_CaptureProvider):
+        def complete_json(self, **kwargs: Any) -> LLMProviderResult:
+            response = MockProviderResponse({"ok": True})
+            with self.lock:
+                self.calls.append(dict(kwargs))
+                if len(self.calls) == 1:
+                    response.choices[0].finish_reason = "length"
+            return LLMProviderResult(response=response, estimated_cost_usd=0.0)
+
+    provider = _TruncatedThenCompleteProvider()
+    with llm_session(LLMSession(run_id="retry-limit", journal_dir=str(tmp_path))):
+        with logical_llm_call("round-1/slot-1", request_policy=LLMRequestPolicy(retry_attempts=2)):
+            result = llm_json("retry_limit", {}, system="Return JSON", schema_hint={}, provider=provider)
+
+    assert result["ok"] is True
+    assert [call["_retry_max_attempts"] for call in provider.calls] == [2, 1]
+
+
 def test_rank_replay_signature_tracks_candidate_order_round_and_template(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

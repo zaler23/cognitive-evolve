@@ -1,7 +1,10 @@
 """Offspring planning, allocation, and model generation for Nexus rounds."""
 from __future__ import annotations
 
+import math
 import os
+from contextlib import nullcontext
+from dataclasses import asdict
 from typing import Any
 
 from cognitive_evolve_runtime.archives.manager import ArchiveManager
@@ -22,6 +25,7 @@ from cognitive_evolve_runtime.nexus._serde import coerce_str_list, stable_hash
 from cognitive_evolve_runtime.llm.fanout import run_ordered_fanout
 from cognitive_evolve_runtime.llm.request_policy import LLMRequestPolicy
 from cognitive_evolve_runtime.llm.session import logical_llm_call
+from cognitive_evolve_runtime.llm.transport import max_tokens_for_request
 from cognitive_evolve_runtime.nexus.diagnosis import SearchDiagnosis
 from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy
 from cognitive_evolve_runtime.nexus.protocols import NexusModelLike, NexusMutationPlannerModelProtocol, NexusOffspringModelProtocol
@@ -213,6 +217,7 @@ def _generate_offspring(
     provided_context: dict[str, Any] | None = None,
     target_size: int | None = None,
     harvest_outcome: dict[str, Any] | None = None,
+    budget_history: list[dict[str, Any]] | None = None,
 ) -> list[CandidateGenome]:
     if harvest_outcome is not None:
         harvest_outcome.clear()
@@ -228,15 +233,21 @@ def _generate_offspring(
         raise LLMConfigurationError("configured model does not implement NexusOffspringModelProtocol")
     branch_slots = _branch_slots_from_plans(plans)
     policy_metadata = policy.metadata if isinstance(policy.metadata, dict) else {}
-    mode = str(
+    requested_mode = str(
         policy_metadata.get("offspring_parallel_mode")
         or os.environ.get("COGEV_OFFSPRING_PARALLEL_MODE")
         or "slot"
     ).strip().lower()
-    if mode not in {"slot", "single_batch"}:
+    if requested_mode not in {"slot", "single_batch"}:
         raise ValueError("COGEV_OFFSPRING_PARALLEL_MODE must be slot or single_batch")
-    if branch_slots and mode == "slot":
-        return _generate_slot_offspring(
+    transport = _offspring_transport_decision(
+        policy=policy,
+        branch_slots=branch_slots,
+        budget_history=budget_history or [],
+        target_size=max(1, int(target_size or len(plans) or 1)),
+    )
+    if branch_slots and transport["selected_mode"] == "slot":
+        offspring = _generate_slot_offspring(
             model=model,
             parents=parents,
             plans=plans,
@@ -248,10 +259,13 @@ def _generate_offspring(
             provided_context=provided_context,
             harvest_outcome=harvest_outcome,
         )
+        if harvest_outcome is not None:
+            harvest_outcome["transport"] = transport
+        return offspring
     harvest_error: Exception | None = None
     saw_model_items = False
     target = max(1, int(target_size or len(plans) or 1))
-    direct_single_batch = target_size is not None and any(_branch_slots_from_plans(plans))
+    direct_single_batch = bool(branch_slots and transport["selected_mode"] == "single_batch")
     existing_candidates = list(candidate_pool or [])
     existing_ids = {candidate.id for candidate in existing_candidates}
     existing_candidates.extend(parent for parent in parents if parent.id not in existing_ids)
@@ -279,15 +293,25 @@ def _generate_offspring(
             kind="offspring",
         )
         batch_policy.metadata["requested_candidate_count"] = max(1, target - len(target_qualified_candidates(accepted)))
-        raw = call_with_optional_context(
-            model.generate_offspring,
-            plans=plans,
-            parents=parents,
-            world=world,
-            contract=contract,
-            policy=batch_policy,
-            provided_context=provided_context,
+        batch_call = (
+            logical_llm_call(
+                f"{str((plans[0].metadata or {}).get('plan_id') or 'runtime-lineage-envelope')}/single-batch",
+                template_version=_OFFSPRING_PROMPT_TEMPLATE_VERSION,
+                request_policy=_slot_sampling_policy(policy, branch_slots[0]) if branch_slots else None,
+            )
+            if direct_single_batch
+            else nullcontext()
         )
+        with batch_call:
+            raw = call_with_optional_context(
+                model.generate_offspring,
+                plans=plans,
+                parents=parents,
+                world=world,
+                contract=contract,
+                policy=batch_policy,
+                provided_context=provided_context,
+            )
         raw_items = list(raw or [])
         saw_model_items = saw_model_items or bool(raw_items)
         model_offspring = [_candidate_from_model_offspring(item) for item in raw_items if isinstance(item, (CandidateGenome, dict))]
@@ -301,10 +325,52 @@ def _generate_offspring(
         recoverable_errors=MODEL_BOUNDARY_ERRORS,
     )
     harvest_error = result.fatal_model_error
+    if direct_single_batch and harvest_error is not None:
+        fallback = {
+            "attempted": True,
+            "passes": 1,
+            "from": "single_batch",
+            "to": "slot",
+            "status": "failed",
+            "error_type": harvest_error.__class__.__name__,
+            "error": str(harvest_error),
+        }
+        transport["fallback"] = fallback
+        slot_outcome: dict[str, Any] = {}
+        try:
+            offspring = _generate_slot_offspring(
+                model=model,
+                parents=parents,
+                plans=plans,
+                branch_slots=branch_slots,
+                world=world,
+                contract=contract,
+                policy=policy,
+                candidate_pool=candidate_pool or [],
+                provided_context=provided_context,
+                harvest_outcome=slot_outcome,
+            )
+        except MODEL_BOUNDARY_ERRORS:
+            if harvest_outcome is not None:
+                harvest_outcome.update(result.to_dict())
+                harvest_outcome["transport"] = transport
+                harvest_outcome["partial_failure_blast_radius"] = len(branch_slots)
+            raise
+        fallback["status"] = "succeeded"
+        slot_outcome["batch_error"] = f"{harvest_error.__class__.__name__}: {harvest_error}"
+        slot_outcome["transport"] = transport
+        slot_outcome["partial_failure_blast_radius"] = max(
+            len(branch_slots),
+            int(slot_outcome.get("partial_failure_blast_radius") or 0),
+        )
+        if harvest_outcome is not None:
+            harvest_outcome.update(slot_outcome)
+        return offspring
     if result.accepted:
         if harvest_outcome is not None:
             harvest_outcome.update(result.to_dict())
             harvest_outcome["status"] = "accepted"
+            harvest_outcome["transport"] = transport
         offspring = list(result.accepted)
         for candidate in offspring:
             candidate.metadata.setdefault("offspring_harvest", result.to_dict())
@@ -322,12 +388,14 @@ def _generate_offspring(
         if harvest_outcome is not None:
             harvest_outcome.update(result.to_dict())
             harvest_outcome["status"] = "model_abstained"
+            harvest_outcome["transport"] = transport
         return []
     rejection_reasons = {str(item.get("reason") or "") for item in result.rejected}
     if rejection_reasons and rejection_reasons <= {"duplicate_materialized_artifact"}:
         if harvest_outcome is not None:
             harvest_outcome.update(result.to_dict())
             harvest_outcome["status"] = "duplicate_exhausted"
+            harvest_outcome["transport"] = transport
         return []
     raise ModelResponseSchemaError("nexus_generate_offspring returned no valid offspring")
 
@@ -416,6 +484,11 @@ def _generate_slot_offspring(
     slot_results = run_ordered_fanout(branch_slots, _request_slot, thread_name_prefix="cogev-offspring-slot")
     successful = [candidate for candidate, error in slot_results if candidate is not None and error is None]
     errors = [error for candidate, error in slot_results if candidate is None and error is not None]
+    failed_slot_ids = [
+        str(slot.get("slot_id") or "")
+        for slot, (candidate, error) in zip(branch_slots, slot_results)
+        if candidate is None and error is not None
+    ]
     if not successful:
         raise errors[0]
 
@@ -441,6 +514,8 @@ def _generate_slot_offspring(
         harvest_outcome.update(result.to_dict())
         harvest_outcome["status"] = "accepted" if result.accepted else "duplicate_exhausted"
         harvest_outcome["slot_errors"] = [f"{error.__class__.__name__}: {error}" for error in errors]
+        harvest_outcome["failed_slot_ids"] = failed_slot_ids
+        harvest_outcome["partial_failure_blast_radius"] = len(failed_slot_ids)
     if errors:
         summary = "; ".join(f"{error.__class__.__name__}: {error}" for error in errors)
         for candidate in result.accepted:
@@ -453,9 +528,10 @@ def _slot_sampling_policy(policy: EvolutionPolicy, slot: dict[str, Any]) -> LLMR
     directive = raw_directive if isinstance(raw_directive, dict) else {}
     restart = _restart_action(directive.get("action_hint"))
     restart_temperature = float((policy.metadata or {}).get("strategy_restart_temperature", 1.0)) if restart else 1.0
+    retry_limit = _positive_int((policy.metadata or {}).get("offspring_retry_attempts"))
     configured = (policy.metadata or {}).get("slot_sampling_profiles")
     if not isinstance(configured, dict):
-        return LLMRequestPolicy(temperature=restart_temperature) if restart else None
+        return LLMRequestPolicy(temperature=restart_temperature if restart else None, retry_attempts=retry_limit) if restart or retry_limit else None
     phase = str((policy.metadata or {}).get("search_phase") or "explore").strip().lower()
     phase_profiles = configured.get(phase)
     phase_aware = isinstance(phase_profiles, dict)
@@ -467,7 +543,7 @@ def _slot_sampling_policy(policy: EvolutionPolicy, slot: dict[str, Any]) -> LLMR
         profiles = available.get("default")
         profile_key = "default"
     if profiles in (None, []):
-        return LLMRequestPolicy(temperature=restart_temperature) if restart else None
+        return LLMRequestPolicy(temperature=restart_temperature if restart else None, retry_attempts=retry_limit) if restart or retry_limit else None
     if not isinstance(profiles, list):
         raise ValueError("slot_sampling_profiles intent value must be a list")
     profile_index = int(slot.get("variation_index") or 0) % len(profiles)
@@ -483,7 +559,98 @@ def _slot_sampling_policy(policy: EvolutionPolicy, slot: dict[str, Any]) -> LLMR
         seed=int(profile["seed"]) if profile.get("seed") is not None else None,
         search_phase=phase,
         sampling_profile_id=f"{phase}:{profile_key}:{profile_index}",
+        retry_attempts=retry_limit,
     )
+
+
+def _offspring_transport_decision(
+    *,
+    policy: EvolutionPolicy,
+    branch_slots: list[dict[str, Any]],
+    budget_history: list[dict[str, Any]],
+    target_size: int,
+) -> dict[str, Any]:
+    metadata = policy.metadata if isinstance(policy.metadata, dict) else {}
+    requested = str(metadata.get("offspring_parallel_mode") or os.environ.get("COGEV_OFFSPRING_PARALLEL_MODE") or "slot").strip().lower()
+    compiled = [_slot_sampling_policy(policy, slot) for slot in branch_slots]
+    serialized_profiles = [asdict(item) if item is not None else {} for item in compiled]
+    profile_keys = {
+        tuple(sorted((key, str(value)) for key, value in profile.items() if value is not None))
+        for profile in serialized_profiles
+    }
+    sampling_gate = {
+        "passed": len(profile_keys) <= 1,
+        "compiled_profiles": [
+            {"slot_id": str(slot.get("slot_id") or ""), **profile}
+            for slot, profile in zip(branch_slots, serialized_profiles)
+        ],
+    }
+
+    completion_tokens = 0
+    valid_children = 0
+    physical_calls = 0
+    truncations = 0
+    for record in budget_history:
+        if not isinstance(record, dict):
+            continue
+        ledger = record.get("cost_ledger") if isinstance(record.get("cost_ledger"), dict) else {}
+        totals = ledger.get("totals") if isinstance(ledger.get("totals"), dict) else {}
+        observations = ledger.get("observations") if isinstance(ledger.get("observations"), dict) else {}
+        completion_tokens += max(0, int(totals.get("completion_tokens") or 0))
+        valid_children += max(0, int(observations.get("unique_valid_children") or 0))
+        physical_calls += max(0, int(totals.get("physical_calls") or 0))
+        truncations += max(0, int(observations.get("truncation_count") or ledger.get("transport_truncation_count") or 0))
+    if valid_children > 0:
+        tokens_per_child = completion_tokens / valid_children
+        estimate_source = "round_cost_ledger"
+        output_history_available = completion_tokens > 0
+    else:
+        tokens_per_child = float(max(1, int(metadata.get("single_batch_default_tokens_per_child") or 8192)))
+        estimate_source = "conservative_default_no_valid_child_history"
+        output_history_available = False
+    output_limit = max(
+        1,
+        int(
+            metadata.get("single_batch_output_token_limit")
+            or max_tokens_for_request("nexus_generate_offspring", LLMRequestPolicy(long_context=True))
+        ),
+    )
+    required_tokens = int(math.ceil(tokens_per_child * max(1, int(target_size or 1))))
+    output_gate = {
+        "passed": output_history_available and required_tokens <= output_limit,
+        "history_available": output_history_available,
+        "history_completion_tokens": completion_tokens,
+        "history_valid_children": valid_children,
+        "observed_tokens_per_valid_child": round(tokens_per_child, 6),
+        "required_tokens": required_tokens,
+        "output_token_limit": output_limit,
+        "estimate_source": estimate_source,
+    }
+    threshold = float(metadata.get("single_batch_truncation_rate_threshold", 0.05) or 0.0)
+    observed_rate = truncations / physical_calls if physical_calls else 0.0
+    truncation_gate = {
+        "passed": physical_calls > 0 and observed_rate <= threshold,
+        "history_available": physical_calls > 0,
+        "historical_truncations": truncations,
+        "historical_physical_calls": physical_calls,
+        "observed_rate": round(observed_rate, 12),
+        "threshold": threshold,
+    }
+    gates = {
+        "sampling_homogeneous": sampling_gate,
+        "batch_output_budget": output_gate,
+        "historical_truncation_rate": truncation_gate,
+    }
+    failed_gate = next((name for name, gate in gates.items() if gate["passed"] is not True), "")
+    selected = "single_batch" if requested == "single_batch" and not failed_gate and branch_slots else "slot"
+    return {
+        "schema": "cogev.offspring_transport_gate.v1",
+        "requested_mode": requested,
+        "selected_mode": selected,
+        "reason": "all_gates_passed" if selected == "single_batch" else f"gate_failed:{failed_gate}" if requested == "single_batch" and failed_gate else "slot_requested_or_no_branch_slots",
+        "gates": gates,
+        "fallback": {"attempted": False, "passes": 0, "from": selected, "to": selected, "status": "not_needed"},
+    }
 
 
 def _deterministic_fallback_offspring(

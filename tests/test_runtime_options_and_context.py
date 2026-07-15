@@ -210,6 +210,15 @@ def test_default_offspring_transport_is_slot_and_single_batch_is_explicit() -> N
     assert resolve_runtime_options(environment={"COGEV_OFFSPRING_PARALLEL_MODE": "single_batch"})["search.offspring_parallel_mode"] == "single_batch"
 
 
+def test_single_batch_truncation_threshold_is_public_and_bounded() -> None:
+    assert resolve_runtime_options(environment={})["search.single_batch_truncation_rate_threshold"] == 0.05
+    assert resolve_runtime_options(
+        environment={"COGEV_SINGLE_BATCH_TRUNCATION_RATE_THRESHOLD": "0.2"}
+    )["search.single_batch_truncation_rate_threshold"] == 0.2
+    with pytest.raises(ValueError, match="single_batch_truncation_rate_threshold"):
+        resolve_runtime_options(environment={"COGEV_SINGLE_BATCH_TRUNCATION_RATE_THRESHOLD": "1.1"})
+
+
 def test_slot_sampling_profiles_are_public_phase_aware_runtime_options() -> None:
     options = resolve_runtime_options(environment={})
     profiles = options["search.slot_sampling_profiles"]
