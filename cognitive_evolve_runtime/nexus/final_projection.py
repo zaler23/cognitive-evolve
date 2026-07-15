@@ -7,7 +7,6 @@ from typing import Any
 from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome, CandidatePopulation
 from cognitive_evolve_runtime.evaluators.evidence import evidence_state, latest_evidence_record, select_preliminary_incumbent
 from cognitive_evolve_runtime.evaluators.evidence_authority import stable_artifact_hash
-from cognitive_evolve_runtime.evaluators.registry import get_adapter
 from cognitive_evolve_runtime.core.scalars import bounded_score
 from cognitive_evolve_runtime.nexus.display_selection import select_displayed_candidate
 from cognitive_evolve_runtime.nexus.nextgen import (
@@ -152,7 +151,7 @@ def _projection_for_candidate(candidate: CandidateGenome | None, *, status: str,
     artifact_type = _projection_artifact_type(candidate, evidence=evidence, artifact_state=artifact_state, certificate=certificate)
     evaluator_payload = candidate.metadata.get("evaluator") if isinstance(candidate.metadata, dict) and isinstance(candidate.metadata.get("evaluator"), dict) else {}
     evaluation_bound = bool(evaluator_payload)
-    projected_artifact = artifact if evaluation_bound else _project_artifact_for_projection(artifact, evidence=evidence, evidence_summary=evidence_summary)
+    projected_artifact = artifact if evaluation_bound else _project_artifact_for_projection(artifact)
     artifact_hash = ""
     if evaluation_bound:
         artifact_hash = str(evidence.metadata.get("normalized_artifact_hash") or "") if evidence is not None and isinstance(evidence.metadata, dict) else ""
@@ -305,11 +304,10 @@ def _projection_artifact_type(candidate: CandidateGenome, *, evidence: Any, arti
     return str(certificate.get("artifact_type") or "").strip()
 
 
-def _project_artifact_for_projection(artifact: Any, *, evidence: Any, evidence_summary: dict[str, Any]) -> Any:
+def _project_artifact_for_projection(artifact: Any) -> Any:
     if isinstance(artifact, (dict, list)):
         return artifact
-    adapter = get_adapter(evidence.source if evidence is not None else None)
-    return adapter.project_artifact_for_user(artifact, evidence=evidence_summary)
+    return str(artifact or "")
 
 
 def _render_artifact(artifact: Any) -> str:

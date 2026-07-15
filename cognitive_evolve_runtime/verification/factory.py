@@ -30,14 +30,8 @@ def verifier_from_plan(plan: VerificationPlan | dict[str, Any] | None) -> Synthe
     else:
         return None
     if plan.verifier_fingerprint:
-        try:
-            verifier.fingerprint = plan.verifier_fingerprint
-        except Exception:
-            pass
-    try:
-        verifier.plan = plan.to_dict()
-    except Exception:
-        pass
+        verifier.fingerprint = plan.verifier_fingerprint
+    verifier.plan = plan.to_dict()
     return verifier
 
 
