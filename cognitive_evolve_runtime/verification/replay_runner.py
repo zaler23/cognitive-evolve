@@ -50,7 +50,7 @@ def _candidate_artifact_hash(candidate: Any) -> str:
     metadata = getattr(candidate, "metadata", {}) if candidate is not None else {}
     verifier_relevant = {}
     if isinstance(metadata, dict):
-        verifier_relevant = {k: metadata.get(k) for k in ("verification_command", "z3_formula", "required_claims", "empirical_score") if k in metadata}
+        verifier_relevant = {k: metadata.get(k) for k in ("verification_command", "z3_dsl", "z3_formula", "required_claims", "empirical_score") if k in metadata}
     return "artifact-" + stable_hash({"artifact": artifact, "artifact_type": getattr(candidate, "artifact_type", ""), "verifier_metadata": verifier_relevant})[:24]
 
 
