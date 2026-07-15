@@ -11,6 +11,8 @@ from .honesty_core import GroundingRegime, ProbeCase
 
 _ARTIFACT_ASSERTION_TEMPLATE = "artifact_assertion/v1"
 _TYPED_ARTIFACT_RELATION_TEMPLATE = "artifact_json_relation/v2"
+_METAMORPHIC_JSON_RELATION_TEMPLATE = "metamorphic_json_relation/v1"
+_METAMORPHIC_RELATIONS = {"dict_numeric_summary_permutation_invariance/v1"}
 _ARTIFACT_ASSERTION_OPERATORS = {
     "exists",
     "not_exists",
@@ -153,8 +155,22 @@ def _compile_artifact_assertion_case(
     raw_case: dict[str, Any],
 ) -> ProbeCase:
     declared_template_id = str(raw_case.get("probe_template_id") or raw_case.get("template") or "")
-    if declared_template_id == _TYPED_ARTIFACT_RELATION_TEMPLATE:
+    if declared_template_id == _METAMORPHIC_JSON_RELATION_TEMPLATE:
+        template_id, assertion_id, relation_id, mapping_path, summary_path, reason = _compile_metamorphic_relation_fields(raw_case)
+        parameters = {
+            "assertion_id": assertion_id,
+            "relation_id": relation_id,
+            "mapping_path": mapping_path,
+            "summary_path": summary_path,
+        }
+    elif declared_template_id == _TYPED_ARTIFACT_RELATION_TEMPLATE:
         template_id, assertion_id, pointer, operator, expected, reason = _compile_typed_relation_fields(raw_case)
+        parameters = {
+            "assertion_id": assertion_id,
+            "path": pointer,
+            "operator": operator,
+            "expected": expected,
+        }
     else:
         template_id = declared_template_id
         assertion_id = str(raw_case.get("assertion_id") or "")
@@ -173,12 +189,12 @@ def _compile_artifact_assertion_case(
             reason = "invalid_json_pointer"
         elif operator not in _ARTIFACT_ASSERTION_OPERATORS:
             reason = "unsupported_operator"
-    parameters = {
-        "assertion_id": assertion_id,
-        "path": pointer,
-        "operator": operator,
-        "expected": expected,
-    }
+        parameters = {
+            "assertion_id": assertion_id,
+            "path": pointer,
+            "operator": operator,
+            "expected": expected,
+        }
     if reason:
         parameters["unsupported_reason"] = reason
     identity = {
@@ -226,6 +242,34 @@ def _compile_typed_relation_fields(raw_case: dict[str, Any]) -> tuple[str, str, 
         reason = "invalid_expected_relation_value"
     assertion_id = "relation-" + stable_hash({"args": args, "expected_relation": relation})[:12]
     return template_id, assertion_id, pointer, operator, expected, reason
+
+
+def _compile_metamorphic_relation_fields(raw_case: dict[str, Any]) -> tuple[str, str, str, str, str, str]:
+    template_id = _METAMORPHIC_JSON_RELATION_TEMPLATE
+    unsupported = sorted(str(key) for key in raw_case if key not in {"probe_template_id", "relation_id", "args"})
+    relation_id = str(raw_case.get("relation_id") or "")
+    args = raw_case.get("args")
+    if unsupported:
+        return template_id, "", relation_id, "", "", "unsupported_fields:" + ",".join(unsupported)
+    if relation_id not in _METAMORPHIC_RELATIONS:
+        return template_id, "", relation_id, "", "", "unsupported_relation"
+    if (
+        not isinstance(args, dict)
+        or set(args) != {"mapping_path", "summary_path"}
+        or not all(isinstance(args.get(key), str) for key in ("mapping_path", "summary_path"))
+    ):
+        return template_id, "", relation_id, "", "", "invalid_typed_args"
+    mapping_path = args["mapping_path"]
+    summary_path = args["summary_path"]
+    reason = ""
+    if any(not pointer.startswith("/") for pointer in (mapping_path, summary_path)):
+        reason = "invalid_json_pointer"
+    elif any(len(pointer) > 512 for pointer in (mapping_path, summary_path)):
+        reason = "json_pointer_exceeds_limit"
+    elif mapping_path == summary_path:
+        reason = "metamorphic_paths_must_differ"
+    assertion_id = "metamorphic-" + stable_hash({"relation_id": relation_id, "args": args})[:12]
+    return template_id, assertion_id, relation_id, mapping_path, summary_path, reason
 
 
 def _typed_relation_value(operator: str, expected: Any) -> bool:

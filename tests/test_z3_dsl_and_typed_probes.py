@@ -12,7 +12,11 @@ from cognitive_evolve_runtime.verification.modalities.formal import (
     FormalVerifier,
     apply_formal_evaluation_evidence,
 )
-from cognitive_evolve_runtime.verification.probe_executor import execute_probes
+from cognitive_evolve_runtime.verification.probe_executor import (
+    apply_probe_counterexample_evidence,
+    execute_probes,
+    result_with_probe_observations,
+)
 from cognitive_evolve_runtime.verification.regime import compile_grounding_regime
 from cognitive_evolve_runtime.verification.types import VerificationResult
 from cognitive_evolve_runtime.verification.z3_dsl import (
@@ -313,6 +317,115 @@ def test_typed_probe_is_unavailable_when_bad_calibration_does_not_find_counterex
     )
 
     observed = execute_probes(VerificationResult(passed=False), regime, candidate=candidate)
+
+    assert observed["probe_results"][0]["status"] == "unsupported"
+    assert observed["probe_results"][0]["reason"] == "template_calibration_failed"
+    assert observed["executed_count"] == 0
+
+
+def _metamorphic_case(
+    relation_id: str = "dict_numeric_summary_permutation_invariance/v1",
+) -> dict[str, object]:
+    return {
+        "probe_template_id": "metamorphic_json_relation/v1",
+        "relation_id": relation_id,
+        "args": {"mapping_path": "/records", "summary_path": "/summary/total"},
+    }
+
+
+def _metamorphic_candidate(*, declared_total: int) -> CandidateGenome:
+    return CandidateGenome(
+        id=f"C-metamorphic-{declared_total}",
+        artifact={"records": {"alpha": 2, "beta": 3}, "summary": {"total": declared_total}},
+        proof_obligations=[{"id": "metamorphic", "probe_cases": [_metamorphic_case()]}],
+    )
+
+
+def test_structured_data_metamorphic_relation_calibrates_and_catches_violation() -> None:
+    good = _metamorphic_candidate(declared_total=5)
+    bad = _metamorphic_candidate(declared_total=6)
+
+    good_observed = execute_probes(VerificationResult(passed=False), _probe_regime(good), candidate=good)
+    bad_observed = execute_probes(VerificationResult(passed=True), _probe_regime(bad), candidate=bad)
+    bad_result = result_with_probe_observations(VerificationResult(passed=True, score=1.0), bad_observed)
+    receipt = apply_probe_counterexample_evidence(bad, bad_result, round_index=2)
+
+    assert good_observed["probe_results"][0]["status"] == "survived"
+    assert good_observed["known_good_bad_distinguishable"] is True
+    assert good_observed["probe_results"][0]["before_output_sha256"] == good_observed["probe_results"][0]["after_output_sha256"]
+    assert bad_observed["probe_results"][0]["status"] == "counterexample"
+    assert bad_observed["probe_results"][0]["before_output_sha256"] != bad_observed["probe_results"][0]["after_output_sha256"]
+    assert bad_result.passed is False
+    assert bad_result.metadata["validation_status"] == "preliminary_failed"
+    assert receipt is not None
+    assert receipt.final_blocked is True
+    violation = receipt.metadata["metamorphic_violation_receipts"][0]
+    assert violation["violated_relation"] == "dict_numeric_summary_permutation_invariance/v1"
+    assert violation["input_transformation"]["kind"] == "reverse_object_keys"
+    assert violation["before_output_summary"]
+    assert violation["before_output_sha256"]
+    assert violation["after_output_summary"]
+    assert violation["after_output_sha256"]
+
+
+def test_model_defined_metamorphic_relation_is_rejected_before_runner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def unexpected_run(*_args, **_kwargs):  # noqa: ANN202
+        raise AssertionError("unknown relation must not reach the engine runner")
+
+    monkeypatch.setattr("cognitive_evolve_runtime.verification.probe_executor.ToolRunner.run", unexpected_run)
+    candidate = CandidateGenome(
+        id="C-custom-metamorphic",
+        artifact={"records": {"alpha": 2}, "summary": {"total": 2}},
+        proof_obligations=[
+            {
+                "id": "metamorphic",
+                "probe_cases": [
+                    _metamorphic_case("model_defined_relation/v1"),
+                    _metamorphic_case() | {"relation_body": "model supplied executable"},
+                ],
+            }
+        ],
+    )
+
+    observed = execute_probes(VerificationResult(passed=False), _probe_regime(candidate), candidate=candidate)
+
+    assert [item["status"] for item in observed["probe_results"]] == ["unsupported", "unsupported"]
+    assert [item["reason"] for item in observed["probe_results"]] == [
+        "unsupported_relation",
+        "unsupported_fields:relation_body",
+    ]
+    assert observed["executed_count"] == 0
+
+
+def test_uncalibrated_metamorphic_relation_does_not_execute(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    candidate = _metamorphic_candidate(declared_total=5)
+
+    def calibration_survives(probe, _artifact, role):  # noqa: ANN001, ANN202
+        return {
+            "probe_id": probe.probe_id,
+            "status": "survived",
+            "calibration_role": role,
+            "engine_generated": True,
+            "provenance": "engine",
+        }
+
+    def unexpected_candidate_execution(*_args, **_kwargs):  # noqa: ANN202
+        raise AssertionError("uncalibrated metamorphic relation must not execute")
+
+    monkeypatch.setattr(
+        "cognitive_evolve_runtime.verification.probe_executor._run_calibration_artifact",
+        calibration_survives,
+    )
+    monkeypatch.setattr(
+        "cognitive_evolve_runtime.verification.probe_executor._run_artifact_assertions",
+        unexpected_candidate_execution,
+    )
+
+    observed = execute_probes(VerificationResult(passed=False), _probe_regime(candidate), candidate=candidate)
 
     assert observed["probe_results"][0]["status"] == "unsupported"
     assert observed["probe_results"][0]["reason"] == "template_calibration_failed"

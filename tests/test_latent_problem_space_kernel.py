@@ -124,6 +124,58 @@ def test_ambiguous_state_prefers_information_gain_over_premature_polish() -> Non
     assert action.action_id == "ask_pairwise_preference_probe"
 
 
+def test_explicit_hypothesis_partition_prefers_split_probe_and_lower_cost() -> None:
+    intents = tuple(
+        IntentHypothesis(id=f"h{index}", statement=f"hypothesis {index}", posterior=0.25)
+        for index in range(1, 5)
+    )
+    constant = ExplorationAction(
+        action_id="constant",
+        kind="intent_disambiguation",
+        information_gain=1.0,
+        hypothesis_outcomes={intent.id: ("same",) for intent in intents},
+        cost=0.01,
+    )
+    expensive_split = ExplorationAction(
+        action_id="expensive_split",
+        kind="intent_disambiguation",
+        hypothesis_outcomes={"h1": ("left",), "h2": ("left",), "h3": ("right",), "h4": ("right",)},
+        cost=0.20,
+    )
+    cheap_split = ExplorationAction(
+        action_id="cheap_split",
+        kind="intent_disambiguation",
+        hypothesis_outcomes=expensive_split.hypothesis_outcomes,
+        cost=0.05,
+    )
+    state = LatentProblemState(intents=intents, actions=(constant, expensive_split, cheap_split))
+
+    selected = select_exploration_action(state)
+
+    assert cheap_split.robust_information_gain(intents) > constant.robust_information_gain(intents)
+    assert selected is not None
+    assert selected.action_id == "cheap_split"
+
+
+def test_robust_information_gain_does_not_increase_under_plausible_noise() -> None:
+    intents = tuple(
+        IntentHypothesis(id=f"h{index}", statement=f"hypothesis {index}", posterior=0.25)
+        for index in range(1, 5)
+    )
+    clean = ExplorationAction(
+        action_id="clean_split",
+        kind="intent_disambiguation",
+        hypothesis_outcomes={"h1": ("left",), "h2": ("left",), "h3": ("right",), "h4": ("right",)},
+    )
+    noisy = ExplorationAction(
+        action_id="noisy_split",
+        kind="intent_disambiguation",
+        hypothesis_outcomes={"h1": ("left", "right"), "h2": ("left",), "h3": ("right",), "h4": ("right",)},
+    )
+
+    assert noisy.robust_information_gain(intents) <= clean.robust_information_gain(intents)
+
+
 def test_candidate_ranking_penalizes_uncertainty_risk_and_cost() -> None:
     state = LatentProblemState(
         intents=(IntentHypothesis(id="clarity", statement="make it clear", posterior=1.0),),

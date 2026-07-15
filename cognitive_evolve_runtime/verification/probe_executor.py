@@ -19,6 +19,13 @@ from .types import VerificationResult
 
 _ARTIFACT_ASSERTION_TEMPLATE = "artifact_assertion/v1"
 _TYPED_ARTIFACT_RELATION_TEMPLATE = "artifact_json_relation/v2"
+_METAMORPHIC_JSON_RELATION_TEMPLATE = "metamorphic_json_relation/v1"
+_SUPPORTED_TEMPLATES = {
+    _ARTIFACT_ASSERTION_TEMPLATE,
+    _TYPED_ARTIFACT_RELATION_TEMPLATE,
+    _METAMORPHIC_JSON_RELATION_TEMPLATE,
+}
+_CALIBRATED_TEMPLATES = {_TYPED_ARTIFACT_RELATION_TEMPLATE, _METAMORPHIC_JSON_RELATION_TEMPLATE}
 _PROBE_TIMEOUT_SECONDS = 5.0
 _NOT_JSON = object()
 
@@ -43,9 +50,9 @@ def execute_probes(
     preflight_calibrated = False
     for probe in parameterized:
         reason = str(coerce_dict(probe.parameters).get("unsupported_reason") or "")
-        if probe.template_id not in {_ARTIFACT_ASSERTION_TEMPLATE, _TYPED_ARTIFACT_RELATION_TEMPLATE}:
+        if probe.template_id not in _SUPPORTED_TEMPLATES:
             reason = reason or "unsupported_template"
-        if not reason and probe.template_id == _TYPED_ARTIFACT_RELATION_TEMPLATE:
+        if not reason and probe.template_id in _CALIBRATED_TEMPLATES:
             preflighted_probe_ids.add(probe.probe_id)
             calibrated, records = _calibrate_probe(probe)
             calibration_results.extend(records)
@@ -195,13 +202,29 @@ def apply_probe_counterexample_evidence(
         if existing.source == "engine_parameterized_probe" and str(existing.metadata.get("probe_signature") or "") == signature:
             return existing
     diagnostics = [
-        "parameterized_probe_counterexample:"
-        + str(item.get("assertion_id") or item.get("probe_id") or "")
+        (
+            "metamorphic_relation_violation:" + str(item.get("relation_id"))
+            if item.get("relation_id")
+            else "parameterized_probe_counterexample:"
+            + str(item.get("assertion_id") or item.get("probe_id") or "")
+        )
         + ":"
         + str(item.get("path") or "")
         + ":"
         + str(item.get("operator") or "")
         for item in counterexamples
+    ]
+    metamorphic_violation_receipts = [
+        {
+            "violated_relation": str(item.get("relation_id") or ""),
+            "input_transformation": coerce_dict(item.get("input_transformation")),
+            "before_output_summary": coerce_dict(item.get("before_output_summary")),
+            "before_output_sha256": str(item.get("before_output_sha256") or ""),
+            "after_output_summary": coerce_dict(item.get("after_output_summary")),
+            "after_output_sha256": str(item.get("after_output_sha256") or ""),
+        }
+        for item in counterexamples
+        if item.get("relation_id")
     ]
     executed = max(1, int(metadata.get("probe_executed_count") or 0))
     counterexample_ratio = len(counterexamples) / executed
@@ -234,6 +257,7 @@ def apply_probe_counterexample_evidence(
             "probe_results": counterexamples,
             "probe_signature": signature,
             "provenance": "engine_template_model_parameters",
+            "metamorphic_violation_receipts": metamorphic_violation_receipts,
         },
     )
     apply_evidence_record(candidate, record)
@@ -248,6 +272,9 @@ def _run_artifact_assertions(artifact: Any, probes: list[ProbeCase]) -> list[dic
             "path": str(probe.parameters.get("path") or ""),
             "operator": str(probe.parameters.get("operator") or ""),
             "expected": probe.parameters.get("expected"),
+            "relation_id": str(probe.parameters.get("relation_id") or ""),
+            "mapping_path": str(probe.parameters.get("mapping_path") or ""),
+            "summary_path": str(probe.parameters.get("summary_path") or ""),
         }
         for probe in probes
     ]
@@ -290,13 +317,16 @@ def _json_artifact(value: Any) -> Any:
 
 
 def _probe_result(probe: ProbeCase, status: str, *, reason: str) -> dict[str, Any]:
-    return {
+    result = {
         "probe_id": probe.probe_id,
         "assertion_id": str(probe.parameters.get("assertion_id") or ""),
         "probe_template_id": probe.template_id,
         "status": status,
         "reason": reason,
     }
+    if probe.parameters.get("relation_id"):
+        result["relation_id"] = str(probe.parameters["relation_id"])
+    return result
 
 
 def _known_good_bad_distinguishable(
@@ -341,8 +371,14 @@ def _calibrate_probe(probe: ProbeCase) -> tuple[bool, list[dict[str, Any]]]:
 
 def _calibration_artifacts(probe: ProbeCase) -> tuple[Any, Any] | None:
     parameters = coerce_dict(probe.parameters)
-    if probe.template_id not in {_ARTIFACT_ASSERTION_TEMPLATE, _TYPED_ARTIFACT_RELATION_TEMPLATE} or parameters.get("unsupported_reason"):
+    if probe.template_id not in _SUPPORTED_TEMPLATES or parameters.get("unsupported_reason"):
         return None
+    if probe.template_id == _METAMORPHIC_JSON_RELATION_TEMPLATE:
+        mapping_path = str(parameters.get("mapping_path") or "")
+        summary_path = str(parameters.get("summary_path") or "")
+        good = _artifact_at_pointers(((mapping_path, {"alpha": 1, "beta": 2}), (summary_path, 3)))
+        bad = _artifact_at_pointers(((mapping_path, {"alpha": 1, "beta": 2}), (summary_path, 4)))
+        return (good, bad) if good is not None and bad is not None else None
     pointer = str(parameters.get("path") or "")
     operator = str(parameters.get("operator") or "")
     try:
@@ -409,6 +445,24 @@ def _artifact_at_pointer(pointer: str, value: Any) -> Any:
         part = raw_part.replace("~1", "/").replace("~0", "~")
         current = {part: current}
     return current
+
+
+def _artifact_at_pointers(values: tuple[tuple[str, Any], ...]) -> dict[str, Any] | None:
+    artifact: dict[str, Any] = {}
+    for pointer, value in values:
+        if not pointer.startswith("/"):
+            return None
+        parts = [raw.replace("~1", "/").replace("~0", "~") for raw in pointer[1:].split("/")]
+        current = artifact
+        for part in parts[:-1]:
+            existing = current.setdefault(part, {})
+            if not isinstance(existing, dict):
+                return None
+            current = existing
+        if not parts or parts[-1] in current:
+            return None
+        current[parts[-1]] = value
+    return artifact
 
 
 def _different_json_value(expected: Any) -> Any:
