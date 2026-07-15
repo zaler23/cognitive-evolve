@@ -149,9 +149,9 @@ def quickstart(prompt: str) -> int:
 
 def run_standalone(prompt: str, dry_run: bool = False, *, offline: bool = False) -> int:
     classifier_model = _optional_classifier_model(offline=offline)
-    route = _classify_prompt(prompt, classifier_model)
     task_dir = new_task("nexus", _slug_from_prompt(prompt))
-    ensure_enhanced_task_contract(task_dir, prompt, print_summary=True, force=True, model=classifier_model)
+    contract = ensure_enhanced_task_contract(task_dir, prompt, print_summary=True, force=True, model=classifier_model)
+    route = NexusRoute(**contract["route"])
     routed = build_routed_prompt(prompt, route, task_dir=task_dir)
     print("Selected Nexus route:")
     print(f"level: {route.level}")
@@ -167,7 +167,7 @@ def run_standalone(prompt: str, dry_run: bool = False, *, offline: bool = False)
         print("\nRouted prompt preview:")
         print(routed)
         return 0
-    return runtime_run(str(task_dir), prompt, activate_all=True, offline=offline)
+    return runtime_run(str(task_dir), prompt, activate_all=True, offline=offline, route=route)
 
 
 def main() -> int:

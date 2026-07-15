@@ -2,17 +2,21 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import sys
 
+from cognitive_evolve_runtime import commands
 from cognitive_evolve_runtime.artifacts.task_files import new_task
 from cognitive_evolve_runtime.doctor import doctor
 from cognitive_evolve_runtime.runtime import _seed_prompt_with_artifact_policy, runtime_run, runtime_status
 from cognitive_evolve_runtime.nexus.semantics import ensure_enhanced_task_contract
 from cognitive_evolve_runtime.nexus.evaluation import runtime_validation_run
+from cognitive_evolve_runtime.nexus.model_adapter import StructuredModelAdapter
 
 import cognitive_evolve_runtime.core as core
 import cognitive_evolve_runtime.core.paths as paths
 import cognitive_evolve_runtime.artifacts.store as store
 import cognitive_evolve_runtime.artifacts.task_files as task_files
+import cognitive_evolve_runtime.runtime as runtime_module
 import cognitive_evolve_runtime.validation.project_health as project_health
 import cognitive_evolve_runtime.validation.standalone_runtime as standalone_runtime
 
@@ -57,6 +61,82 @@ def test_fixture_backed_runtime_smoke_passes_core_and_runtime_doctor(tmp_path, m
     assert native_eval["suite"] == "runtime-validation"
     assert native_eval["status"] == "pass"
     assert native_eval["passed"] == native_eval["total"]
+
+
+def test_model_backed_cli_run_classifies_prompt_once(tmp_path, monkeypatch) -> None:
+    runtime_root = tmp_path / "runtime"
+    tasks_root = runtime_root / ".cogev" / "tasks"
+    monkeypatch.setenv("COGEV_RUNTIME_ROOT", str(runtime_root))
+    monkeypatch.setenv("COGEV_TASKS_ROOT", str(tasks_root))
+    for module in (paths, core, store, task_files, project_health, standalone_runtime):
+        monkeypatch.setattr(module, "LOCAL_RUNTIME_ROOT", runtime_root, raising=False)
+        monkeypatch.setattr(module, "TASKS", tasks_root, raising=False)
+    monkeypatch.setenv("COGEV_LLM_PROVIDER", "fixture")
+    monkeypatch.setenv("COGEV_LLM_FIXTURE", str(ROOT / "tests" / "fixtures" / "llm_fixture.json"))
+    monkeypatch.delenv("COGEV_LLM_MODEL", raising=False)
+    original_classify_task = StructuredModelAdapter.classify_task
+    classified_prompts: list[str] = []
+
+    def _classify_task(self, *, prompt: str):  # noqa: ANN001, ANN202
+        classified_prompts.append(prompt)
+        return original_classify_task(self, prompt=prompt)
+
+    original_round_budget = runtime_module._runtime_round_budget
+
+    def _one_round_budget(*, route_profile, route_semantic, rounds, difficulty_assessment=None):  # noqa: ANN001, ANN202
+        del rounds
+        return original_round_budget(
+            route_profile=route_profile,
+            route_semantic=route_semantic,
+            rounds=1,
+            difficulty_assessment=difficulty_assessment,
+        )
+
+    monkeypatch.setattr(StructuredModelAdapter, "classify_task", _classify_task)
+    monkeypatch.setattr(runtime_module, "_runtime_round_budget", _one_round_budget)
+    prompt = "Refactor architecture boundaries and verify release readiness"
+    monkeypatch.setattr(sys, "argv", ["cogev", "run", prompt])
+
+    assert commands.main() == 0
+    assert classified_prompts == [prompt]
+
+
+def test_offline_cli_run_remains_model_free(tmp_path, monkeypatch) -> None:
+    runtime_root = tmp_path / "runtime"
+    tasks_root = runtime_root / ".cogev" / "tasks"
+    monkeypatch.setenv("COGEV_RUNTIME_ROOT", str(runtime_root))
+    monkeypatch.setenv("COGEV_TASKS_ROOT", str(tasks_root))
+    for module in (paths, core, store, task_files, project_health, standalone_runtime):
+        monkeypatch.setattr(module, "LOCAL_RUNTIME_ROOT", runtime_root, raising=False)
+        monkeypatch.setattr(module, "TASKS", tasks_root, raising=False)
+    monkeypatch.delenv("COGEV_LLM_PROVIDER", raising=False)
+    monkeypatch.delenv("COGEV_LLM_FIXTURE", raising=False)
+    monkeypatch.delenv("COGEV_LLM_MODEL", raising=False)
+    original_round_budget = runtime_module._runtime_round_budget
+
+    def _one_round_budget(*, route_profile, route_semantic, rounds, difficulty_assessment=None):  # noqa: ANN001, ANN202
+        del rounds
+        return original_round_budget(
+            route_profile=route_profile,
+            route_semantic=route_semantic,
+            rounds=1,
+            difficulty_assessment=difficulty_assessment,
+        )
+
+    def _unexpected_model(cls):  # noqa: ANN001, ANN202
+        raise AssertionError("offline CLI must not construct a model adapter")
+
+    monkeypatch.setattr(StructuredModelAdapter, "from_configured_llm", classmethod(_unexpected_model))
+    monkeypatch.setattr(runtime_module, "_runtime_round_budget", _one_round_budget)
+    prompt = "Verify the offline runtime path"
+    monkeypatch.setattr(sys, "argv", ["cogev", "run", "--offline", prompt])
+
+    assert commands.main() == 0
+    task_dirs = [path for path in tasks_root.iterdir() if path.is_dir() and path.name != "latest"]
+    assert len(task_dirs) == 1
+    state = json.loads((task_dirs[0] / "runtime-state.json").read_text(encoding="utf-8"))
+    assert state["runtime_path"] == "nexus"
+    assert state["route"]["semantic"]["model_route_available"] is False
 
 
 def test_runtime_artifact_policy_hint_is_appended_from_adaptive_config() -> None:
