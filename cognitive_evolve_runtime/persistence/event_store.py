@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from pathlib import Path
 from typing import Any, Iterator
@@ -9,6 +10,8 @@ from typing import Any, Iterator
 from cognitive_evolve_runtime.durable.file_lock import file_lock
 from cognitive_evolve_runtime.core.redaction import redact
 from cognitive_evolve_runtime.core.serialization import stable_json, utc_now
+
+logger = logging.getLogger(__name__)
 
 
 class EventStore:
@@ -82,15 +85,19 @@ class EventStore:
     def _replay_unlocked(self) -> Iterator[dict[str, Any]]:
         if not self.path.exists():
             return
+        corrupted_lines = 0
         for line in self.path.read_text(encoding="utf-8").splitlines():
             if not line.strip():
                 continue
             try:
                 data = json.loads(line)
             except json.JSONDecodeError:
+                corrupted_lines += 1
                 continue
             if isinstance(data, dict):
                 yield data
+        if corrupted_lines:
+            logger.warning("skipped %d corrupted lines while replaying event store", corrupted_lines)
 
 
 def _event_signature(event: dict[str, Any], keys: tuple[str, ...]) -> tuple[tuple[str, str], ...]:
