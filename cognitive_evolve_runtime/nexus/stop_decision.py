@@ -104,7 +104,7 @@ class StopDecisionEngine:
         recent = history[-2:]
         recent_best = [str(((item.get("ranking") or {}).get("best_final_answer_id") if isinstance(item.get("ranking"), dict) else "") or "") for item in recent]
         recent_diag = [str(((item.get("diagnosis") or {}).get("stagnation_type") if isinstance(item.get("diagnosis"), dict) else "") or "") for item in recent]
-        if recent_best and all(item == best_answer_id for item in recent_best) and recent_diag and all(item.lower() in {"none", "converged"} for item in recent_diag):
+        if not diagnosis.stagnation_detected and recent_best and all(item == best_answer_id for item in recent_best) and recent_diag and all(item.lower() in {"none", "converged"} for item in recent_diag):
             return CANDIDATE_READY_FOR_EXTERNAL_REVIEW
         return ""
 

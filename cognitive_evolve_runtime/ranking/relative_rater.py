@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from dataclasses import asdict, dataclass, field
 from typing import Any
@@ -130,7 +131,7 @@ class RelativeRater:
                         reverse = _ranking_from_raw(
                             self.model.relative_rank(candidates=list(reversed(candidates)), contract=contract, policy=policy, archives=archives)
                         )
-                        return _sanitize_ranking(_merge_ab_rankings(primary, reverse, candidates), candidates)
+                        return _sanitize_ranking(_merge_ab_rankings(primary, reverse, candidates), candidates, policy=policy)
                     except Exception as reverse_exc:
                         if is_quota_error(reverse_exc):
                             raise
@@ -138,7 +139,7 @@ class RelativeRater:
                         primary.raw_notes = (
                             primary.raw_notes + "; " if primary.raw_notes else ""
                         ) + f"ab_order_reverse_pass_unavailable:{reverse_exc.__class__.__name__}"
-                return _sanitize_ranking(primary, candidates)
+                return _sanitize_ranking(primary, candidates, policy=policy)
             except Exception as exc:
                 if is_quota_error(exc):
                     raise
@@ -450,8 +451,9 @@ def _verification_score(candidate: CandidateGenome) -> float | None:
     return None
 
 
-def _sanitize_ranking(ranking: RelativeRankingResult, candidates: list[CandidateGenome]) -> RelativeRankingResult:
+def _sanitize_ranking(ranking: RelativeRankingResult, candidates: list[CandidateGenome], *, policy: Any | None = None) -> RelativeRankingResult:
     ids = {candidate.id for candidate in candidates}
+    fitness_axes = {str(axis) for axis in (getattr(policy, "fitness_axes", None) or DEFAULT_FITNESS_AXES)}
     eligible = [candidate for candidate in candidates if _rank_eligible(candidate)]
     eligible_ids = {candidate.id for candidate in eligible}
     if ranking.best_final_answer_id and ranking.best_final_answer_id not in eligible_ids:
@@ -464,6 +466,32 @@ def _sanitize_ranking(ranking: RelativeRankingResult, candidates: list[Candidate
     ranking.edge_value_ids = [candidate_id for candidate_id in ranking.edge_value_ids if candidate_id in ids]
     ranking.auxiliary_ids = [candidate_id for candidate_id in ranking.auxiliary_ids if candidate_id in ids]
     ranking.dormant_ids = [candidate_id for candidate_id in ranking.dormant_ids if candidate_id in ids]
+    preferences: list[dict[str, Any]] = []
+    dropped_preferences = 0
+    for preference in ranking.pairwise_preferences:
+        if not isinstance(preference, dict):
+            dropped_preferences += 1
+            continue
+        winner = str(preference.get("winner") or "")
+        loser = str(preference.get("loser") or "")
+        axis = str(preference.get("axis") or "")
+        weight = preference.get("weight")
+        if (
+            winner not in ids
+            or loser not in ids
+            or winner == loser
+            or axis not in fitness_axes
+            or isinstance(weight, bool)
+            or not isinstance(weight, (int, float))
+            or not math.isfinite(float(weight))
+            or not 0.0 <= float(weight) <= 1.0
+        ):
+            dropped_preferences += 1
+            continue
+        preferences.append(dict(preference))
+    ranking.pairwise_preferences = preferences
+    if dropped_preferences:
+        ranking.raw_notes = (ranking.raw_notes + "; " if ranking.raw_notes else "") + f"ranking_schema_repair:pairwise_preferences_dropped:{dropped_preferences}"
     return ranking
 
 
