@@ -18,6 +18,7 @@ from cognitive_evolve_runtime.theory import TheoryLayer
 from cognitive_evolve_runtime.verification.cache import check_with_cache
 from cognitive_evolve_runtime.verification.factory import verifier_from_plan
 from cognitive_evolve_runtime.verification.ladder import VerificationStrength
+from cognitive_evolve_runtime.verification.modalities.formal import apply_formal_evaluation_evidence
 from cognitive_evolve_runtime.verification.probe_executor import apply_probe_counterexample_evidence
 from cognitive_evolve_runtime.verification.strength import measured_strength_from_result
 from cognitive_evolve_runtime.verification.types import VerificationPlan, VerificationResult
@@ -73,6 +74,7 @@ class EvolutionRound(EvaluateStage, ReproduceStage):
         max_checks = max(1, min(len(viable), self._branch_limit() if self.budget.adaptive else max(self._branch_limit(), 4)))
         for candidate in viable[:max_checks]:
             result, cache_key, cache_hit = check_with_cache(candidate, verifier, cache)
+            apply_formal_evaluation_evidence(candidate, result, round_index=current_round)
             apply_probe_counterexample_evidence(candidate, result, round_index=current_round)
             trace_item = result.to_dict()
             trace_item.setdefault("metadata", {})

@@ -95,14 +95,20 @@ def test_project_tool_defaults_do_not_execute_repository_defined_commands(tmp_pa
 
 
 def test_formal_verifier_does_not_attempt_z3_cli_when_binding_missing_or_runs_in_process() -> None:
-    result = FormalVerifier(formula=True).check(CandidateGenome(id="C1", artifact="x"))
-    assert "cli_not_attempted" in result.metadata or result.replayable is True
+    result = FormalVerifier(
+        dsl={"version": "z3_dsl/v1", "symbols": [], "constraints": [{"op": "bool", "value": True}]}
+    ).check(CandidateGenome(id="C1", artifact="x", metadata={"formal_kind": "satisfiability"}))
+    assert result.metadata["cli_not_attempted"] is True
+    assert result.metadata["z3_status"] in {"sat", "unavailable"}
 
 
 def test_formal_verifier_uses_proof_semantics_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     class _Solver:
-        def add(self, expr: object) -> None:
-            self.expr = expr
+        def set(self, *, timeout: int) -> None:
+            self.timeout = timeout
+
+        def add(self, *expr: object) -> None:
+            self.expr = expr[0]
 
         def check(self) -> str:
             if self.expr is False:
@@ -110,6 +116,9 @@ def test_formal_verifier_uses_proof_semantics_by_default(monkeypatch: pytest.Mon
             if self.expr == "unknown":
                 return "unknown"
             return "sat"
+
+        def reason_unknown(self) -> str:
+            return "incomplete"
 
     fake_z3 = SimpleNamespace(
         sat="sat",
@@ -120,11 +129,13 @@ def test_formal_verifier_uses_proof_semantics_by_default(monkeypatch: pytest.Mon
     )
     monkeypatch.setitem(sys.modules, "z3", fake_z3)
 
-    assert FormalVerifier(formula=True).check(CandidateGenome()).passed is True
-    assert FormalVerifier(formula="x > 0").check(CandidateGenome()).passed is False
-    assert FormalVerifier(formula="unknown").check(CandidateGenome()).to_dict()["validation_status"] == "inconclusive"
+    true_dsl = {"version": "z3_dsl/v1", "symbols": [], "constraints": [{"op": "bool", "value": True}]}
+    false_dsl = {"version": "z3_dsl/v1", "symbols": [], "constraints": [{"op": "bool", "value": False}]}
+
+    assert FormalVerifier(dsl=false_dsl).check(CandidateGenome()).passed is True
+    assert FormalVerifier(formula="x > 0").check(CandidateGenome()).metadata["z3_status"] == "rejected"
     assert FormalVerifier().check(CandidateGenome()).to_dict()["validation_status"] == "not_run"
-    assert FormalVerifier(formula="x > 0").check(CandidateGenome(metadata={"formal_kind": "satisfiability"})).passed is True
+    assert FormalVerifier(dsl=true_dsl).check(CandidateGenome(metadata={"formal_kind": "satisfiability"})).passed is True
 
 
 def test_decomposed_check_without_declared_claims_is_not_run() -> None:

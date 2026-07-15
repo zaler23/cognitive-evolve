@@ -18,6 +18,8 @@ from .types import VerificationResult
 
 
 _ARTIFACT_ASSERTION_TEMPLATE = "artifact_assertion/v1"
+_TYPED_ARTIFACT_RELATION_TEMPLATE = "artifact_json_relation/v2"
+_PROBE_TIMEOUT_SECONDS = 5.0
 _NOT_JSON = object()
 
 
@@ -36,10 +38,20 @@ def execute_probes(
     budget = max(0, int(regime.adversarial_budget or 0))
     runnable: list[ProbeCase] = []
     results_by_id: dict[str, dict[str, Any]] = {}
+    calibration_results: list[dict[str, Any]] = []
+    preflighted_probe_ids: set[str] = set()
+    preflight_calibrated = False
     for probe in parameterized:
         reason = str(coerce_dict(probe.parameters).get("unsupported_reason") or "")
-        if probe.template_id != _ARTIFACT_ASSERTION_TEMPLATE:
+        if probe.template_id not in {_ARTIFACT_ASSERTION_TEMPLATE, _TYPED_ARTIFACT_RELATION_TEMPLATE}:
             reason = reason or "unsupported_template"
+        if not reason and probe.template_id == _TYPED_ARTIFACT_RELATION_TEMPLATE:
+            preflighted_probe_ids.add(probe.probe_id)
+            calibrated, records = _calibrate_probe(probe)
+            calibration_results.extend(records)
+            preflight_calibrated = preflight_calibrated or calibrated
+            if not calibrated:
+                reason = "template_calibration_failed"
         if reason:
             results_by_id[probe.probe_id] = _probe_result(probe, "unsupported", reason=reason)
         else:
@@ -73,16 +85,19 @@ def execute_probes(
             "provenance": probe.provenance,
             "probe_content_sha256": _stable_probe_digest(probe.content),
         }
-    calibration_results: list[dict[str, Any]] = []
+    known_good_bad_distinguishable = False
+    if not (_bool_hint(obligation, "known_bad_probe") or _bool_hint(obligation, "force_known_bad")):
+        known_good_bad_distinguishable = preflight_calibrated or _known_good_bad_distinguishable(
+            raw_result,
+            regime,
+            candidate=candidate,
+            obligation=obligation,
+            audit=calibration_results,
+            skip_probe_ids=preflighted_probe_ids,
+        )
     observations.update(
         {
-            "known_good_bad_distinguishable": _known_good_bad_distinguishable(
-                raw_result,
-                regime,
-                candidate=candidate,
-                obligation=obligation,
-                audit=calibration_results,
-            ),
+            "known_good_bad_distinguishable": known_good_bad_distinguishable,
             "known_good_bad_probe_results": calibration_results,
             "survived_count": len(survived),
             "counterexample_count": len(counterexamples),
@@ -244,10 +259,11 @@ def _run_artifact_assertions(artifact: Any, probes: list[ProbeCase]) -> list[dic
         cases_path = tmp / "cases.json"
         artifact_path.write_text(json.dumps(artifact, ensure_ascii=False, sort_keys=True), encoding="utf-8")
         cases_path.write_text(json.dumps(cases, ensure_ascii=False, sort_keys=True), encoding="utf-8")
-        feedback = ToolRunner().run(
+        feedback = ToolRunner(timeout_seconds=_PROBE_TIMEOUT_SECONDS).run(
             [sys.executable, "-I", str(harness), str(artifact_path), str(cases_path)],
             cwd=tmp,
             env={"LD_LIBRARY_PATH": loader_path} if loader_path else None,
+            timeout_seconds=_PROBE_TIMEOUT_SECONDS,
         )
     if feedback.status != "passed":
         reason = "probe_harness_" + str(feedback.status or "error")
@@ -277,6 +293,7 @@ def _probe_result(probe: ProbeCase, status: str, *, reason: str) -> dict[str, An
     return {
         "probe_id": probe.probe_id,
         "assertion_id": str(probe.parameters.get("assertion_id") or ""),
+        "probe_template_id": probe.template_id,
         "status": status,
         "reason": reason,
     }
@@ -289,6 +306,7 @@ def _known_good_bad_distinguishable(
     candidate: Any = None,
     obligation: dict[str, Any],
     audit: list[dict[str, Any]] | None = None,
+    skip_probe_ids: set[str] | None = None,
 ) -> bool:
     del raw_result, candidate
     if not regime.probes:
@@ -297,6 +315,8 @@ def _known_good_bad_distinguishable(
         return False
     records = audit if audit is not None else []
     for probe in regime.probes:
+        if probe.probe_id in (skip_probe_ids or set()):
+            continue
         artifacts = _calibration_artifacts(probe)
         if artifacts is None:
             continue
@@ -309,9 +329,19 @@ def _known_good_bad_distinguishable(
     return False
 
 
+def _calibrate_probe(probe: ProbeCase) -> tuple[bool, list[dict[str, Any]]]:
+    artifacts = _calibration_artifacts(probe)
+    if artifacts is None:
+        return False, []
+    good_artifact, bad_artifact = artifacts
+    good = _run_calibration_artifact(probe, good_artifact, "known_good")
+    bad = _run_calibration_artifact(probe, bad_artifact, "known_bad")
+    return good.get("status") == "survived" and bad.get("status") == "counterexample", [good, bad]
+
+
 def _calibration_artifacts(probe: ProbeCase) -> tuple[Any, Any] | None:
     parameters = coerce_dict(probe.parameters)
-    if probe.template_id != _ARTIFACT_ASSERTION_TEMPLATE or parameters.get("unsupported_reason"):
+    if probe.template_id not in {_ARTIFACT_ASSERTION_TEMPLATE, _TYPED_ARTIFACT_RELATION_TEMPLATE} or parameters.get("unsupported_reason"):
         return None
     pointer = str(parameters.get("path") or "")
     operator = str(parameters.get("operator") or "")

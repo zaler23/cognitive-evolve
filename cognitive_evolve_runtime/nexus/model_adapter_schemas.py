@@ -308,7 +308,7 @@ def _candidate_item_schema(required: tuple[str, ...] | None = None) -> dict[str,
             },
             "proof_obligations": {
                 "type": "array",
-                "description": "Named obligations with id/status/description. Use status introduced, blocked, decomposed, discharged, refuted, or open.",
+                "description": "Named obligations with id/status/description. Use status introduced, blocked, decomposed, discharged, refuted, or open. Engine-owned tool probes use probe_cases containing only probe_template_id=artifact_json_relation/v2, typed args.path, and expected_relation; command/cwd/shell/timeout are never model-controlled.",
                 "items": {"type": "object", "additionalProperties": True},
             },
             "obligation_delta": {
@@ -351,7 +351,7 @@ def _candidate_item_schema(required: tuple[str, ...] | None = None) -> dict[str,
             "multihead_scores": {"type": "object"},
             "metadata": {
                 "type": "object",
-                "description": "For seed portfolio responses, set seed_type to the exact slot_id as a contract receipt. A label alone is not evidence of capability.",
+                "description": "For seed portfolio responses, set seed_type to the exact slot_id as a contract receipt. A label alone is not evidence of capability. Formal checks may provide z3_dsl as z3_dsl/v1 typed JSON with Bool/Int/bounded BitVec symbols and expression nodes; raw SMT-LIB strings are rejected.",
             },
         },
         "additionalProperties": True,

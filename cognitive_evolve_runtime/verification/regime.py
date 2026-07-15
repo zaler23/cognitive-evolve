@@ -1,6 +1,7 @@
 """Compile model/extension verification hints into engine-owned regimes."""
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from cognitive_evolve_runtime.core.serialization import coerce_dict, stable_hash
@@ -9,6 +10,7 @@ from .honesty_core import GroundingRegime, ProbeCase
 
 
 _ARTIFACT_ASSERTION_TEMPLATE = "artifact_assertion/v1"
+_TYPED_ARTIFACT_RELATION_TEMPLATE = "artifact_json_relation/v2"
 _ARTIFACT_ASSERTION_OPERATORS = {
     "exists",
     "not_exists",
@@ -150,27 +152,32 @@ def _compile_artifact_assertion_case(
     case_index: int,
     raw_case: dict[str, Any],
 ) -> ProbeCase:
-    template_id = str(raw_case.get("template") or "")
-    assertion_id = str(raw_case.get("assertion_id") or "")
-    pointer = str(raw_case.get("path") or "")
-    operator = str(raw_case.get("operator") or "")
-    forbidden = sorted(key for key in raw_case if str(key) in _UNSUPPORTED_MODEL_EXECUTION_FIELDS)
-    reason = ""
-    if forbidden:
-        reason = "unsupported_fields:" + ",".join(forbidden)
-    elif template_id != _ARTIFACT_ASSERTION_TEMPLATE:
-        reason = "unsupported_template"
-    elif not assertion_id:
-        reason = "assertion_id_required"
-    elif pointer and not pointer.startswith("/"):
-        reason = "invalid_json_pointer"
-    elif operator not in _ARTIFACT_ASSERTION_OPERATORS:
-        reason = "unsupported_operator"
+    declared_template_id = str(raw_case.get("probe_template_id") or raw_case.get("template") or "")
+    if declared_template_id == _TYPED_ARTIFACT_RELATION_TEMPLATE:
+        template_id, assertion_id, pointer, operator, expected, reason = _compile_typed_relation_fields(raw_case)
+    else:
+        template_id = declared_template_id
+        assertion_id = str(raw_case.get("assertion_id") or "")
+        pointer = str(raw_case.get("path") or "")
+        operator = str(raw_case.get("operator") or "")
+        expected = raw_case.get("expected")
+        forbidden = sorted(key for key in raw_case if str(key) in _UNSUPPORTED_MODEL_EXECUTION_FIELDS)
+        reason = ""
+        if template_id != _ARTIFACT_ASSERTION_TEMPLATE:
+            reason = "unsupported_template"
+        elif forbidden:
+            reason = "unsupported_fields:" + ",".join(forbidden)
+        elif not assertion_id:
+            reason = "assertion_id_required"
+        elif pointer and not pointer.startswith("/"):
+            reason = "invalid_json_pointer"
+        elif operator not in _ARTIFACT_ASSERTION_OPERATORS:
+            reason = "unsupported_operator"
     parameters = {
         "assertion_id": assertion_id,
         "path": pointer,
         "operator": operator,
-        "expected": raw_case.get("expected"),
+        "expected": expected,
     }
     if reason:
         parameters["unsupported_reason"] = reason
@@ -183,12 +190,60 @@ def _compile_artifact_assertion_case(
     }
     return ProbeCase(
         probe_id="probe-" + stable_hash(identity)[:12],
-        content="engine_template:" + _ARTIFACT_ASSERTION_TEMPLATE + ":" + stable_hash(identity)[:24],
+        content="engine_template:" + template_id + ":" + stable_hash(identity)[:24],
         provenance="engine_template_model_parameters",
         expected_verdict_flip=False,
         template_id=template_id,
         parameters=parameters,
     )
+
+
+def _compile_typed_relation_fields(raw_case: dict[str, Any]) -> tuple[str, str, str, str, Any, str]:
+    template_id = _TYPED_ARTIFACT_RELATION_TEMPLATE
+    unsupported = sorted(str(key) for key in raw_case if key not in {"probe_template_id", "args", "expected_relation"})
+    if unsupported:
+        return template_id, "", "", "", None, "unsupported_fields:" + ",".join(unsupported)
+    args = raw_case.get("args")
+    relation = raw_case.get("expected_relation")
+    if not isinstance(args, dict) or set(args) != {"path"} or not isinstance(args.get("path"), str):
+        return template_id, "", "", "", None, "invalid_typed_args"
+    if not isinstance(relation, dict):
+        return template_id, "", "", "", None, "expected_relation_must_be_object"
+    operator = str(relation.get("operator") or "")
+    required_relation_fields = {"operator"} if operator in {"exists", "not_exists"} else {"operator", "value"}
+    if set(relation) != required_relation_fields:
+        return template_id, "", "", operator, None, "invalid_expected_relation_fields"
+    pointer = args["path"]
+    expected = relation.get("value")
+    reason = ""
+    if pointer and not pointer.startswith("/"):
+        reason = "invalid_json_pointer"
+    elif len(pointer) > 512:
+        reason = "json_pointer_exceeds_limit"
+    elif operator not in _ARTIFACT_ASSERTION_OPERATORS:
+        reason = "unsupported_operator"
+    elif not _typed_relation_value(operator, expected):
+        reason = "invalid_expected_relation_value"
+    assertion_id = "relation-" + stable_hash({"args": args, "expected_relation": relation})[:12]
+    return template_id, assertion_id, pointer, operator, expected, reason
+
+
+def _typed_relation_value(operator: str, expected: Any) -> bool:
+    if operator in {"exists", "not_exists"}:
+        return True
+    try:
+        json.dumps(expected, ensure_ascii=False, allow_nan=False)
+    except (TypeError, ValueError):
+        return False
+    if operator in {"lt", "lte", "gt", "gte"}:
+        return not isinstance(expected, bool) and isinstance(expected, (int, float))
+    if operator == "between":
+        return (
+            isinstance(expected, list)
+            and len(expected) == 2
+            and all(not isinstance(value, bool) and isinstance(value, (int, float)) for value in expected)
+        )
+    return True
 
 
 def _engine_falsification_budget(*, obligation: dict[str, Any], plan: dict[str, Any], oracle_kind: str) -> int:
