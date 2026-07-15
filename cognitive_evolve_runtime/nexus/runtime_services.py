@@ -14,6 +14,7 @@ from typing import Any
 from cognitive_evolve_runtime.core.serialization import stable_hash
 from cognitive_evolve_runtime.inputs.project_snapshot import ProjectSnapshot
 from cognitive_evolve_runtime.llm.session import current_llm_session
+from cognitive_evolve_runtime.llm.telemetry import attach_round_cost_ledger, build_round_cost_ledger
 from cognitive_evolve_runtime.nexus.consistency import assert_runtime_consistency
 from cognitive_evolve_runtime.nexus.handoff import build_inheritable_handoff
 from cognitive_evolve_runtime.nexus.loop import EvolutionBudget, EvolutionLoopResult
@@ -76,6 +77,17 @@ class NexusPersistenceService:
         runtime_options: dict[str, Any] | None = None,
     ) -> dict[str, str]:
         _sync_budget_width_metadata(run.evolution, budget)
+        cost_ledger = dict(getattr(result, "cost_ledger", {}) or {})
+        if not cost_ledger:
+            cost_ledger = build_round_cost_ledger(
+                current_llm_session().snapshot(),
+                budget_history=budget_history,
+            )
+            result.cost_ledger = cost_ledger
+        attach_round_cost_ledger(budget_history, cost_ledger)
+        result.budget_history = list(budget_history)
+        run.evolution["budget_history"] = list(budget_history)
+        run.evolution["cost_ledger"] = cost_ledger
         if self.output_dir is None:
             return {}
         self.output_dir.mkdir(parents=True, exist_ok=True)
@@ -94,7 +106,12 @@ class NexusPersistenceService:
         fallback_events = [dict(event) for event in (run.evolution.get("fallback_events") or []) if isinstance(event, dict)]
         adaptive_state = dict(getattr(result, "adaptive_state", {}) or {})
         adaptive_events = [dict(event) for event in adaptive_state.get("events", []) if isinstance(event, dict)]
-        events_to_write = list(result.pipeline_events) + list(result.progress_events) + fallback_events + adaptive_events
+        cost_events = [
+            {"type": "round_cost_ledger", **dict(item)}
+            for item in cost_ledger.get("rounds", [])
+            if isinstance(item, dict)
+        ]
+        events_to_write = list(result.pipeline_events) + list(result.progress_events) + fallback_events + adaptive_events + cost_events
         policy_metadata = dict(getattr(result.policy, "metadata", {}) or {})
         sidecar_ref = persist_seed_reservoir_sidecar(self.output_dir, policy_metadata.get(SEED_RESERVOIR_SIDECAR_PAYLOAD_KEY))
         if sidecar_ref and isinstance(getattr(result.policy, "metadata", None), dict):
@@ -132,7 +149,7 @@ class NexusPersistenceService:
             adaptive_state=adaptive_state,
             trace_state={},
             tension_map={},
-            cost_ledger={},
+            cost_ledger=cost_ledger,
             concept_snapshots={},
             verification_plan=dict(adaptive_state.get("verification_plan") or {}),
             graded_output=dict(getattr(result, "graded_output", {}) or {}),
@@ -490,12 +507,13 @@ def _physical_llm_events(events: list[dict[str, Any]]) -> list[dict[str, Any]]:
     by_physical_id: dict[str, dict[str, Any]] = {}
     without_identity: list[dict[str, Any]] = []
     for event in events:
+        if event.get("cache_replayed") is True:
+            continue
         physical_call_id = str(event.get("physical_call_id") or "")
         if not physical_call_id:
             without_identity.append(event)
             continue
-        current = by_physical_id.get(physical_call_id)
-        if current is None or (event.get("cache_replayed") is not True and current.get("cache_replayed") is True):
+        if physical_call_id not in by_physical_id:
             by_physical_id[physical_call_id] = event
     return [*without_identity, *by_physical_id.values()]
 

@@ -65,6 +65,7 @@ def _notify_observer(
     error: dict[str, Any] | None = None,
     adaptive_state: dict[str, Any] | None = None,
     fabric_state: dict[str, Any] | None = None,
+    cost_ledger: dict[str, Any] | None = None,
 ) -> None:
     if observer is None:
         return
@@ -82,6 +83,7 @@ def _notify_observer(
             "error": error,
             "adaptive_state": dict(adaptive_state or {}),
             "fabric": dict(fabric_state or {}),
+            "cost_ledger": dict(cost_ledger or {}),
         }
     )
 

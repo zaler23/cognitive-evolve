@@ -39,8 +39,8 @@ from .provider_interface import LLMProviderInterface
 from .model_spec import LLMModelSpec
 from .request_policy import LLMRequestPolicy
 from .response_cache import load_response, response_signature, store_response
-from .session import _LAST_RETRY_HISTORY, current_llm_session, current_logical_llm_call
-from .telemetry import record_event
+from .session import _LAST_RETRY_HISTORY, current_llm_round, current_llm_session, current_logical_llm_call
+from .telemetry import record_event, transport_cost_attribution
 from ..core.redaction import public_error_message
 
 
@@ -216,7 +216,8 @@ def _budgeted_llm_json(request_type: str, payload: dict[str, Any], *, system: st
         reasoning_effort=call_identity.reasoning_effort,
     )
     run_id = str(current_llm_session().run_id or os.environ.get("COGEV_RUN_ID") or "run")
-    round_id = str(os.environ.get("COGEV_ROUND_ID") or "runtime")
+    round_id = str(current_llm_round() or os.environ.get("COGEV_ROUND_ID") or "0")
+    step_id = str(os.environ.get("COGEV_STEP_ID") or request_type)
     logical_call_id = logical_context[0] if logical_context is not None else "/".join(
         (
             run_id,
@@ -226,6 +227,14 @@ def _budgeted_llm_json(request_type: str, payload: dict[str, Any], *, system: st
         )
     )
     template_version = logical_context[1] if logical_context is not None else ""
+    telemetry_identity = {
+        "logical_call_id": logical_call_id,
+        "request_hash": request_hash,
+        "idempotency_key": idem_key,
+        "run_id": run_id,
+        "round_id": round_id,
+        "step_id": step_id,
+    }
     signature = response_signature(
         {
             "logical_call_id": logical_call_id,
@@ -264,6 +273,8 @@ def _budgeted_llm_json(request_type: str, payload: dict[str, Any], *, system: st
             cache_replayed=True,
             physical_call_id=physical_call_id,
             sampling=resolved_sampling,
+            **telemetry_identity,
+            **transport_cost_attribution(payload, response),
         )
         write_llm_journal(
             {
@@ -271,9 +282,9 @@ def _budgeted_llm_json(request_type: str, payload: dict[str, Any], *, system: st
                 "physical_call_id": physical_call_id,
                 "logical_call_id": logical_call_id,
                 "response_signature": signature,
-                "run_id": os.environ.get("COGEV_RUN_ID", "run"),
-                "round_id": os.environ.get("COGEV_ROUND_ID", "runtime"),
-                "step_id": os.environ.get("COGEV_STEP_ID", request_type),
+                "run_id": run_id,
+                "round_id": round_id,
+                "step_id": step_id,
                 "provider": status.get("provider"),
                 "model": status.get("model") or status.get("fixture"),
                 "request_hash": request_hash,
@@ -293,8 +304,8 @@ def _budgeted_llm_json(request_type: str, payload: dict[str, Any], *, system: st
             call_id=call_id,
             request_type=request_type,
             request_hash=request_hash,
-            round_id=os.environ.get("COGEV_ROUND_ID", "runtime"),
-            step_id=os.environ.get("COGEV_STEP_ID", request_type),
+            round_id=round_id,
+            step_id=step_id,
             extra={"cache_replayed": True, "physical_call_id": physical_call_id, "logical_call_id": logical_call_id, **resolved_sampling},
         )
         enforce_budget(preflight=False)
@@ -304,15 +315,15 @@ def _budgeted_llm_json(request_type: str, payload: dict[str, Any], *, system: st
         call_id=call_id,
         request_type=request_type,
         request_hash=request_hash,
-        round_id=os.environ.get("COGEV_ROUND_ID", "runtime"),
-        step_id=os.environ.get("COGEV_STEP_ID", request_type),
+        round_id=round_id,
+        step_id=step_id,
         extra={"idempotency_key": idem_key, "provider": status.get("provider"), "model": status.get("model") or status.get("fixture"), "reasoning_effort": call_identity.reasoning_effort, "llm_call_identity": call_identity.to_dict(), "model_profile_id": call_identity.profile_id, **resolved_sampling},
     )
     write_llm_journal({
         "call_id": call_id,
-        "run_id": os.environ.get("COGEV_RUN_ID", "run"),
-        "round_id": os.environ.get("COGEV_ROUND_ID", "runtime"),
-        "step_id": os.environ.get("COGEV_STEP_ID", request_type),
+        "run_id": run_id,
+        "round_id": round_id,
+        "step_id": step_id,
         "idempotency_key": idem_key,
         "provider": status.get("provider"),
         "model": status.get("model") or status.get("fixture"),
@@ -331,7 +342,17 @@ def _budgeted_llm_json(request_type: str, payload: dict[str, Any], *, system: st
             response = load_fixture_response(request_type, payload, str(status["fixture"]))
         except (LLMConfigurationError, LLMResponseError) as exc:
             safe_error = public_error_message(exc)
-            record_call_state("failed", call_id=call_id, request_type=request_type, request_hash=request_hash, round_id=os.environ.get("COGEV_ROUND_ID", "runtime"), step_id=os.environ.get("COGEV_STEP_ID", request_type), extra={"attempt": 1, "error": safe_error, "category": provider_error_category(exc), "reasoning_effort": call_identity.reasoning_effort, "llm_call_identity": call_identity.to_dict(), "model_profile_id": call_identity.profile_id, **resolved_sampling})
+            record_event(
+                request_type,
+                {},
+                status,
+                attempts=0,
+                error_type=provider_error_category(exc),
+                sampling=resolved_sampling,
+                **telemetry_identity,
+                **transport_cost_attribution(payload, {}),
+            )
+            record_call_state("failed", call_id=call_id, request_type=request_type, request_hash=request_hash, round_id=round_id, step_id=step_id, extra={"attempt": 1, "error": safe_error, "category": provider_error_category(exc), "reasoning_effort": call_identity.reasoning_effort, "llm_call_identity": call_identity.to_dict(), "model_profile_id": call_identity.profile_id, **resolved_sampling})
             raise
         response.setdefault("provider", "fixture")
         response.setdefault("model", "fixture")
@@ -356,16 +377,19 @@ def _budgeted_llm_json(request_type: str, payload: dict[str, Any], *, system: st
             status,
             attempts=1,
             usage_provenance="fixture",
+            estimated_cost_usd=0.0,
             governor=llm_governor_status(),
             physical_call_id=call_id,
             sampling=resolved_sampling,
+            **telemetry_identity,
+            **transport_cost_attribution(payload, response),
         )
         enforce_budget(preflight=False)
         write_llm_journal({
             "call_id": call_id,
-            "run_id": os.environ.get("COGEV_RUN_ID", "run"),
-            "round_id": os.environ.get("COGEV_ROUND_ID", "runtime"),
-            "step_id": os.environ.get("COGEV_STEP_ID", request_type),
+            "run_id": run_id,
+            "round_id": round_id,
+            "step_id": step_id,
             "idempotency_key": idem_key,
             "provider": status.get("provider"),
             "model": status.get("model") or status.get("fixture"),
@@ -382,7 +406,7 @@ def _budgeted_llm_json(request_type: str, payload: dict[str, Any], *, system: st
             "usage": {},
             "estimated_cost_usd": 0.0,
         }, parsed_response=response)
-        record_call_state("completed", call_id=call_id, request_type=request_type, request_hash=request_hash, round_id=os.environ.get("COGEV_ROUND_ID", "runtime"), step_id=os.environ.get("COGEV_STEP_ID", request_type), extra={"attempt": 1, "usage": {}, "estimated_cost_usd": 0.0, "reasoning_effort": call_identity.reasoning_effort, "llm_call_identity": call_identity.to_dict(), "model_profile_id": call_identity.profile_id, **resolved_sampling})
+        record_call_state("completed", call_id=call_id, request_type=request_type, request_hash=request_hash, round_id=round_id, step_id=step_id, extra={"attempt": 1, "usage": {}, "estimated_cost_usd": 0.0, "reasoning_effort": call_identity.reasoning_effort, "llm_call_identity": call_identity.to_dict(), "model_profile_id": call_identity.profile_id, **resolved_sampling})
         return response
     provider = provider or _default_provider_for_status(status)
     breaker = default_provider_circuit_breaker()
@@ -392,9 +416,9 @@ def _budgeted_llm_json(request_type: str, payload: dict[str, Any], *, system: st
         safe_error = public_error_message(exc)
         write_llm_journal({
             "call_id": call_id,
-            "run_id": os.environ.get("COGEV_RUN_ID", "run"),
-            "round_id": os.environ.get("COGEV_ROUND_ID", "runtime"),
-            "step_id": os.environ.get("COGEV_STEP_ID", request_type),
+            "run_id": run_id,
+            "round_id": round_id,
+            "step_id": step_id,
             "idempotency_key": idem_key,
             "provider": status.get("provider"),
             "model": status.get("model"),
@@ -410,7 +434,17 @@ def _budgeted_llm_json(request_type: str, payload: dict[str, Any], *, system: st
             "ended_at": time.time(),
             "error": safe_error,
         })
-        record_call_state("failed", call_id=call_id, request_type=request_type, request_hash=request_hash, round_id=os.environ.get("COGEV_ROUND_ID", "runtime"), step_id=os.environ.get("COGEV_STEP_ID", request_type), extra={"error": safe_error, "status": "provider_unavailable", "reasoning_effort": call_identity.reasoning_effort, "llm_call_identity": call_identity.to_dict(), "model_profile_id": call_identity.profile_id, **resolved_sampling})
+        record_event(
+            request_type,
+            {},
+            status,
+            attempts=0,
+            error_type="provider_unavailable",
+            sampling=resolved_sampling,
+            **telemetry_identity,
+            **transport_cost_attribution(payload, {}),
+        )
+        record_call_state("failed", call_id=call_id, request_type=request_type, request_hash=request_hash, round_id=round_id, step_id=step_id, extra={"error": safe_error, "status": "provider_unavailable", "reasoning_effort": call_identity.reasoning_effort, "llm_call_identity": call_identity.to_dict(), "model_profile_id": call_identity.profile_id, **resolved_sampling})
         raise LLMResponseError(safe_error) from exc
 
     request = {"request_type": request_type, "schema_hint": schema_hint, "payload": payload}
@@ -481,9 +515,9 @@ def _budgeted_llm_json(request_type: str, payload: dict[str, Any], *, system: st
             circuit_state = breaker.record_failure(call_identity.breaker_key, exc)
             write_llm_journal({
                 "call_id": call_id,
-                "run_id": os.environ.get("COGEV_RUN_ID", "run"),
-                "round_id": os.environ.get("COGEV_ROUND_ID", "runtime"),
-                "step_id": os.environ.get("COGEV_STEP_ID", request_type),
+                "run_id": run_id,
+                "round_id": round_id,
+                "step_id": step_id,
                 "idempotency_key": idem_key,
                 "provider": status.get("provider"),
                 "model": status.get("model"),
@@ -502,7 +536,21 @@ def _budgeted_llm_json(request_type: str, payload: dict[str, Any], *, system: st
                 "category": category,
                 "circuit_breaker": circuit_state.to_dict(),
             })
-            record_call_state("failed", call_id=call_id, request_type=request_type, request_hash=request_hash, round_id=os.environ.get("COGEV_ROUND_ID", "runtime"), step_id=os.environ.get("COGEV_STEP_ID", request_type), extra={"error": safe_error, "category": category, "reasoning_effort": call_identity.reasoning_effort, "llm_call_identity": call_identity.to_dict(), "model_profile_id": call_identity.profile_id, **resolved_sampling})
+            attempts = max(1, attempts)
+            record_event(
+                request_type,
+                {},
+                status,
+                attempts=attempts,
+                retry_history=retry_history,
+                governor=llm_governor_status(),
+                error_type=category,
+                physical_call_id=call_id,
+                sampling=resolved_sampling,
+                **telemetry_identity,
+                **transport_cost_attribution(payload, {}),
+            )
+            record_call_state("failed", call_id=call_id, request_type=request_type, request_hash=request_hash, round_id=round_id, step_id=step_id, extra={"error": safe_error, "category": category, "reasoning_effort": call_identity.reasoning_effort, "llm_call_identity": call_identity.to_dict(), "model_profile_id": call_identity.profile_id, **resolved_sampling})
             raise LLMResponseError(f"LLM provider call failed after retry policy ({category}): {safe_error}") from exc
         semantic_error = _provider_response_error(result)
         if semantic_error is not None:
@@ -582,12 +630,14 @@ def _budgeted_llm_json(request_type: str, payload: dict[str, Any], *, system: st
         governor=llm_governor_status(),
         physical_call_id=call_id,
         sampling=resolved_sampling,
+        **telemetry_identity,
+        **transport_cost_attribution(payload, response),
     )
     write_llm_journal({
         "call_id": call_id,
-        "run_id": os.environ.get("COGEV_RUN_ID", "run"),
-        "round_id": os.environ.get("COGEV_ROUND_ID", "runtime"),
-        "step_id": os.environ.get("COGEV_STEP_ID", request_type),
+        "run_id": run_id,
+        "round_id": round_id,
+        "step_id": step_id,
         "idempotency_key": idem_key,
         "provider": status.get("provider"),
         "model": status.get("model"),
@@ -605,6 +655,6 @@ def _budgeted_llm_json(request_type: str, payload: dict[str, Any], *, system: st
         "usage": usage,
         "estimated_cost_usd": estimated_cost,
     }, raw_response=safe_json(result), parsed_response=response)
-    record_call_state("completed", call_id=call_id, request_type=request_type, request_hash=request_hash, round_id=os.environ.get("COGEV_ROUND_ID", "runtime"), step_id=os.environ.get("COGEV_STEP_ID", request_type), extra={"attempt": attempts, "usage": usage, "estimated_cost_usd": estimated_cost, "reasoning_effort": call_identity.reasoning_effort, "llm_call_identity": call_identity.to_dict(), "model_profile_id": call_identity.profile_id, **resolved_sampling})
+    record_call_state("completed", call_id=call_id, request_type=request_type, request_hash=request_hash, round_id=round_id, step_id=step_id, extra={"attempt": attempts, "usage": usage, "estimated_cost_usd": estimated_cost, "reasoning_effort": call_identity.reasoning_effort, "llm_call_identity": call_identity.to_dict(), "model_profile_id": call_identity.profile_id, **resolved_sampling})
     enforce_budget(preflight=False)
     return response

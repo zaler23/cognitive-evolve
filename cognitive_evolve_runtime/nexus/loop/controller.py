@@ -29,6 +29,8 @@ from cognitive_evolve_runtime.outcomes.runtime_bridge import (
 from cognitive_evolve_runtime.nexus._shared import MODEL_BOUNDARY_ERRORS
 from cognitive_evolve_runtime.nexus.stop_reasons import normalize_external_review_stop_reason
 from cognitive_evolve_runtime.llm.retry import provider_error_category
+from cognitive_evolve_runtime.llm.session import current_llm_session, llm_round
+from cognitive_evolve_runtime.llm.telemetry import attach_round_cost_ledger, build_round_cost_ledger
 
 from .budget import EvolutionBudget, EvolutionLoopResult
 from .adaptive_stop import candidate_quality_key
@@ -99,6 +101,10 @@ class EvolutionLoopController:
         self.fabric_state: dict[str, Any] = dict(fabric_state or {})
         self.provided_context: dict[str, Any] = dict(provided_context or {})
         self.context_provider = context_provider
+        self.cost_ledger = build_round_cost_ledger([], budget_history=self.budget.history)
+        self.round_observations: dict[str, dict[str, int]] = {}
+        for record in self.budget.history:
+            record.pop("cost_ledger", None)
 
     def run(self) -> EvolutionLoopResult:
         seed_model_error = ""
@@ -145,13 +151,14 @@ class EvolutionLoopController:
         _raise_if_cancelled(self.cancellation_callback)
         if self.budget.current_round < planned_round:
             self.budget.current_round = planned_round
-        evaluation = self.round_pipeline.evaluate(
-            current_round=planned_round,
-            population=self.population,
-            archives=self.archives,
-            policy=self.policy,
-            contract=self.contract,
-        )
+        with llm_round(planned_round):
+            evaluation = self.round_pipeline.evaluate(
+                current_round=planned_round,
+                population=self.population,
+                archives=self.archives,
+                policy=self.policy,
+                contract=self.contract,
+            )
         self.policy = evaluation.policy
         self.diagnosis = evaluation.diagnosis
         self._record_evaluation(planned_round, evaluation)
@@ -161,21 +168,22 @@ class EvolutionLoopController:
         if planned_round >= self.budget.round_limit:
             self.budget.stop_reason = "adaptive_safety_checkpoint" if self.budget.adaptive else "max_rounds"
             return True
-        reproduction_stop, offspring_verification, reproduction_compaction = self.round_pipeline.reproduce(
-            current_round=planned_round,
-            population=self.population,
-            archives=self.archives,
-            policy=self.policy,
-            contract=self.contract,
-            world=self.world,
-            rankings=evaluation.rankings,
-            diagnosis=self.diagnosis,
-            critiques=evaluation.critiques,
-            offspring_verifier=self.offspring_verifier,
-            repair_parent_candidates=evaluation.repair_parent_candidates,
-            provided_context=self.provided_context,
-            context_provider=self.context_provider,
-        )
+        with llm_round(planned_round):
+            reproduction_stop, offspring_verification, reproduction_compaction = self.round_pipeline.reproduce(
+                current_round=planned_round,
+                population=self.population,
+                archives=self.archives,
+                policy=self.policy,
+                contract=self.contract,
+                world=self.world,
+                rankings=evaluation.rankings,
+                diagnosis=self.diagnosis,
+                critiques=evaluation.critiques,
+                offspring_verifier=self.offspring_verifier,
+                repair_parent_candidates=evaluation.repair_parent_candidates,
+                provided_context=self.provided_context,
+                context_provider=self.context_provider,
+            )
         self._record_reproduction_result(planned_round, evaluation, reproduction_stop, offspring_verification, reproduction_compaction, self)
         return bool(self.budget.stop_reason)
 
@@ -217,6 +225,9 @@ class EvolutionLoopController:
                 "progress_event": event,
             }
         )
+        self.round_observations[str(current_round)] = {
+            "evaluator_qualified_survivors": int(self.adaptive.state.metrics.get("evaluator_passed_candidates") or 0),
+        }
         self._notify("post_ranking_critique", current_round, event)
 
     def _record_reproduction_result(
@@ -261,7 +272,8 @@ class EvolutionLoopController:
             self.budget.stop_reason = ("adaptive_safety_checkpoint" if self.budget.adaptive else "max_rounds") if self.budget.current_round >= self.budget.round_limit else "completed"
         synthesis_model = None if self.interrupted else self.model
         try:
-            synthesis = synthesize_result(population=self.population, archives=self.archives, contract=self.contract, world=self.world, model=synthesis_model)
+            with llm_round(self.budget.current_round or 0):
+                synthesis = synthesize_result(population=self.population, archives=self.archives, contract=self.contract, world=self.world, model=synthesis_model)
         except Exception as exc:
             category = provider_error_category(exc)
             if not (
@@ -385,6 +397,8 @@ class EvolutionLoopController:
         if self.interrupted:
             final_progress_event = _error_progress_event(final_progress_event, self.budget.current_round)
         self._notify("final_synthesis", self.budget.current_round, final_progress_event, error=self.error or None)
+        result_budget_history = [dict(item) for item in self.budget.history]
+        attach_round_cost_ledger(result_budget_history, self.cost_ledger)
         return EvolutionLoopResult(
             population=self.population,
             archives=self.archives,
@@ -393,7 +407,7 @@ class EvolutionLoopController:
             synthesis=synthesis,
             progress_events=self.progress_events,
             pipeline_events=self.pipeline_events,
-            budget_history=list(self.budget.history),
+            budget_history=result_budget_history,
             elo=self.round_pipeline.elo.to_dict(),
             latent_replay_audit=latent_replay_audit,
             interrupted=self.interrupted,
@@ -405,9 +419,19 @@ class EvolutionLoopController:
             adaptive_state=self.adaptive.to_dict(),
             graded_output=graded_output.to_dict(),
             fabric_state=dict(self.fabric_state),
+            cost_ledger=dict(self.cost_ledger),
         )
 
     def _notify(self, phase: str, round_index: int, progress_event: dict[str, Any], *, error: dict[str, Any] | None = None) -> None:
+        observed_budget_history = [dict(item) for item in self.budget.history]
+        for record in observed_budget_history:
+            record.update(self.round_observations.get(str(record.get("round")), {}))
+        self.cost_ledger = build_round_cost_ledger(
+            current_llm_session().snapshot(),
+            budget_history=observed_budget_history,
+            existing_ledger=self.cost_ledger,
+        )
+        attach_round_cost_ledger(observed_budget_history, self.cost_ledger)
         _notify_observer(
             self.observer,
             phase=phase,
@@ -417,11 +441,12 @@ class EvolutionLoopController:
             policy=self.policy,
             diagnosis=self.diagnosis,
             progress_event=progress_event,
-            budget_history=self.budget.history,
+            budget_history=observed_budget_history,
             elo_state=self.round_pipeline.elo.to_dict(),
             error=error,
             adaptive_state=self.adaptive.to_dict(),
             fabric_state=self.fabric_state,
+            cost_ledger=self.cost_ledger,
         )
 
 

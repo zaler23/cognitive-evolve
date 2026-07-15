@@ -70,6 +70,7 @@ class EvolutionLoopResult:
     adaptive_state: dict[str, Any] = field(default_factory=dict)
     graded_output: dict[str, Any] = field(default_factory=dict)
     fabric_state: dict[str, Any] = field(default_factory=dict)
+    cost_ledger: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         profile = checkpoint_profile_from_env()
@@ -110,6 +111,7 @@ class EvolutionLoopResult:
             "adaptive_state": self.adaptive_state,
             "graded_output": self.graded_output,
             "fabric_state": self.fabric_state,
+            "cost_ledger": self.cost_ledger,
             "search_kernel_summary": search_kernel_summary,
         }
 
