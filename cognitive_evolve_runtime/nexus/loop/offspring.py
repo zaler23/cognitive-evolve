@@ -522,7 +522,11 @@ def _policy_for_generation_batch(
                 }
                 for item in rejected[-16:]
             ],
-            f"{kind}_instruction": "Produce alternatives that land in new descriptor cells and avoid accepted signatures; do not merely paraphrase.",
+            f"{kind}_instruction": (
+                "Produce alternatives that land in new descriptor cells and avoid accepted signatures; do not merely paraphrase. "
+                "For a Transfer or cross_domain_transfer candidate, include metadata.transfer_receipt with source_relations, "
+                "target_relations, element-level mapping, preserved_invariant, predicted_break_condition, probe_ref, and artifact_hash."
+            ),
             "search_kernel_skills": search_skill_payload(limit=4),
         }
     )
@@ -649,6 +653,7 @@ def _merge_plan_metadata_into_model_offspring(offspring: list[CandidateGenome], 
                 instruction="",
                 metadata={"unplanned_model_variation": True, "plan_binding_status": "unplanned_model_variation"},
             )
+        candidate.metadata["mutation_operator"] = plan.operator
         claimed_plan_id = str(candidate.metadata.get("plan_id") or candidate.metadata.get("mutation_plan_id") or "").strip()
         authoritative_plan_id = str((plan.metadata or {}).get("plan_id") or (plan.metadata or {}).get("id") or "").strip()
         if claimed_plan_id and claimed_plan_id != authoritative_plan_id:

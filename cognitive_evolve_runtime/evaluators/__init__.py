@@ -1,6 +1,7 @@
 """External evaluator and Evidence Control Plane public boundary."""
 from .artifact_normalizer import artifact_policy_from_config, normalize_artifact
 from .challenge_memory import ChallengeMemory, ChallengeMemoryItem, challenge_from_diagnostic, challenge_id, classify_diagnostic
+from .dossier_grounding import CLAIM_STATUSES, frozen_dossier_hash, ground_frozen_dossier_claims
 from .evidence_authority import EVIDENCE_AUTHORITY_ORDER, aggregate_evidence_state, artifact_identity_payload, evidence_artifact_hash, evidence_authority, evidence_authority_rank, evidence_revokes_final, stable_artifact_identity_hash
 from .evidence import (
     ArtifactPolicy,
@@ -29,6 +30,7 @@ __all__ = [
     "EVIDENCE_AUTHORITY_ORDER",
     "ChallengeMemory",
     "ChallengeMemoryItem",
+    "CLAIM_STATUSES",
     "EvaluatorMetricSpec",
     "EvaluatorResult",
     "EvaluatorSpec",
@@ -56,6 +58,8 @@ __all__ = [
     "evidence_state",
     "evidence_revokes_final",
     "evidence_terminal_reject",
+    "frozen_dossier_hash",
+    "ground_frozen_dossier_claims",
     "has_repair_value",
     "latest_evidence_record",
     "normalize_artifact",

@@ -24,6 +24,7 @@ from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy
 from cognitive_evolve_runtime.nexus.population_control import compact_live_population
 from cognitive_evolve_runtime.nexus.prompt_view import archive_prompt_view
 from cognitive_evolve_runtime.nexus.repair_reactivation import recover_failure_archive_repair_seeds, recover_repairable_dormant_seeds
+from cognitive_evolve_runtime.nexus.receipts import record_reproduction_receipts
 from cognitive_evolve_runtime.nexus.search_kernel.fingerprints import candidate_outcome_signature, candidate_phenotype_signature
 from cognitive_evolve_runtime.nexus.search_kernel.branch_allocator import ProductiveBranchAllocation
 from cognitive_evolve_runtime.nexus.search_kernel.islands import allocate_logical_islands, assign_candidate_islands, derive_island_count
@@ -258,7 +259,7 @@ class ReproduceStage:
             candidate.metadata["created_in_round"] = current_round
         if plan is not None:
             assert_stage_ready(plan, "verify_offspring", completed_stage_ops)
-        return self._verify_and_integrate_offspring(
+        result = self._verify_and_integrate_offspring(
             offspring=offspring,
             offspring_verifier=offspring_verifier,
             population=population,
@@ -268,6 +269,16 @@ class ReproduceStage:
             generation_plan=plan,
             completed_stage_ops=completed_stage_ops,
         )
+        if plan is not None:
+            record_reproduction_receipts(
+                self.last_generation_plan,
+                diagnosis=diagnosis,
+                mutation_plans=plans,
+                offspring=offspring,
+                outcomes=result[1],
+            )
+            self._refresh_generation_plan_id()
+        return result
 
     def _record_generation_stage_progress(self, completed_stage_ops: list[str]) -> None:
         self.last_completed_stage_ops = list(completed_stage_ops)

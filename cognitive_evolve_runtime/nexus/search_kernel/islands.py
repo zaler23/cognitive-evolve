@@ -138,6 +138,7 @@ def allocate_logical_islands(
     branches = []
     arms = []
     credit: dict[str, int] = {}
+    credited_transfer_artifact_hashes: set[str] = set()
     slot_islands: dict[str, int] = {}
     for island_id in range(island_count):
         island_slots = base_slots + int(island_id < extra_slots)
@@ -148,6 +149,7 @@ def allocate_logical_islands(
             metric_directions=metric_directions,
             total_slots=island_slots,
             observed_family_counts=observed_family_counts,
+            credited_transfer_artifact_hashes=credited_transfer_artifact_hashes,
         )
         island_branches = [
             replace(
@@ -160,6 +162,7 @@ def allocate_logical_islands(
         arms.extend(allocation.arms)
         for key, value in allocation.credit_summary.items():
             credit[key] = credit.get(key, 0) + int(value)
+        credited_transfer_artifact_hashes.update(allocation.credited_transfer_artifact_hashes)
         slot_islands.update({slot.slot_id: island_id for slot in island_branches})
     return LogicalIslandAllocation(
         branches=ProductiveBranchAllocation(
@@ -167,6 +170,7 @@ def allocate_logical_islands(
             arms=tuple(arms),
             credit_summary=credit,
             observed_family_counts=observed_family_counts,
+            credited_transfer_artifact_hashes=tuple(sorted(credited_transfer_artifact_hashes)),
         ),
         candidate_islands=candidate_islands,
         slot_islands=slot_islands,

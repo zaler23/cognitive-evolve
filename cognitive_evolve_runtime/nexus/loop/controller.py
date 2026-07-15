@@ -240,7 +240,24 @@ class EvolutionLoopController:
         context: Any,
     ) -> None:
         if self.round_pipeline.last_generation_plan:
-            self.budget.history[-1]["generation_plan"] = dict(self.round_pipeline.last_generation_plan)
+            generation_plan = dict(self.round_pipeline.last_generation_plan)
+            self.budget.history[-1]["generation_plan"] = generation_plan
+            metadata = evaluation.progress_event.setdefault("metadata", {})
+            metadata["generation_plan_id"] = str(generation_plan.get("plan_id") or "")
+            receipts = generation_plan.get("intervention_receipts")
+            if isinstance(receipts, list) and receipts:
+                metadata["intervention_receipt_ids"] = [
+                    str(item.get("receipt_id") or "")
+                    for item in receipts
+                    if isinstance(item, dict) and item.get("receipt_id")
+                ]
+            transfers = generation_plan.get("transfer_receipts")
+            if isinstance(transfers, list) and transfers:
+                metadata["transfer_receipt_artifact_hashes"] = [
+                    str(item.get("artifact_hash") or "")
+                    for item in transfers
+                    if isinstance(item, dict) and item.get("artifact_hash")
+                ]
         if offspring_verification:
             self.budget.history[-1]["offspring_verification"] = offspring_verification
         if reproduction_compaction:

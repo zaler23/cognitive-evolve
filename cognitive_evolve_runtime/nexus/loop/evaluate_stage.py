@@ -18,6 +18,7 @@ from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy
 from cognitive_evolve_runtime.nexus.population_vitality import vitality_snapshot
 from cognitive_evolve_runtime.nexus.population_control import compact_live_population
 from cognitive_evolve_runtime.nexus.source_binding_resolver import annotate_candidate_source_bindings
+from cognitive_evolve_runtime.nexus.receipts import record_transfer_receipts
 from cognitive_evolve_runtime.outcomes.runtime_bridge import (
     annotate_candidates_with_latent_signals,
     ingest_latent_feedback,
@@ -239,7 +240,10 @@ class EvaluateStage:
         )
         if latent_ranking_summary:
             generation_plan.ranking_summary["latent_ranking"] = latent_ranking_summary
-            object.__setattr__(generation_plan, "plan_id", expected_generation_plan_id(generation_plan))
+        generation_plan_data = generation_plan.to_dict()
+        record_transfer_receipts(generation_plan_data, population.candidates)
+        generation_plan = GenerationPlan.from_dict(generation_plan_data)
+        object.__setattr__(generation_plan, "plan_id", expected_generation_plan_id(generation_plan))
         apply_generation_plan(generation_plan, population.candidates, archives)
         self.last_generation_plan = generation_plan.to_dict()
         self.last_completed_stage_ops = ["critique_and_verify", "rank", "archive_assign", "generation_plan_validate", "archive_update"]
