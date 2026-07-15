@@ -90,6 +90,13 @@ def select_diverse(
                 break
             if candidate.id in {item.id for item in selected}:
                 continue
+            if candidate.metadata.get("archive_elite_reentry") and _constraint_reason(
+                candidate,
+                selected,
+                max_per_lineage=max_per_lineage,
+                max_per_cell=max_per_cell,
+            ):
+                continue
             selected.append(candidate)
             trace.selected_ids.append(candidate.id)
             trace.rejected.append({"candidate_id": candidate.id, "reason": "constraint_relaxed_fill"})

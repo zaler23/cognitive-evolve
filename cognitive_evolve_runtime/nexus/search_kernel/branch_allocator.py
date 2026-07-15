@@ -47,6 +47,7 @@ class BranchSlot:
     coverage_bonus: float = 0.0
     coverage_scale: float = 0.0
     allocation_score: float = 0.0
+    coverage_target: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -59,6 +60,7 @@ class ProductiveBranchAllocation:
     credit_summary: dict[str, int]
     observed_family_counts: dict[str, int] = field(default_factory=dict)
     credited_transfer_artifact_hashes: tuple[str, ...] = ()
+    coverage_floor: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -76,6 +78,7 @@ class ProductiveBranchAllocation:
             "credit_summary": dict(self.credit_summary),
             "observed_family_counts": dict(self.observed_family_counts),
             "credited_transfer_artifact_hashes": list(self.credited_transfer_artifact_hashes),
+            "coverage_floor": dict(self.coverage_floor),
         }
 
 
@@ -332,10 +335,27 @@ def allocate_productive_branches(
     total_slots: int,
     observed_family_counts: Mapping[str, int] | None = None,
     credited_transfer_artifact_hashes: Iterable[str] = (),
+    coverage_floor_targets: Iterable[Mapping[str, Any]] = (),
+    coverage_floor_slots: int = 0,
 ) -> ProductiveBranchAllocation:
     """Allocate real branch slots with lineage-root UCB and an exploration floor."""
 
     candidate_list = _dedupe_candidates(candidates)
+    floor_targets = [
+        {
+            "axis": str(target.get("axis") or "").strip(),
+            "family": str(target.get("family") or "").strip(),
+        }
+        for target in coverage_floor_targets
+        if isinstance(target, Mapping) and (target.get("axis") or target.get("family"))
+    ]
+    floor_limit = min(max(0, int(coverage_floor_slots)), len(floor_targets), max(0, total_slots))
+    floor_audit: dict[str, Any] = {
+        "configured_slots": max(0, int(coverage_floor_slots)),
+        "targets": floor_targets,
+        "reserved_slot_ids": [],
+        "effect": "ordinary_reproduction_slots_only_evaluator_authority_unchanged",
+    }
     family_counts = (
         {family: observed_family_counts[family] for family in sorted(observed_family_counts)}
         if observed_family_counts is not None
@@ -347,6 +367,7 @@ def allocate_productive_branches(
             arms=(),
             credit_summary={},
             observed_family_counts=family_counts,
+            coverage_floor=floor_audit,
         )
     history = [dict(item) for item in budget_history if isinstance(item, dict)]
     historical_transfer_hashes = _historical_transfer_credit_hashes(history)
@@ -431,6 +452,24 @@ def allocate_productive_branches(
         for arm_id in arm_order
     }
 
+    for target in floor_targets[:floor_limit]:
+        selected = max(
+            suggest_budget_allocation(tuple(virtual[arm_id] for arm_id in arm_order)),
+            key=lambda suggestion: (suggestion.suggestion_score, suggestion.arm_id),
+        )
+        _append_slot(
+            slots,
+            arm_id=selected.arm_id,
+            parent_groups=parent_groups,
+            counts=arm_slot_counts,
+            score=selected.suggestion_score,
+            intent="axis_family_coverage_floor",
+            allocation_epoch=allocation_epoch,
+            coverage_target=target,
+        )
+        floor_audit["reserved_slot_ids"].append(slots[-1].slot_id)
+        virtual[selected.arm_id] = _virtual_pull(virtual[selected.arm_id])
+
     # Explicitly try every unobserved selected lineage once before exploitation.
     for arm_id in (arm for arm in arm_order if virtual[arm].pulls == 0):
         if len(slots) >= total_slots:
@@ -495,6 +534,7 @@ def allocate_productive_branches(
         credit_summary=reason_counts,
         observed_family_counts=family_counts,
         credited_transfer_artifact_hashes=credited_transfer_artifact_hashes,
+        coverage_floor=floor_audit,
     )
 
 
@@ -510,6 +550,7 @@ def _append_slot(
     allocation_score: float = 0.0,
     intent: str,
     allocation_epoch: int,
+    coverage_target: Mapping[str, Any] | None = None,
 ) -> None:
     index = counts[arm_id]
     parent = parent_groups[arm_id][index % len(parent_groups[arm_id])]
@@ -527,6 +568,12 @@ def _append_slot(
             coverage_bonus=round(float(coverage_bonus), 6),
             coverage_scale=round(float(coverage_scale), 6),
             allocation_score=round(float(allocation_score), 6),
+            coverage_target={
+                "axis": str((coverage_target or {}).get("axis") or ""),
+                "family": str((coverage_target or {}).get("family") or ""),
+            }
+            if coverage_target
+            else {},
         )
     )
     counts[arm_id] += 1

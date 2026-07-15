@@ -89,6 +89,16 @@ class MutationEngine:
         operator = plan.operator if plan.operator in MutationOperator.ALL else MutationOperator.DEEPEN
         inherited = [parent.extract_inheritable_gene_summary()] + list(parent.inherited_genes)
         artifact = self._mutated_artifact(parent, plan)
+        metadata = _inherited_mutation_metadata(parent, plan)
+        if plan.operator not in MutationOperator.ALL:
+            metadata.setdefault(
+                "action_fallback",
+                {
+                    "raw_action": str(plan.operator or ""),
+                    "fallback_operator": MutationOperator.DEEPEN,
+                    "reason": "unknown_action",
+                },
+            )
         base_kwargs = dict(
             parent_ids=[parent.id],
             generation=parent.generation + 1,
@@ -117,12 +127,12 @@ class MutationEngine:
             failure_lessons=list(parent.failure_lessons),
             contract_hash=parent.contract_hash,
             multihead_scores=self._mutated_scores(parent, operator),
-            metadata=_inherited_mutation_metadata(parent, plan),
+            metadata=metadata,
         )
         if isinstance(parent, ProjectCandidateGenome):
-            return ProjectCandidateGenome(
+            child: CandidateGenome = ProjectCandidateGenome(
                 **base_kwargs,
-            patch_set=self._mutated_patch_set(parent, plan),
+                patch_set=self._mutated_patch_set(parent, plan),
                 touched_files=list(parent.touched_files),
                 touched_symbols=list(parent.touched_symbols),
                 expected_effects=list(dict.fromkeys(parent.expected_effects + plan.expected_gene_effects + [operator])),
@@ -131,16 +141,27 @@ class MutationEngine:
                 commands_run=list(parent.commands_run),
                 mutation_operator=operator,
             )
-        return CandidateGenome(**base_kwargs)
+        else:
+            child = CandidateGenome(**base_kwargs)
+        if operator == MutationOperator.LINEAGE_RESTART:
+            apply_strategy_restart(child, parent, reset_inherited_state=True)
+        return child
 
     def _mutated_artifact(self, parent: CandidateGenome, plan: MutationPlan) -> Any:
+        operator = plan.operator if plan.operator in MutationOperator.ALL else MutationOperator.DEEPEN
+        if operator == MutationOperator.LINEAGE_RESTART:
+            failed_route = parent.core_mechanism or parent.concise_claim or str(parent.artifact or parent.id)
+            return (
+                "Strategy restart seed. "
+                f"Explicit negation constraint: do not reuse failed route `{failed_route}`. "
+                f"High-temperature restart directive: {plan.instruction or 'search a materially different mechanism'}."
+            )
         transformed = _apply_candidate_transform_artifact(parent.artifact, plan)
         if transformed is not None:
             return transformed
         if parent.artifact is not None and not isinstance(parent.artifact, str):
             return copy.deepcopy(parent.artifact)
         text = str(parent.artifact or parent.concise_claim or parent.core_mechanism)
-        operator = plan.operator
         repair_note = _repair_note(plan)
         if operator == MutationOperator.CORE_EXTRACTION:
             return parent.core_mechanism or parent.concise_claim or text
@@ -173,6 +194,8 @@ class MutationEngine:
         return f"{operator} descendant of {parent.id}"
 
     def _core_mechanism(self, parent: CandidateGenome, plan: MutationPlan) -> str:
+        if plan.operator == MutationOperator.LINEAGE_RESTART:
+            return plan.instruction or "high-temperature alternative mechanism"
         if plan.operator == MutationOperator.SCAFFOLD_REMOVAL:
             return _remove_scaffold_terms(parent.core_mechanism or parent.concise_claim)
         if plan.operator == MutationOperator.CORE_EXTRACTION:
@@ -267,8 +290,14 @@ class MutationPlanner:
         plans: list[MutationPlan] = []
         for index, parent in enumerate(parents):
             action = actions[index % len(actions)] if actions else MutationOperator.DEEPEN
-            operator = _action_to_operator(action)
-            metadata = {"raw_policy_action": str(action or "")} if actions else {}
+            operator, unknown_fallback = _mapped_action(action)
+            metadata: dict[str, Any] = {"raw_policy_action": str(action or "")} if actions else {}
+            if unknown_fallback:
+                metadata["action_fallback"] = {
+                    "raw_action": str(action or ""),
+                    "fallback_operator": MutationOperator.DEEPEN,
+                    "reason": "unknown_action",
+                }
             if shadow_bandit:
                 metadata["shadow_action_palette_bandit"] = shadow_bandit
             plans.append(
@@ -284,28 +313,96 @@ class MutationPlanner:
 
 
 def _action_to_operator(action: str) -> str:
+    return _mapped_action(action)[0]
+
+
+def _mapped_action(action: str) -> tuple[str, bool]:
     normalized = str(action or "").strip().lower()
+    if normalized in {"continue", "deepen"}:
+        return MutationOperator.DEEPEN, False
+    if normalized in {"strategy_restart", "lineage_restart", "strategyrestart", "lineagerestart"} or "strategy restart" in normalized or "lineage restart" in normalized:
+        return MutationOperator.LINEAGE_RESTART, False
     if "formal" in normalized or "instantiate" in normalized or "equation" in normalized:
-        return MutationOperator.INSTANTIATE_FORMAL_ARTIFACT
+        return MutationOperator.INSTANTIATE_FORMAL_ARTIFACT, False
     if "discharge" in normalized or "obligation" in normalized or "ledger" in normalized:
-        return MutationOperator.DISCHARGE_OBLIGATION
+        return MutationOperator.DISCHARGE_OBLIGATION, False
     if "case" in normalized or "split" in normalized:
-        return MutationOperator.CASE_SPLIT
+        return MutationOperator.CASE_SPLIT, False
     if "witness" in normalized or "counterexample" in normalized:
-        return MutationOperator.CONSTRUCT_WITNESS
+        return MutationOperator.CONSTRUCT_WITNESS, False
     if "route_kill" in normalized or "kill" in normalized or "refute" in normalized:
-        return MutationOperator.ROUTE_KILL
+        return MutationOperator.ROUTE_KILL, False
     if "core" in normalized:
-        return MutationOperator.CORE_EXTRACTION
+        return MutationOperator.CORE_EXTRACTION, False
     if "rare" in normalized:
-        return MutationOperator.RARE_INJECT
+        return MutationOperator.RARE_INJECT, False
     if "scaffold" in normalized:
-        return MutationOperator.SCAFFOLD_REMOVAL
+        return MutationOperator.SCAFFOLD_REMOVAL, False
     if "dormant" in normalized or "reactivate" in normalized:
-        return MutationOperator.DORMANT_REACTIVATION
+        return MutationOperator.DORMANT_REACTIVATION, False
     if "repair" in normalized:
-        return MutationOperator.REPAIR
-    return normalized.title().replace("_", "") if normalized.title().replace("_", "") in MutationOperator.ALL else MutationOperator.DEEPEN
+        return MutationOperator.REPAIR, False
+    operator = normalized.title().replace("_", "")
+    if operator in MutationOperator.ALL:
+        return operator, False
+    return MutationOperator.DEEPEN, True
+
+
+def apply_strategy_restart(
+    candidate: CandidateGenome,
+    source_parent: CandidateGenome,
+    *,
+    reset_inherited_state: bool,
+) -> CandidateGenome:
+    """Detach a restart candidate into a new root without changing evaluator state."""
+
+    failed_route = source_parent.core_mechanism or source_parent.concise_claim or str(source_parent.artifact or source_parent.id)
+    metadata = coerce_dict(candidate.metadata)
+    source_arm = str(metadata.get("branch_arm_id") or (source_parent.lineage[0] if source_parent.lineage else source_parent.id))
+    metadata["strategy_restart"] = {
+        "mode": "isolated_new_lineage_root",
+        "temperature": "high",
+        "source_parent_id": source_parent.id,
+        "source_lineage_root": source_parent.lineage[0] if source_parent.lineage else source_parent.id,
+        "source_branch_arm_id": source_arm,
+        "negated_failed_route": failed_route,
+        "explicit_negation_constraint": f"do not reuse failed route: {failed_route}",
+        "effect": "reproduction_lineage_only_evaluator_authority_unchanged",
+    }
+    metadata["search_seed_not_final"] = True
+    if metadata.get("branch_slot_id"):
+        metadata["branch_arm_id"] = candidate.id
+    candidate.metadata = metadata
+    candidate.parent_ids = []
+    candidate.generation = 0
+    candidate.lineage = [candidate.id]
+    candidate.current_fate = CandidateFate.ACTIVE.value
+    candidate.concise_claim = f"Strategy restart seed negating failed route from {source_parent.id}"
+    candidate.uncertainty_notes = list(
+        dict.fromkeys([*candidate.uncertainty_notes, f"Explicit negation constraint: do not reuse failed route `{failed_route}`"])
+    )
+    if reset_inherited_state:
+        candidate.inherited_genes = []
+        candidate.mutation_history = [MutationOperator.LINEAGE_RESTART]
+        candidate.tool_results = []
+        candidate.verification_trace = []
+        candidate.formal_artifacts = []
+        candidate.proof_obligations = []
+        candidate.obligation_delta = {}
+        candidate.evidence_refs = []
+        candidate.source_bindings = []
+        candidate.evidence_delta = {}
+        candidate.verification_result = {}
+        candidate.failure_lessons = []
+        if isinstance(candidate, ProjectCandidateGenome):
+            candidate.patch_set = []
+            candidate.touched_files = []
+            candidate.touched_symbols = []
+            candidate.expected_effects = [MutationOperator.LINEAGE_RESTART]
+            candidate.affected_tests = []
+            candidate.risk_notes = []
+            candidate.commands_run = []
+    return candidate
 
 
 def _shadow_action_palette_bandit(parents: list[CandidateGenome], actions: list[str]) -> dict[str, Any]:
@@ -451,6 +548,14 @@ def _inherited_mutation_metadata(parent: CandidateGenome, plan: MutationPlan) ->
     if parent_verification:
         metadata["parent_verification_summary"] = parent_verification
     metadata.update(plan.metadata)
+    coverage_target = plan.metadata.get("coverage_target")
+    if isinstance(coverage_target, dict) and (coverage_target.get("axis") or coverage_target.get("family")):
+        search_space = coerce_dict(parent_metadata.get("search_space"))
+        if coverage_target.get("axis"):
+            search_space["seed_axis"] = str(coverage_target["axis"])
+        if coverage_target.get("family"):
+            search_space["family_id"] = str(coverage_target["family"])
+        metadata["search_space"] = search_space
     for transform in plan.metadata.get("candidate_transforms", []) or []:
         if not isinstance(transform, dict) or transform.get("kind") != "collapse_params":
             continue
@@ -475,4 +580,4 @@ def _parent_verification_summary(parent: CandidateGenome) -> dict[str, Any]:
     return summary
 
 
-__all__ = ["MutationOperator", "MutationPlan", "MutationEngine", "MutationPlanner"]
+__all__ = ["MutationOperator", "MutationPlan", "MutationEngine", "MutationPlanner", "apply_strategy_restart"]
