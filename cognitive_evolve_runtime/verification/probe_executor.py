@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
 import tempfile
@@ -72,6 +73,7 @@ def execute_probes(
             "provenance": probe.provenance,
             "probe_content_sha256": _stable_probe_digest(probe.content),
         }
+    calibration_results: list[dict[str, Any]] = []
     observations.update(
         {
             "known_good_bad_distinguishable": _known_good_bad_distinguishable(
@@ -79,7 +81,9 @@ def execute_probes(
                 regime,
                 candidate=candidate,
                 obligation=obligation,
+                audit=calibration_results,
             ),
+            "known_good_bad_probe_results": calibration_results,
             "survived_count": len(survived),
             "counterexample_count": len(counterexamples),
             "executed_count": executed_count,
@@ -284,12 +288,147 @@ def _known_good_bad_distinguishable(
     *,
     candidate: Any = None,
     obligation: dict[str, Any],
+    audit: list[dict[str, Any]] | None = None,
 ) -> bool:
+    del raw_result, candidate
     if not regime.probes:
         return False
     if _bool_hint(obligation, "known_bad_probe") or _bool_hint(obligation, "force_known_bad"):
         return False
+    records = audit if audit is not None else []
+    for probe in regime.probes:
+        artifacts = _calibration_artifacts(probe)
+        if artifacts is None:
+            continue
+        good_artifact, bad_artifact = artifacts
+        good = _run_calibration_artifact(probe, good_artifact, "known_good")
+        bad = _run_calibration_artifact(probe, bad_artifact, "known_bad")
+        records.extend([good, bad])
+        if good.get("status") == "survived" and bad.get("status") == "counterexample":
+            return True
     return False
+
+
+def _calibration_artifacts(probe: ProbeCase) -> tuple[Any, Any] | None:
+    parameters = coerce_dict(probe.parameters)
+    if probe.template_id != _ARTIFACT_ASSERTION_TEMPLATE or parameters.get("unsupported_reason"):
+        return None
+    pointer = str(parameters.get("path") or "")
+    operator = str(parameters.get("operator") or "")
+    try:
+        expected = json.loads(json.dumps(parameters.get("expected"), ensure_ascii=False, allow_nan=False))
+    except (TypeError, ValueError):
+        return None
+
+    if operator == "exists":
+        if not pointer:
+            return None
+        good_value, bad_value = None, _NOT_JSON
+    elif operator == "not_exists":
+        if not pointer:
+            return None
+        good_value, bad_value = _NOT_JSON, None
+    elif operator == "equal":
+        good_value, bad_value = expected, _different_json_value(expected)
+    elif operator == "not_equal":
+        good_value, bad_value = _different_json_value(expected), expected
+    elif operator == "contains":
+        good_value, bad_value = [expected], []
+    elif operator == "not_contains":
+        good_value, bad_value = [], [expected]
+    elif operator in {"lt", "lte", "gt", "gte"}:
+        values = _ordered_calibration_values(operator, expected)
+        if values is None:
+            return None
+        good_value, bad_value = values
+    elif operator == "between":
+        values = _between_calibration_values(expected)
+        if values is None:
+            return None
+        good_value, bad_value = values
+    else:
+        return None
+    return _artifact_at_pointer(pointer, good_value), _artifact_at_pointer(pointer, bad_value)
+
+
+def _run_calibration_artifact(probe: ProbeCase, artifact: Any, role: str) -> dict[str, Any]:
+    results = _run_artifact_assertions(artifact, [probe])
+    matching = [item for item in results if str(item.get("probe_id") or "") == probe.probe_id]
+    if len(matching) == 1:
+        record = dict(matching[0])
+    else:
+        record = _probe_result(probe, "unsupported", reason="calibration_result_missing_or_ambiguous")
+    record.update(
+        {
+            "calibration_role": role,
+            "calibration_artifact_sha256": stable_hash({"artifact": artifact}),
+            "engine_generated": True,
+            "provenance": "engine",
+        }
+    )
+    return record
+
+
+def _artifact_at_pointer(pointer: str, value: Any) -> Any:
+    if not pointer:
+        return None if value is _NOT_JSON else value
+    if value is _NOT_JSON:
+        return {}
+    current = value
+    for raw_part in reversed(pointer[1:].split("/")):
+        part = raw_part.replace("~1", "/").replace("~0", "~")
+        current = {part: current}
+    return current
+
+
+def _different_json_value(expected: Any) -> Any:
+    first = {"__cogev_calibration__": "different"}
+    return first if expected != first else {"__cogev_calibration__": "different_again"}
+
+
+def _ordered_calibration_values(operator: str, expected: Any) -> tuple[Any, Any] | None:
+    if isinstance(expected, bool) or not isinstance(expected, (int, float)):
+        return None
+    if isinstance(expected, float) and not math.isfinite(expected):
+        return None
+    if operator == "lt":
+        good = _adjacent_number(expected, -1)
+        return (good, expected) if good is not None else None
+    if operator == "lte":
+        bad = _adjacent_number(expected, 1)
+        return (expected, bad) if bad is not None else None
+    if operator == "gt":
+        good = _adjacent_number(expected, 1)
+        return (good, expected) if good is not None else None
+    bad = _adjacent_number(expected, -1)
+    return (expected, bad) if bad is not None else None
+
+
+def _between_calibration_values(expected: Any) -> tuple[Any, Any] | None:
+    if not isinstance(expected, list) or len(expected) != 2:
+        return None
+    lower, upper = expected
+    if any(
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or (isinstance(value, float) and not math.isfinite(value))
+        for value in expected
+    ):
+        return None
+    if lower > upper:
+        return None
+    below = _adjacent_number(lower, -1)
+    if below is not None:
+        return lower, below
+    above = _adjacent_number(upper, 1)
+    return (upper, above) if above is not None else None
+
+
+def _adjacent_number(value: int | float, direction: int) -> int | float | None:
+    if isinstance(value, int):
+        return value + direction
+    adjacent = math.nextafter(value, math.inf if direction > 0 else -math.inf)
+    return adjacent if math.isfinite(adjacent) and adjacent != value else None
 
 
 def _bool_hint(mapping: dict[str, Any], key: str) -> bool:

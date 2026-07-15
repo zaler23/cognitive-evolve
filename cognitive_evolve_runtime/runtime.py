@@ -24,7 +24,7 @@ from .nexus.difficulty_estimator import (
 )
 from .nexus.model_adapter import StructuredModelAdapter
 from .nexus.runtime import NexusRuntime
-from .nexus.semantics import DEFAULT_CAPABILITIES, classify, ensure_enhanced_task_contract, required_capabilities
+from .nexus.semantics import DEFAULT_CAPABILITIES, NexusRoute, classify, ensure_enhanced_task_contract, required_capabilities
 from .nexus.state import nexus_runtime_state
 from .nexus.state_contract import RUNTIME_PATH, normalize_runtime_state
 
@@ -53,7 +53,15 @@ def _resolve_runtime_model(*, offline: bool) -> tuple[object | None, int]:
         return None, 2
 
 
-def runtime_run(path: str | None, prompt: str | None, activate_all: bool = False, rounds: int | None = None, *, offline: bool = False) -> int:
+def runtime_run(
+    path: str | None,
+    prompt: str | None,
+    activate_all: bool = False,
+    rounds: int | None = None,
+    *,
+    offline: bool = False,
+    route: NexusRoute | None = None,
+) -> int:
     task_dir = _task_dir(path)
     if not task_dir.exists():
         print(f"Task directory not found: {task_dir}", file=sys.stderr)
@@ -65,12 +73,14 @@ def runtime_run(path: str | None, prompt: str | None, activate_all: bool = False
     runtime_model, model_status = _resolve_runtime_model(offline=offline)
     if model_status:
         return model_status
-    route = _classify_runtime_seed(seed_prompt, runtime_model)
+    cached_route = route is not None
+    if route is None:
+        route = _classify_runtime_seed(seed_prompt, runtime_model)
     ensure_enhanced_task_contract(
         task_dir,
         seed_prompt,
         print_summary=True,
-        force=bool(prompt and prompt.strip()),
+        force=bool(prompt and prompt.strip()) and not cached_route,
         model=runtime_model,
     )
 
