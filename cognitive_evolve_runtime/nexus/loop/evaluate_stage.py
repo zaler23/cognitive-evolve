@@ -19,6 +19,7 @@ from cognitive_evolve_runtime.nexus.population_vitality import vitality_snapshot
 from cognitive_evolve_runtime.nexus.population_control import compact_live_population
 from cognitive_evolve_runtime.nexus.source_binding_resolver import annotate_candidate_source_bindings
 from cognitive_evolve_runtime.nexus.receipts import record_transfer_receipts
+from cognitive_evolve_runtime.nexus.stop_reasons import stop_reason_class
 from cognitive_evolve_runtime.outcomes.runtime_bridge import (
     annotate_candidates_with_latent_signals,
     ingest_latent_feedback,
@@ -116,6 +117,7 @@ class EvaluateStage:
             contract=contract,
             evolution_policy=updated_policy,
         )
+        stop_class = stop_reason_class(stop_reason)
         completed_stage_ops.append("stop_check")
         generation_plan = dict(self.last_generation_plan)
         generation_plan["completed_stage_ops"] = list(completed_stage_ops)
@@ -136,6 +138,13 @@ class EvaluateStage:
             metadata={
                 "stop_policy": self.budget.stop_policy,
                 "stop_reason": stop_reason,
+                "stop_reason_class": stop_class,
+                "stop_decision": {
+                    "stop": bool(stop_reason),
+                    "reason": stop_reason,
+                    "reason_class": stop_class,
+                    "best_candidate_id": best_answer,
+                },
                 "adaptive": self.budget.adaptive,
                 "round_safety_limit": self.budget.round_limit if self.budget.adaptive else 0,
                 "completion_requires_stop_signal": self.budget.completion_requires_stop_signal,

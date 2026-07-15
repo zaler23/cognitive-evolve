@@ -55,7 +55,7 @@ class AdaptiveConfig:
         world: Any | None = None,
     ) -> "AdaptiveConfig":
         merged: dict[str, Any] = {}
-        for source in (_metadata(contract), _metadata(policy), _metadata(world), coerce_dict(explicit)):
+        for source in (_metadata(contract), _criterion_evaluator_config(contract), _metadata(policy), _metadata(world), coerce_dict(explicit)):
             merged = _deep_merge(merged, coerce_dict(source.get("adaptive") if "adaptive" in source else source))
         env_config = _env_config()
         if env_config:
@@ -97,6 +97,24 @@ def _metadata(source: Any | None) -> dict[str, Any]:
     if hasattr(source, "to_dict"):
         return coerce_dict(source.to_dict().get("metadata"))
     return {}
+
+
+def _criterion_evaluator_config(contract: Any | None) -> dict[str, Any]:
+    bindings = getattr(contract, "evaluators", None)
+    if not isinstance(bindings, list):
+        return {}
+    metrics: list[dict[str, Any]] = []
+    for binding in bindings:
+        data = binding.to_dict() if hasattr(binding, "to_dict") else asdict(binding) if hasattr(binding, "__dataclass_fields__") else coerce_dict(binding)
+        if data.get("kind") != "criterion_metric":
+            continue
+        metrics.append({
+            "name": str(data.get("metric") or ""),
+            "direction": str(data.get("direction") or ""),
+            "value_type": str(data.get("value_type") or ""),
+            "source_span": coerce_dict(data.get("source_span")),
+        })
+    return {"evaluator": {"metrics": metrics}} if metrics else {}
 
 
 def _env_config() -> dict[str, Any]:

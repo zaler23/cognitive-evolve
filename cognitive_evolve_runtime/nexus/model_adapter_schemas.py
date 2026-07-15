@@ -24,6 +24,29 @@ def _objective_contract_schema(*, project: bool) -> dict[str, Any]:
         "verification_preferences": _string_array(),
         "success_dimensions": _string_array(),
         "failure_dimensions": _string_array(),
+        "criteria": {
+            "type": "array",
+            "description": "Objective-grounded evaluator criteria. Each complete item is compiled into an EvaluatorBinding; incomplete items are rejected with an audit record.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "metric": {"type": "string"},
+                    "direction": {"type": "string", "enum": ["maximize", "minimize"]},
+                    "value_type": {"type": "string", "enum": ["number", "integer", "boolean"]},
+                    "source_span": {
+                        "type": "object",
+                        "properties": {
+                            "start": {"type": "integer", "minimum": 0},
+                            "end": {"type": "integer", "minimum": 1},
+                        },
+                        "additionalProperties": True,
+                    },
+                    "description": {"type": "string"},
+                    "hard": {"type": "boolean"},
+                },
+                "additionalProperties": True,
+            },
+        },
     }
     if project:
         properties.update({

@@ -8,6 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from cognitive_evolve_runtime.candidates.genome import CandidateGenome
+from cognitive_evolve_runtime.contracts.objective_contract import EvaluatorBinding
 from cognitive_evolve_runtime.evaluators.artifact_normalizer import artifact_policy_from_config, normalize_artifact, uses_artifact_policy
 from cognitive_evolve_runtime.evaluators.evidence import apply_evidence_record
 from cognitive_evolve_runtime.evaluators.progressive import ProgressiveEvaluator
@@ -101,7 +102,11 @@ class ExternalEvaluatorRunner:
 
 def apply_evaluator_result(candidate: CandidateGenome, result: EvaluatorResult, *, progressive: ProgressiveEvaluator | None = None, spec: EvaluatorSpec | None = None, round_index: int = 0) -> None:
     metadata = candidate.metadata if isinstance(candidate.metadata, dict) else {}
-    metadata["evaluator"] = result.to_dict()
+    evaluator_payload = result.to_dict()
+    selection_binding = _selection_binding(spec)
+    if selection_binding is not None:
+        evaluator_payload["selection_binding"] = selection_binding.to_dict()
+    metadata["evaluator"] = evaluator_payload
     candidate.metadata = metadata
     if result.passed:
         candidate.multihead_scores["correctness"] = 1.0
@@ -123,6 +128,22 @@ def apply_evaluator_result(candidate: CandidateGenome, result: EvaluatorResult, 
     evidence = (progressive or ProgressiveEvaluator()).evaluate_result(candidate, result, spec=spec, round_index=round_index)
     apply_evidence_record(candidate, evidence)
     candidate.add_verification_feedback(result.to_feedback())
+
+
+def _selection_binding(spec: EvaluatorSpec | None) -> EvaluatorBinding | None:
+    if spec is None or not spec.metrics:
+        return None
+    metric = spec.metrics[0]
+    if metric.name == "correctness" and metric.direction == "pass" and not metric.source_span:
+        return None
+    return EvaluatorBinding(
+        id=f"criterion:{metric.name}",
+        kind="criterion_metric",
+        metric=metric.name,
+        direction=metric.direction,
+        value_type=metric.value_type,
+        source_span=dict(metric.source_span),
+    )
 
 
 def _format_command(command: str, candidate_path: Path) -> list[str]:

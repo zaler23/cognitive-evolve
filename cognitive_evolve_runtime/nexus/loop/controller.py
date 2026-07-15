@@ -27,7 +27,7 @@ from cognitive_evolve_runtime.outcomes.runtime_bridge import (
     latent_completion_override,
 )
 from cognitive_evolve_runtime.nexus._shared import MODEL_BOUNDARY_ERRORS
-from cognitive_evolve_runtime.nexus.stop_reasons import normalize_external_review_stop_reason
+from cognitive_evolve_runtime.nexus.stop_reasons import normalize_external_review_stop_reason, stop_reason_class
 from cognitive_evolve_runtime.llm.retry import provider_error_category
 from cognitive_evolve_runtime.llm.session import current_llm_session, llm_round
 from cognitive_evolve_runtime.llm.telemetry import attach_round_cost_ledger, build_round_cost_ledger
@@ -167,6 +167,7 @@ class EvolutionLoopController:
             return True
         if planned_round >= self.budget.round_limit:
             self.budget.stop_reason = "adaptive_safety_checkpoint" if self.budget.adaptive else "max_rounds"
+            self._record_terminal_stop_reason(self.budget.stop_reason)
             return True
         with llm_round(planned_round):
             reproduction_stop, offspring_verification, reproduction_compaction = self.round_pipeline.reproduce(
@@ -264,8 +265,32 @@ class EvolutionLoopController:
             self.budget.history[-1]["reproduction_compaction"] = reproduction_compaction
         if reproduction_stop:
             self.budget.stop_reason = reproduction_stop
+            self._record_terminal_stop_reason(reproduction_stop)
             return
         self._notify("post_mutation", current_round, evaluation.progress_event)
+
+    def _record_terminal_stop_reason(self, reason: str) -> None:
+        if not self.budget.history:
+            return
+        reason_class = stop_reason_class(reason)
+        record = self.budget.history[-1]
+        record["stop_reason"] = reason
+        event = record.get("progress_event") if isinstance(record.get("progress_event"), dict) else None
+        if event is None:
+            return
+        metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+        metadata.update({
+            "stop_reason": reason,
+            "stop_reason_class": reason_class,
+            "stop_decision": {
+                "stop": True,
+                "reason": reason,
+                "reason_class": reason_class,
+                "best_candidate_id": str(((record.get("ranking") or {}).get("best_final_answer_id") if isinstance(record.get("ranking"), dict) else "") or ""),
+            },
+        })
+        event["metadata"] = metadata
+        event["next_action"] = reason
 
     def _checkpoint_interruption(self, current_round: int, exc: Exception, *, stop_reason: str, stagnation_type: str, actions: list[str]) -> None:
         self.error = {"type": exc.__class__.__name__, "message": str(exc), "round": current_round}
