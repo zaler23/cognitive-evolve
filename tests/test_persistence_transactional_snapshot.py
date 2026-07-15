@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import threading
 from contextlib import contextmanager
@@ -237,6 +238,57 @@ def test_live_checkpoint_advances_current_and_checkpoint_restore_reads_latest(tm
     assert restored is not None
     assert restored["checkpoint"].round == 1
     assert json.loads((previous_root / "checkpoint.json").read_text(encoding="utf-8"))["round"] == 0
+
+
+def test_checkpoint_restore_rejects_tampered_snapshot_file(tmp_path):
+    _write_live_checkpoint(tmp_path, 1)
+    snapshot_root = resolve_snapshot_root(tmp_path)
+    checkpoint_path = snapshot_root / "checkpoint.json"
+    manifest = json.loads((snapshot_root / "snapshot-transaction.json").read_text(encoding="utf-8"))
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    checkpoint["created_at"] = "tampered"
+    checkpoint_path.write_text(json.dumps(checkpoint), encoding="utf-8")
+    expected_hash = manifest["files"]["checkpoint.json"]["sha256"]
+    actual_hash = hashlib.sha256(checkpoint_path.read_bytes()).hexdigest()
+
+    with pytest.raises(ValueError) as exc_info:
+        CheckpointStore(checkpoint_path).restore_state()
+
+    message = str(exc_info.value)
+    assert "checkpoint.json" in message
+    assert expected_hash in message
+    assert actual_hash in message
+
+
+def test_checkpoint_restore_accepts_matching_snapshot_manifest(tmp_path):
+    _write_live_checkpoint(tmp_path, 1)
+
+    with snapshot_reader(tmp_path) as snapshot_root:
+        restored = CheckpointStore(snapshot_root / "checkpoint.json").restore_state()
+
+    assert restored is not None
+    assert restored["checkpoint"].round == 1
+
+
+def test_checkpoint_restore_rejects_manifest_without_target_hash(tmp_path):
+    _write_live_checkpoint(tmp_path, 1)
+    snapshot_root = resolve_snapshot_root(tmp_path)
+    manifest_path = snapshot_root / "snapshot-transaction.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["files"].pop("checkpoint.json")
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"checkpoint\.json.*expected sha256=<missing>.*actual sha256="):
+        CheckpointStore(snapshot_root / "checkpoint.json").restore_state()
+
+
+def test_checkpoint_restore_rejects_missing_manifest_in_published_generation(tmp_path):
+    _write_live_checkpoint(tmp_path, 1)
+    snapshot_root = resolve_snapshot_root(tmp_path)
+    (snapshot_root / "snapshot-transaction.json").unlink()
+
+    with pytest.raises(ValueError, match="snapshot manifest missing for published generation"):
+        CheckpointStore(snapshot_root / "checkpoint.json").restore_state()
 
 
 def test_failed_live_checkpoint_keeps_previous_generation_readable(tmp_path, monkeypatch):

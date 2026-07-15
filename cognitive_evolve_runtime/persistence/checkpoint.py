@@ -19,6 +19,7 @@ from cognitive_evolve_runtime.persistence.checkpoint_profile import (
     checkpoint_profile_from_env,
     hydrate_checkpoint_archives,
 )
+from cognitive_evolve_runtime.persistence.transactional_snapshot import read_snapshot_json
 
 LATENT_LEDGER_METADATA_KEY = "latent_ledger"
 LATENT_LEDGER_REF_KEYS = ("latent_ledger_ref", "latent_ledger_sidecar")
@@ -32,6 +33,7 @@ class NexusCheckpoint:
     population: dict[str, Any]
     archives: dict[str, Any]
     schema_version: int = CHECKPOINT_SCHEMA_VERSION
+    elo: dict[str, Any] = field(default_factory=dict)
     policy: dict[str, Any] = field(default_factory=dict)
     diagnosis: dict[str, Any] = field(default_factory=dict)
     progress_event: dict[str, Any] = field(default_factory=dict)
@@ -66,6 +68,7 @@ class NexusCheckpoint:
             population=coerce_dict(data.get("population")),
             archives=coerce_dict(data.get("archives")),
             schema_version=int(data["schema_version"]),
+            elo=coerce_dict(data.get("elo")),
             policy=coerce_dict(data.get("policy")),
             diagnosis=coerce_dict(data.get("diagnosis")),
             progress_event=coerce_dict(data.get("progress_event")),
@@ -123,7 +126,7 @@ class CheckpointStore:
     def load(self) -> NexusCheckpoint | None:
         if not self.path.exists():
             return None
-        data = json.loads(self.path.read_text(encoding="utf-8"))
+        data = read_snapshot_json(self.path.parent, self.path.name)
         if not isinstance(data, dict):
             raise ValueError(f"checkpoint must be a JSON object: {self.path}")
         return NexusCheckpoint.from_dict(data)
@@ -152,6 +155,7 @@ class CheckpointStore:
             "checkpoint": checkpoint,
             "population": population,
             "archives": ArchiveManager.from_dict(archives_payload),
+            "elo": dict(checkpoint.elo),
             "policy": EvolutionPolicy.from_dict(checkpoint.policy) if checkpoint.policy else EvolutionPolicy(),
             "diagnosis": SearchDiagnosis.from_dict(checkpoint.diagnosis) if checkpoint.diagnosis else SearchDiagnosis(),
             "budget_history": list(checkpoint.budget_history),
@@ -196,6 +200,7 @@ class CheckpointStore:
         verification_plan: dict[str, Any] | None = None,
         graded_output: dict[str, Any] | None = None,
         search_kernel: dict[str, Any] | None = None,
+        elo: dict[str, Any] | None = None,
         fabric: dict[str, Any] | None = None,
         runtime_options: dict[str, Any] | None = None,
         allow_progress_round_repair: bool = False,
@@ -221,6 +226,7 @@ class CheckpointStore:
             verification_plan=verification_plan,
             graded_output=graded_output,
             search_kernel=search_kernel,
+            elo=elo,
             fabric=fabric,
             runtime_options=runtime_options,
             allow_progress_round_repair=allow_progress_round_repair,
@@ -251,6 +257,7 @@ def build_checkpoint_state(
     verification_plan: dict[str, Any] | None = None,
     graded_output: dict[str, Any] | None = None,
     search_kernel: dict[str, Any] | None = None,
+    elo: dict[str, Any] | None = None,
     fabric: dict[str, Any] | None = None,
     runtime_options: dict[str, Any] | None = None,
     allow_progress_round_repair: bool = False,
@@ -280,6 +287,7 @@ def build_checkpoint_state(
         verification_plan=coerce_dict(verification_plan),
         graded_output=coerce_dict(graded_output),
         search_kernel=coerce_dict(search_kernel),
+        elo=coerce_dict(elo),
         fabric=coerce_dict(fabric),
         runtime_options=coerce_dict(runtime_options),
         checkpoint_profile=profile.to_dict(),

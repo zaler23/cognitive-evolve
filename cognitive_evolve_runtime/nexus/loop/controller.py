@@ -54,6 +54,7 @@ class EvolutionLoopController:
         offspring_verifier: Callable[[list[CandidateGenome]], list[Any]] | None = None,
         adaptive_config: dict[str, Any] | None = None,
         adaptive_state: dict[str, Any] | None = None,
+        elo_state: dict[str, Any] | None = None,
         verification_plan: VerificationPlan | dict[str, Any] | None = None,
         fabric_state: dict[str, Any] | None = None,
         provided_context: dict[str, Any] | None = None,
@@ -78,7 +79,7 @@ class EvolutionLoopController:
         )
         if verification_plan is not None:
             self.adaptive.set_verification_plan(verification_plan)
-        self.round_pipeline = EvolutionRound(model=model, budget=budget, adaptive=self.adaptive)
+        self.round_pipeline = EvolutionRound(model=model, budget=budget, adaptive=self.adaptive, elo_state=elo_state)
         self.progress_events: list[dict[str, Any]] = []
         self.pipeline_events: list[dict[str, Any]] = [
             PipelineProgressEvent(
@@ -417,6 +418,7 @@ class EvolutionLoopController:
             diagnosis=self.diagnosis,
             progress_event=progress_event,
             budget_history=self.budget.history,
+            elo_state=self.round_pipeline.elo.to_dict(),
             error=error,
             adaptive_state=self.adaptive.to_dict(),
             fabric_state=self.fabric_state,
@@ -537,6 +539,7 @@ def evolve_once(
     offspring_verifier: Callable[[list[CandidateGenome]], list[Any]] | None = None,
     adaptive_config: dict[str, Any] | None = None,
     adaptive_state: dict[str, Any] | None = None,
+    elo_state: dict[str, Any] | None = None,
     verification_plan: VerificationPlan | dict[str, Any] | None = None,
     fabric_state: dict[str, Any] | None = None,
     provided_context: dict[str, Any] | None = None,
@@ -555,6 +558,7 @@ def evolve_once(
         offspring_verifier=offspring_verifier,
         adaptive_config=adaptive_config,
         adaptive_state=adaptive_state,
+        elo_state=elo_state,
         verification_plan=verification_plan,
         fabric_state=fabric_state,
         provided_context=provided_context,

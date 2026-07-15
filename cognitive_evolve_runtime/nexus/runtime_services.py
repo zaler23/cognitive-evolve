@@ -137,6 +137,7 @@ class NexusPersistenceService:
             verification_plan=dict(adaptive_state.get("verification_plan") or {}),
             graded_output=dict(getattr(result, "graded_output", {}) or {}),
             search_kernel=search_kernel_state,
+            elo=result.elo,
             fabric=dict(getattr(result, "fabric_state", {}) or {}),
             runtime_options=runtime_options or dict((getattr(run, "evolution", {}) or {}).get("runtime_options") or {}),
             allow_progress_round_repair=bool(result.interrupted),

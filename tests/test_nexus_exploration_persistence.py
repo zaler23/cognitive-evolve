@@ -78,6 +78,33 @@ class NarrowSeedModel:
         return {"status": "ok", "final_answer": f"synthesized from {len(population)} candidates"}
 
 
+class PairwiseSeedModel(NarrowSeedModel):
+    def seed_population(self, **_: Any) -> list[dict[str, Any]]:
+        return [
+            {
+                "id": candidate_id,
+                "generation": 0,
+                "artifact": f"model seed {candidate_id}",
+                "artifact_type": "answer",
+                "concise_claim": f"model seed {candidate_id}",
+                "core_mechanism": "model_route",
+            }
+            for candidate_id in ("M0", "M1")
+        ]
+
+    def relative_rank(self, *, candidates: list[CandidateGenome], **kwargs: Any) -> dict[str, Any]:
+        ranking = super().relative_rank(candidates=candidates, **kwargs)
+        ranking["pairwise_preferences"] = [
+            {
+                "winner": candidates[0].id,
+                "loser": candidates[1].id,
+                "axis": "answer_likelihood",
+                "weight": 1.0,
+            }
+        ]
+        return ranking
+
+
 class BadOffspringModel(NarrowSeedModel):
     def __init__(self) -> None:
         self.offspring_attempted = False
@@ -296,6 +323,39 @@ def test_post_seeding_resume_does_not_use_terminal_short_circuit(monkeypatch: py
     assert calls == [0]
 
 
+def test_run_resume_preserves_multihead_elo_ratings_and_update_counts(tmp_path: Path) -> None:
+    initial = NexusRuntime(model=PairwiseSeedModel(), output_dir=tmp_path).run_text(
+        "Preserve ranking memory across resume.",
+        max_rounds=1,
+        min_population_size=2,
+    )
+    initial_elo = initial.evolution["elo"]
+    preserved_id = next(
+        candidate_id
+        for candidate_id, scores in initial_elo["ratings"].items()
+        if scores["answer_likelihood"] != initial_elo["initial_rating"]
+    )
+    preserved_rating = initial_elo["ratings"][preserved_id]["answer_likelihood"]
+
+    resumed = NexusRuntime(model=NarrowSeedModel(), output_dir=tmp_path).resume_from_checkpoint(max_rounds=2)
+
+    resumed_elo = resumed.evolution["elo"]
+    assert resumed_elo["ratings"][preserved_id]["answer_likelihood"] == preserved_rating
+    assert resumed_elo["update_counts"]["answer_likelihood"] == initial_elo["update_counts"]["answer_likelihood"]
+
+
+def test_resume_legacy_checkpoint_without_elo_uses_fresh_state(tmp_path: Path) -> None:
+    _write_resume_fixture(tmp_path, stop_reason="", checkpoint_round=1, checkpoint_max_rounds=2, phase="round_end")
+    checkpoint_path = tmp_path / "checkpoint.json"
+    checkpoint = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+    checkpoint.pop("elo", None)
+    checkpoint_path.write_text(json.dumps(checkpoint), encoding="utf-8")
+
+    resumed = NexusRuntime(model=NarrowSeedModel(), output_dir=tmp_path).resume_from_checkpoint(max_rounds=2)
+
+    assert resumed.evolution["elo"]["ratings"]["C0"]["answer_likelihood"] == 1000.0
+
+
 def test_resume_reads_checkpoint_from_latest_live_generation(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     _write_resume_fixture(tmp_path, stop_reason="", checkpoint_round=1, checkpoint_max_rounds=3, phase="round_end")
     NexusSnapshotTransaction(tmp_path).commit(
@@ -343,6 +403,32 @@ def test_terminal_resume_requires_persisted_run_result(monkeypatch: pytest.Monke
     monkeypatch.setattr("cognitive_evolve_runtime.nexus.runtime.evolve_once", fail_evolve_once)
 
     with pytest.raises(FileNotFoundError, match="terminal checkpoint resume requires persisted run-result.json"):
+        NexusRuntime(output_dir=tmp_path).resume_from_checkpoint()
+
+    assert calls == []
+
+
+def test_terminal_resume_rejects_tampered_run_result(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    calls: list[bool] = []
+    _write_resume_fixture(tmp_path, stop_reason="candidate_ready_for_external_review")
+    transaction = NexusSnapshotTransaction(tmp_path).commit(
+        [
+            SnapshotWrite("checkpoint.json", "json", json.loads((tmp_path / "checkpoint.json").read_text(encoding="utf-8"))),
+            SnapshotWrite("run-result.json", "json", json.loads((tmp_path / "run-result.json").read_text(encoding="utf-8"))),
+        ]
+    )
+    run_result_path = Path(transaction.files["run-result.json"])
+    tampered = json.loads(run_result_path.read_text(encoding="utf-8"))
+    tampered["evolution"]["synthesis"]["final_answer"] = "tampered answer"
+    run_result_path.write_text(json.dumps(tampered), encoding="utf-8")
+
+    def fail_evolve_once(**_: Any) -> None:
+        calls.append(True)
+        pytest.fail("terminal resume should reject tampering before evolve_once")
+
+    monkeypatch.setattr("cognitive_evolve_runtime.nexus.runtime.evolve_once", fail_evolve_once)
+
+    with pytest.raises(ValueError, match=r"run-result\.json.*expected sha256=.*actual sha256="):
         NexusRuntime(output_dir=tmp_path).resume_from_checkpoint()
 
     assert calls == []

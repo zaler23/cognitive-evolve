@@ -44,7 +44,7 @@ from cognitive_evolve_runtime.nexus.runtime_services import NexusPersistenceServ
 from cognitive_evolve_runtime.nexus._shared import MODEL_BOUNDARY_ERRORS, positive_int
 from cognitive_evolve_runtime.nexus.stop_reasons import normalize_external_review_stop_reason
 from cognitive_evolve_runtime.persistence.checkpoint import CheckpointStore, contract_payload_for_persistence
-from cognitive_evolve_runtime.persistence.transactional_snapshot import snapshot_reader
+from cognitive_evolve_runtime.persistence.transactional_snapshot import read_snapshot_json, snapshot_reader
 
 
 @dataclass
@@ -394,7 +394,7 @@ class NexusRuntime:
                     run_result_path = snapshot_root / "run-result.json"
                     if not run_result_path.exists():
                         raise FileNotFoundError(f"terminal checkpoint resume requires persisted run-result.json: {run_result_path}")
-                    payload = json.loads(run_result_path.read_text(encoding="utf-8"))
+                    payload = read_snapshot_json(snapshot_root, "run-result.json")
                     return NexusRunResult(**payload)
             runtime_options = restore_runtime_options(persisted=restored.get("runtime_options") or getattr(checkpoint, "runtime_options", {}), overrides={})
             _restore_legacy_search_mechanics(runtime_options)
@@ -488,6 +488,7 @@ class NexusRuntime:
                 observer=observer,
                 offspring_verifier=offspring_verifier,
                 adaptive_state=restored.get("adaptive_state") or {},
+                elo_state=restored.get("elo") or {},
                 verification_plan=verification_plan,
                 fabric_state=restored.get("fabric") or {},
                 provided_context=provided_context,

@@ -410,5 +410,5 @@ def test_runtime_resume_rejects_tampered_persisted_generation_plan(tmp_path) -> 
     checkpoint["budget_history"][-1]["generation_plan"]["completed_stage_ops"] = ["rank"]
     checkpoint_path.write_text(json.dumps(checkpoint), encoding="utf-8")
 
-    with pytest.raises(GenerationPlanError, match="missing completed prerequisite"):
+    with pytest.raises(ValueError, match=r"checkpoint\.json.*expected sha256=.*actual sha256="):
         NexusRuntime(output_dir=tmp_path).resume_from_checkpoint(max_rounds=2)

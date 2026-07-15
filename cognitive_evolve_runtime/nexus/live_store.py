@@ -82,6 +82,7 @@ class LiveNexusStore:
         progress_event = dict(update.get("progress_event") or {})
         budget_history = [dict(item) for item in update.get("budget_history", []) if isinstance(item, dict)]
         adaptive_state = dict(update.get("adaptive_state") or {}) if isinstance(update.get("adaptive_state"), dict) else {}
+        elo_state = dict(update.get("elo") or {}) if isinstance(update.get("elo"), dict) else {}
         fabric_state = dict(update.get("fabric") or {}) if isinstance(update.get("fabric"), dict) else {}
         runtime_options = dict(update.get("runtime_options") or self.runtime_options) if isinstance(update.get("runtime_options") or self.runtime_options, dict) else {}
         policy_metadata = coerce_dict(getattr(policy, "metadata", None))
@@ -130,6 +131,7 @@ class LiveNexusStore:
                 budget_history=budget_history,
                 budget=budget_payload,
                 adaptive_state=adaptive_state,
+                elo=elo_state,
                 fabric=fabric_state,
                 search_kernel=search_kernel_state,
                 runtime_options=runtime_options,
