@@ -27,6 +27,7 @@ from cognitive_evolve_runtime.outcomes.runtime_bridge import (
     latent_completion_override,
 )
 from cognitive_evolve_runtime.nexus._shared import MODEL_BOUNDARY_ERRORS
+from cognitive_evolve_runtime.nexus.stop_reasons import normalize_external_review_stop_reason
 from cognitive_evolve_runtime.llm.retry import provider_error_category
 
 from .budget import EvolutionBudget, EvolutionLoopResult
@@ -487,8 +488,16 @@ def _replay_certificate_for_final_state(*, synthesis: SynthesizedResult, final_c
     measured_strength = measured_strength_from_result(verification_result)
     honesty_measurements = metadata.get("honesty_measurements") if isinstance(metadata.get("honesty_measurements"), dict) else None
     evidence_hash = "evidence-" + stable_hash({"final_certificate": final_certificate, "latent_replay_audit": latent_replay_audit, "verification_result": result_payload})[:16]
+    closure_certificate = synthesis.closure_certificate if isinstance(synthesis.closure_certificate, dict) else {}
+    checkpoint_stop_reason = normalize_external_review_stop_reason(
+        closure_certificate.get("stop_reason") or final_certificate.get("stop_reason")
+    )
+    terminal_checkpoint = bool(checkpoint_stop_reason)
     return {
-        "scope": "verifier_on_frozen_artifact_only",
+        "scope": "verifier_on_frozen_artifact_only" if terminal_checkpoint else "continued_evolution_not_frozen_replay",
+        "checkpoint_resume_semantics": "terminal_checkpoint_reads_existing_result" if terminal_checkpoint else "non_terminal_checkpoint_continues_evolution",
+        "checkpoint_stop_reason": checkpoint_stop_reason,
+        "continuation_may_call_model": not terminal_checkpoint,
         "llm_generation_replayable": False,
         "candidate_id": str(getattr(candidate, "id", "") or ""),
         "frozen_artifact_hash": frozen_hash,
@@ -499,7 +508,11 @@ def _replay_certificate_for_final_state(*, synthesis: SynthesizedResult, final_c
         "verification_cache_key": str(metadata.get("cache_key") or ""),
         "tool_versions": {},
         "evidence_bundle_hash": evidence_hash,
-        "replay_command": "cogev attack --resume <out-dir> --budget <compute>  # replays verifier state on frozen artifacts only",
+        "replay_command": (
+            "cogev attack --resume <out-dir> --budget <compute>  # terminal checkpoint reads persisted run-result.json; no evolution/model replay"
+            if terminal_checkpoint
+            else "cogev attack --resume <out-dir> --budget <compute>  # non-terminal checkpoint continues evolution and may call the model; this is not frozen replay"
+        ),
         "verifier_seed": 0,
     }
 

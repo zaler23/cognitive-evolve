@@ -20,7 +20,7 @@ CognitiveEvolve configuration is loaded through the runtime configuration layer 
 | `COGEV_NEXUS_PROMPT_MAX_CHARS` | Requested ordinary Nexus prompt-view size; defaults to `250000` |
 | `COGEV_NEXUS_LONG_CONTEXT_MAX_CHARS` | Requested long-context Nexus prompt-view size; defaults to `500000` |
 | `COGEV_LLM_MAX_PROMPT_CHARS` | Optional provider-facing hard cap; `0` leaves transport uncapped, while a positive value may narrow either Nexus prompt view |
-| `COGEV_OFFSPRING_PARALLEL_MODE` | Reproduction transport: `slot` (new-run default) or `single_batch` (explicit compatibility mode) |
+| `COGEV_OFFSPRING_PARALLEL_MODE` | Reproduction transport: `slot` (new-run default, one model call per allocated slot) or `single_batch` (one call for the complete slot manifest) |
 | `COGEV_PERSISTENCE_MODE` | Durable observer mode: `async_full` (new-run default) or `sync_full`; both retain full crash-atomic persistence |
 | `COGEV_API_MAX_REQUEST_BYTES` | Maximum accepted `/v1/*` request body size |
 | `COGEV_API_RATE_LIMIT_PER_MINUTE` | Per service-key/client local API request limit; `0` disables |

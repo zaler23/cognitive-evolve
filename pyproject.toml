@@ -61,7 +61,7 @@ runtime_authority = "nexus"
 alternate_runtime_backends = []
 external_integration_boundary = "adapters_only_no_alternate_runtime"
 llm_required = true
-no_llm_fallback_allowed = true
+no_llm_fallback_allowed = false # Provider failures may use recorded, auditable local degradation; silent fallback is forbidden.
 required_external_backends = ["llm"]
 
 [project.scripts]

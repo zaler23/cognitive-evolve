@@ -146,9 +146,11 @@ event reward so fan-out does not multiply evidence.
 
 Each slot binds one runtime-generated slot ID, lineage root, primary parent, and
 semantic directive. Every model-backed round sends all allocated slots in one
-runtime-authored lineage envelope and makes one offspring-generation call; the
-model chooses the concrete mutation mechanism. Deterministic mutation planning
-exists only for explicit offline operation where `model is None`.
+runtime-authored lineage envelope. The default `slot` mode makes one
+offspring-generation call per allocated slot; explicit `single_batch` mode makes
+one call for the complete slot manifest. The normal model-backed path bypasses
+mutation planning. Deterministic mutation planning exists only for explicit
+offline operation where `model is None`, as a compatibility path.
 
 Initial seeds are search instructions, not proof of completion. Synthesis
 returns reviewable best-current answer material when available. Producer-owned
@@ -171,7 +173,7 @@ Model tiers select adaptive internal search policy:
 - `deep`, `ultra`, and `exhaustive` increase minimum stop depth, safety window, and branch factor, while candidate width is derived from policy diversity or explicit operator floors.
 - `completion_status=completed` is returned when the safety checkpoint yields answer material; explicit interruption/quota/operator continuation remains separate metadata.
 
-For API calls, Nexus uses `StructuredModelAdapter.from_configured_llm()` unless a caller injects a model adapter. This means objective-contract generation, policy generation, seed population, relative ranking, diagnosis, policy update, offspring generation, and final synthesis can all be LLM-backed. Model-backed reproduction uses the single runtime lineage envelope above rather than a separate planning call. Deterministic seed/ranking logic is reserved for hermetic tests and direct offline calls with no configured adapter.
+For API calls, Nexus uses `StructuredModelAdapter.from_configured_llm()` unless a caller injects a model adapter. This means objective-contract generation, policy generation, seed population, relative ranking, diagnosis, policy update, offspring generation, and final synthesis can all be LLM-backed. Model-backed reproduction uses the single runtime lineage envelope above rather than a separate planning call; its default slot transport still makes one offspring-generation call per allocated slot. Deterministic seed/ranking logic and mutation planning are reserved for hermetic tests and direct offline calls with no configured adapter.
 
 ## LLM provider boundary
 

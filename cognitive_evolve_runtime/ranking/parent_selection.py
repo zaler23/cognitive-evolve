@@ -174,8 +174,15 @@ class ParentSelector:
     ) -> list[CandidateGenome]:
         viable = budget_eligible_candidates(population)
         target = max(0, limit)
-        round_index = _int(coerce_dict(eligibility_policy).get("current_round"), default=0)
-        selection_pressure = coerce_dict(coerce_dict(eligibility_policy).get("selection_pressure"))
+        eligibility = coerce_dict(eligibility_policy)
+        round_index = _int(eligibility.get("current_round"), default=0)
+        selection_pressure = coerce_dict(eligibility.get("selection_pressure"))
+        frontier_pressure = eligibility.get("frontier_exploration_pressure")
+        if isinstance(frontier_pressure, Mapping):
+            frontier_pressure = frontier_pressure.get("frontier_exploration_pressure")
+        if frontier_pressure is not None:
+            selection_pressure = dict(selection_pressure)
+            selection_pressure["frontier_exploration_pressure"] = frontier_pressure
         pressure_adjustments = {
             candidate.id: _selection_pressure_adjustment(candidate, selection_pressure)
             for candidate in viable
@@ -408,6 +415,12 @@ def _selection_pressure_adjustment(candidate: CandidateGenome, pressure: dict[st
     if family_terms.intersection(under | prematurely_culled):
         adjustment += under_bonus
         _selection_pressure_metadata(candidate)["under_explored_bonus"] = sorted(family_terms.intersection(under | prematurely_culled))
+    frontier_pressure = _bounded_float(data.get("frontier_exploration_pressure"), default=0.0)
+    frontier_score = _bounded_float(candidate.multihead_scores.get("frontier_score"), default=0.0)
+    if frontier_pressure and frontier_score:
+        bonus = frontier_pressure * frontier_score
+        adjustment += bonus
+        _selection_pressure_metadata(candidate)["frontier_exploration_bonus"] = bonus
     return adjustment
 
 

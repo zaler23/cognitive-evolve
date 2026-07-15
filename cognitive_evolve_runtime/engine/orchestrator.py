@@ -83,6 +83,8 @@ class EngineOrchestrator:
         explicit = context.get("model_adapter") or context.get("nexus_model")
         if explicit is not None:
             return explicit
+        if context.get("offline") is True:
+            return None
         if _is_api_request(context) or _truthy(os.environ.get("COGEV_NEXUS_USE_CONFIGURED_LLM")):
             try:
                 return StructuredModelAdapter.from_configured_llm()
@@ -90,7 +92,10 @@ class EngineOrchestrator:
                 raise
             except Exception as exc:  # keep API failures explicit; no deterministic silent fallback.
                 raise RuntimeError(f"failed to configure Nexus LLM adapter: {exc}") from exc
-        return None
+        raise LLMConfigurationError(
+            "Nexus model configuration required; provide a model adapter or set context['offline']=True "
+            "for an explicit deterministic local run."
+        )
 
 
 def _is_api_request(context: dict[str, Any]) -> bool:
