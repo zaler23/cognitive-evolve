@@ -75,6 +75,7 @@ def resume_evolution_budget(*, checkpoint_round: Any, checkpoint_max_rounds: Any
         adaptive=adaptive_resume,
         round_safety_limit=target_rounds if adaptive_resume else max(0, int(budget_data.get("round_safety_limit") or target_rounds)),
         completion_requires_stop_signal=bool(budget_data.get("completion_requires_stop_signal")),
+        search_phase=str(budget_data.get("search_phase") or "explore"),
     )
 
 

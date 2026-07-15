@@ -151,7 +151,11 @@ class ParentSelector:
         limit: int = 2,
         eligibility_policy: dict[str, object] | None = None,
         advisory_features: Mapping[str, Any] | None = None,
+        search_phase: str | None = None,
     ) -> list[CandidateGenome]:
+        phase = str(search_phase or "exit_sweep").strip().lower()
+        if phase not in {"explore", "exit_sweep"}:
+            raise ValueError("search_phase must be explore or exit_sweep")
         viable = budget_eligible_candidates(population)
         target = max(0, limit)
         eligibility = coerce_dict(eligibility_policy)
@@ -200,7 +204,7 @@ class ParentSelector:
         by_value = sorted(
             viable,
             key=lambda candidate: (
-                *evaluator_selection_key(candidate)[:2],
+                *_phase_selection_tier(candidate, phase),
                 _order(candidate, floor=-1.0),
                 base_values.get(candidate.id, -1.0),
                 candidate.id,
@@ -210,7 +214,11 @@ class ParentSelector:
         # Advisory features are never eligibility gates: they may reorder viable
         # parents, but the >=0 reproductive threshold remains the original base
         # runtime value.
-        ranked = [candidate for candidate in by_value if base_values.get(candidate.id, -1.0) >= 0.0]
+        ranked = [
+            candidate
+            for candidate in by_value
+            if base_values.get(candidate.id, -1.0) >= 0.0
+        ]
         primary = [candidate for candidate in ranked if CandidateFate.normalize(candidate.current_fate) in {CandidateFate.ACTIVE.value, CandidateFate.ELITE.value}]
         incubating = [
             candidate
@@ -231,21 +239,25 @@ class ParentSelector:
             )
             if resurrection_candidates:
                 repair_slots = max(repair_slots, min(resurrection_quota(target, pool_size=len(resurrection_candidates)), len(resurrection_candidates), target))
+            exploratory_repair = [candidate for candidate in incubating if _repair_target_candidate(candidate)]
+            if phase == "explore" and exploratory_repair:
+                repair_slots = max(repair_slots, 1)
             selected, trace = select_diverse(
                 primary,
                 limit=max(0, target - repair_slots),
                 quality_fn=lambda candidate: _order(candidate, floor=0.0),
-                tier_fn=lambda candidate: evaluator_selection_key(candidate)[:2],
+                tier_fn=lambda candidate: _phase_selection_tier(candidate, phase),
                 archives=archives,
                 advisory_features=advisory_features,
                 eligibility_policy=eligibility_policy,
             )
             if len(selected) < target and incubating:
+                repair_pool = [*exploratory_repair, *[candidate for candidate in incubating if candidate not in exploratory_repair]] if phase == "explore" else incubating
                 repair_selected, repair_trace = select_diverse(
-                    incubating,
+                    repair_pool,
                     limit=max(0, target - len(selected)),
                     quality_fn=lambda candidate: _order(candidate, floor=0.0),
-                    tier_fn=lambda candidate: evaluator_selection_key(candidate)[:2],
+                    tier_fn=lambda candidate: _phase_selection_tier(candidate, phase),
                     archives=archives,
                     advisory_features=advisory_features,
                     eligibility_policy=eligibility_policy,
@@ -263,7 +275,7 @@ class ParentSelector:
                 incubating,
                 limit=target,
                 quality_fn=lambda candidate: _order(candidate, floor=0.0),
-                tier_fn=lambda candidate: evaluator_selection_key(candidate)[:2],
+                tier_fn=lambda candidate: _phase_selection_tier(candidate, phase),
                 archives=archives,
                 advisory_features=advisory_features,
                 eligibility_policy=eligibility_policy,
@@ -289,7 +301,7 @@ class ParentSelector:
                 primary_floor,
                 limit=target,
                 quality_fn=lambda candidate: _order(candidate, floor=0.0),
-                tier_fn=lambda candidate: evaluator_selection_key(candidate)[:2],
+                tier_fn=lambda candidate: _phase_selection_tier(candidate, phase),
                 archives=archives,
                 advisory_features=advisory_features,
                 eligibility_policy=eligibility_policy,
@@ -311,7 +323,7 @@ class ParentSelector:
             repairable,
             limit=target,
             quality_fn=lambda candidate: _order(candidate, floor=0.0),
-            tier_fn=lambda candidate: evaluator_selection_key(candidate)[:2],
+            tier_fn=lambda candidate: _phase_selection_tier(candidate, phase),
             archives=archives,
             advisory_features=advisory_features,
             eligibility_policy=eligibility_policy,
@@ -366,6 +378,13 @@ def _repair_target_candidate(candidate: CandidateGenome) -> bool:
         return True
     guidance = metadata.get("failure_micro_guidance")
     return bool(guidance)
+
+
+def _phase_selection_tier(candidate: CandidateGenome, search_phase: str) -> tuple[int, float] | tuple[int, int, float]:
+    evaluator_tier, evaluator_score, _candidate_id = evaluator_selection_key(candidate)
+    if search_phase == "explore":
+        return int(_repair_target_candidate(candidate)), evaluator_tier, evaluator_score
+    return evaluator_tier, evaluator_score
 
 
 def _stage_parent_eligible(candidate: CandidateGenome) -> bool:

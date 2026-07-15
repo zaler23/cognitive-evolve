@@ -16,6 +16,9 @@ from cognitive_evolve_runtime.persistence.checkpoint_profile import (
     checkpoint_profile_from_env,
 )
 
+SEARCH_PHASES = frozenset({"explore", "exit_sweep"})
+
+
 @dataclass
 class EvolutionBudget:
     max_rounds: int = 1
@@ -31,6 +34,12 @@ class EvolutionBudget:
     round_safety_limit: int = 0
     completion_requires_stop_signal: bool = False
     completion_status: str = "running"
+    search_phase: str = "explore"
+
+    def __post_init__(self) -> None:
+        self.search_phase = str(self.search_phase or "explore").strip().lower()
+        if self.search_phase not in SEARCH_PHASES:
+            raise ValueError(f"search_phase must be one of: {', '.join(sorted(SEARCH_PHASES))}")
 
     def remaining(self) -> bool:
         return self.current_round < self.round_limit
@@ -71,6 +80,7 @@ class EvolutionLoopResult:
     graded_output: dict[str, Any] = field(default_factory=dict)
     fabric_state: dict[str, Any] = field(default_factory=dict)
     cost_ledger: dict[str, Any] = field(default_factory=dict)
+    search_phase: str = "explore"
 
     def to_dict(self) -> dict[str, Any]:
         profile = checkpoint_profile_from_env()
@@ -112,8 +122,9 @@ class EvolutionLoopResult:
             "graded_output": self.graded_output,
             "fabric_state": self.fabric_state,
             "cost_ledger": self.cost_ledger,
+            "search_phase": self.search_phase,
             "search_kernel_summary": search_kernel_summary,
         }
 
 
-__all__ = ["EvolutionBudget", "EvolutionLoopResult"]
+__all__ = ["EvolutionBudget", "EvolutionLoopResult", "SEARCH_PHASES"]

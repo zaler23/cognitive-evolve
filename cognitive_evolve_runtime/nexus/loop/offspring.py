@@ -407,18 +407,30 @@ def _slot_sampling_policy(policy: EvolutionPolicy, slot: dict[str, Any]) -> LLMR
     configured = (policy.metadata or {}).get("slot_sampling_profiles")
     if not isinstance(configured, dict):
         return None
-    profiles = configured.get(str(slot.get("intent") or ""))
+    phase = str((policy.metadata or {}).get("search_phase") or "explore").strip().lower()
+    phase_profiles = configured.get(phase)
+    phase_aware = isinstance(phase_profiles, dict)
+    available = phase_profiles if phase_aware else configured
+    intent = str(slot.get("intent") or "")
+    profiles = available.get(intent) if isinstance(available, dict) else None
+    profile_key = intent
+    if profiles in (None, []) and isinstance(available, dict):
+        profiles = available.get("default")
+        profile_key = "default"
     if profiles in (None, []):
         return None
     if not isinstance(profiles, list):
         raise ValueError("slot_sampling_profiles intent value must be a list")
-    profile = profiles[int(slot.get("variation_index") or 0) % len(profiles)]
+    profile_index = int(slot.get("variation_index") or 0) % len(profiles)
+    profile = profiles[profile_index]
     if not isinstance(profile, dict):
         raise ValueError("slot_sampling_profiles entries must be objects")
     return LLMRequestPolicy(
         temperature=float(profile["temperature"]) if profile.get("temperature") is not None else None,
         top_p=float(profile["top_p"]) if profile.get("top_p") is not None else None,
         seed=int(profile["seed"]) if profile.get("seed") is not None else None,
+        search_phase=phase,
+        sampling_profile_id=f"{phase}:{profile_key}:{profile_index}",
     )
 
 

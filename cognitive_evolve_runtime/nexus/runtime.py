@@ -573,13 +573,15 @@ def _enable_project_latent_exploration(contract: NexusObjectiveContract) -> None
 def _apply_search_mechanics(policy: EvolutionPolicy, runtime_options: dict[str, Any]) -> None:
     metadata = policy.metadata if isinstance(policy.metadata, dict) else {}
     metadata["offspring_parallel_mode"] = str(runtime_options["search.offspring_parallel_mode"])
+    metadata["slot_sampling_profiles"] = dict(runtime_options["search.slot_sampling_profiles"])
     policy.metadata = metadata
 
 
 def _restore_legacy_search_mechanics(runtime_options: dict[str, Any]) -> None:
     missing_offspring_mode = "search.offspring_parallel_mode" not in runtime_options
     missing_persistence_mode = "persistence.mode" not in runtime_options
-    if not (missing_offspring_mode or missing_persistence_mode):
+    missing_sampling_profiles = "search.slot_sampling_profiles" not in runtime_options
+    if not (missing_offspring_mode or missing_persistence_mode or missing_sampling_profiles):
         return
     sources = dict(runtime_options.get("_sources") or {})
     if missing_offspring_mode:
@@ -588,6 +590,9 @@ def _restore_legacy_search_mechanics(runtime_options: dict[str, Any]) -> None:
     if missing_persistence_mode:
         runtime_options["persistence.mode"] = "sync_full"
         sources["persistence.mode"] = "legacy_checkpoint_default"
+    if missing_sampling_profiles:
+        runtime_options["search.slot_sampling_profiles"] = resolve_runtime_options(environment={})["search.slot_sampling_profiles"]
+        sources["search.slot_sampling_profiles"] = "legacy_checkpoint_default"
     runtime_options["legacy_mechanics_restored"] = True
     runtime_options["_sources"] = sources
 

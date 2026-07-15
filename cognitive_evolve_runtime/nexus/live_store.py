@@ -111,6 +111,9 @@ class LiveNexusStore:
         budget_payload = dict(self.budget)
         budget_payload["current_round"] = round_index
         budget_payload["max_rounds"] = self.max_rounds
+        progress_metadata = progress_event.get("metadata") if isinstance(progress_event.get("metadata"), dict) else {}
+        if progress_metadata.get("search_phase") in {"explore", "exit_sweep"}:
+            budget_payload["search_phase"] = progress_metadata["search_phase"]
         if progress_event.get("max_rounds"):
             budget_payload["round_limit"] = int(progress_event.get("max_rounds") or self.max_rounds)
         allow_round_repair = phase == "error_checkpoint"

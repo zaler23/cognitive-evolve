@@ -44,7 +44,7 @@ from cognitive_evolve_runtime.theory import build_population_representation
 from cognitive_evolve_runtime.nexus.v23_theory_config import CACrossoverConfig, V23TheoryRuntimeConfig
 from cognitive_evolve_runtime.ranking.relative_rater import RelativeRankingResult
 
-from .offspring import _generate_offspring, _plan_mutations
+from .offspring import _generate_offspring, _plan_mutations, _slot_sampling_policy
 from .policy_directives import _attach_policy_directives_to_plans, _critique_actions
 from .stage_helpers import _eligibility_policy, _theory_config_from_policy
 
@@ -132,6 +132,23 @@ class ReproduceStage:
         generation_policy.metadata["productive_branch_allocation"] = branch_allocation.to_dict()
         generation_policy.metadata["slot_islands"] = dict(island_allocation.slot_islands)
         generation_policy.metadata["requested_candidate_count"] = len(branch_allocation.slots)
+        slot_sampling_profiles = []
+        for slot in branch_allocation.slots:
+            sampling = _slot_sampling_policy(generation_policy, slot.to_dict())
+            if sampling is not None:
+                slot_sampling_profiles.append(
+                    {
+                        "slot_id": slot.slot_id,
+                        "intent": slot.intent,
+                        "search_phase": sampling.search_phase,
+                        "sampling_profile_id": sampling.sampling_profile_id,
+                        "temperature": sampling.temperature,
+                        "top_p": sampling.top_p,
+                        "seed": sampling.seed,
+                    }
+                )
+        if plan is not None and slot_sampling_profiles:
+            self.last_generation_plan["slot_sampling_profiles"] = slot_sampling_profiles
         model_backed_path = self.model is not None
         evaluator_led = self._evaluator_led()
         actions = action_palette_for_round(
@@ -443,11 +460,25 @@ class ReproduceStage:
         def _with_incumbent(selected: list[CandidateGenome]) -> list[CandidateGenome]:
             if preliminary_incumbent is None or structurally_blocked(preliminary_incumbent):
                 return selected[:limit]
-            ordered = [preliminary_incumbent, *selected]
+            ordered = (
+                [*selected, preliminary_incumbent]
+                if self.budget.search_phase == "explore"
+                else [preliminary_incumbent, *selected]
+            )
             return list({candidate.id: candidate for candidate in ordered}.values())[:limit]
 
         advisory_features = self._combined_advisory_features(policy=policy, candidates=population.candidates, current_round=current_round)
-        parents = self.selector.select(population.candidates, archives, limit=limit, eligibility_policy=_eligibility_policy(policy), advisory_features=advisory_features)
+        selection_candidates = list(population.candidates)
+        if self.budget.search_phase == "explore" and repair_parent_candidates:
+            selection_candidates = list({candidate.id: candidate for candidate in [*selection_candidates, *repair_parent_candidates]}.values())
+        parents = self.selector.select(
+            selection_candidates,
+            archives,
+            limit=limit,
+            eligibility_policy=_eligibility_policy(policy),
+            advisory_features=advisory_features,
+            search_phase=self.budget.search_phase,
+        )
         if parents:
             return _with_incumbent(parents)
         parents = ranked_repair_fallback_parents(population.candidates, rankings=rankings, diagnosis=diagnosis, limit=limit, current_round=current_round)

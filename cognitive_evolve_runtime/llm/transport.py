@@ -64,7 +64,7 @@ def max_tokens_for_request(request_type: str, request_policy: LLMRequestPolicy |
 def _resolved_sampling(
     request_policy: LLMRequestPolicy | None,
     logical_context: tuple[str, str, LLMRequestPolicy | None] | None,
-) -> dict[str, float | int | None]:
+) -> dict[str, Any]:
     call_policy = logical_context[2] if logical_context is not None else None
 
     def _value(name: str) -> Any:
@@ -83,11 +83,18 @@ def _resolved_sampling(
                 seed = int(configured_seed)
             except ValueError as exc:
                 raise LLMConfigurationError("COGEV_LLM_SEED must be an integer") from exc
-    return {
+    resolved: dict[str, Any] = {
         "temperature": float(temperature) if temperature is not None else env_float(LLM_TEMPERATURE_ENV, 0.2),
         "top_p": float(top_p) if top_p is not None else None,
         "seed": int(seed) if seed is not None else None,
     }
+    search_phase = _value("search_phase")
+    sampling_profile_id = _value("sampling_profile_id")
+    if search_phase is not None:
+        resolved["search_phase"] = str(search_phase)
+    if sampling_profile_id is not None:
+        resolved["sampling_profile_id"] = str(sampling_profile_id)
+    return resolved
 
 
 
@@ -249,6 +256,8 @@ def _budgeted_llm_json(request_type: str, payload: dict[str, Any], *, system: st
             "temperature": resolved_temperature,
             "top_p": resolved_top_p,
             "seed": resolved_seed,
+            "search_phase": resolved_sampling.get("search_phase"),
+            "sampling_profile_id": resolved_sampling.get("sampling_profile_id"),
             "reasoning_effort": call_identity.reasoning_effort,
             "max_tokens": resolved_max_tokens,
             "request_policy": asdict(request_policy) if request_policy is not None else {},
