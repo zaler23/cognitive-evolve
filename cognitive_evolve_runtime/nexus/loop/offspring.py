@@ -781,8 +781,9 @@ def _policy_for_generation_batch(
             ],
             f"{kind}_instruction": (
                 "Produce alternatives that land in new descriptor cells and avoid accepted signatures; do not merely paraphrase. "
-                "For a Transfer or cross_domain_transfer candidate, include metadata.transfer_receipt with source_relations, "
-                "target_relations, element-level mapping, preserved_invariant, predicted_break_condition, probe_ref, and artifact_hash."
+                "For a Transfer or cross_domain_transfer candidate, include metadata.transfer_receipt with source_relations and "
+                "target_relations as JSON string arrays of short relation descriptions, not single prose strings, mapping as a JSON "
+                "array of {source,target} objects, preserved_invariant, predicted_break_condition, probe_ref, and artifact_hash."
             ),
             "search_kernel_skills": search_skill_payload(limit=4),
         }

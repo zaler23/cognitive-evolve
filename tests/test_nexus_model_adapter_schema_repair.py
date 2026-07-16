@@ -616,7 +616,29 @@ def test_diagnosis_adapter_repairs_enum_without_cutting_internal_custom_signals(
 
 def test_offspring_schema_repairs_structured_fields_from_patch_headers() -> None:
     def caller(request_type: str, payload: dict[str, Any], schema: dict[str, Any]) -> dict[str, Any]:
-        assert "touched_files" in schema["properties"]["offspring"]["items"]["required"]
+        candidate_schema = schema["properties"]["offspring"]["items"]
+        assert "touched_files" in candidate_schema["required"]
+        metadata_schema = candidate_schema["properties"]["metadata"]
+        assert {"transfer_receipt", "blend_receipt"} <= metadata_schema["properties"].keys()
+        transfer_receipt = metadata_schema["properties"]["transfer_receipt"]
+        blend_receipt = metadata_schema["properties"]["blend_receipt"]
+        assert all(
+            transfer_receipt["properties"][field]["type"] == "array"
+            for field in ("source_relations", "target_relations", "mapping")
+        )
+        assert all(
+            blend_receipt["properties"][field]["type"] == "array"
+            for field in (
+                "generic_space_mapping",
+                "retained_from_primary",
+                "borrowed_from_donor",
+                "structural_correspondence",
+                "emergent_delta",
+                "incompatibilities",
+                "unresolved_obligations",
+            )
+        )
+        assert {"source", "target"} <= set(transfer_receipt["properties"]["mapping"]["items"]["required"])
         return {
             "offspring": [
                 {
