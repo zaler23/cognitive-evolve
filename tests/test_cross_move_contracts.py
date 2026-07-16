@@ -19,7 +19,7 @@ from cognitive_evolve_runtime.candidates.project_candidate import PatchOperation
 from cognitive_evolve_runtime.nexus.diagnosis import SearchDiagnosis
 from cognitive_evolve_runtime.nexus.loop.controller import EvolutionLoopController
 from cognitive_evolve_runtime.nexus.loop.offspring import _generate_offspring, _plan_mutations
-from cognitive_evolve_runtime.nexus.loop.reproduce_stage import _role_crossover_slots
+from cognitive_evolve_runtime.nexus.loop.reproduce_stage import _crossover_slot_quota, _role_crossover_slots
 from cognitive_evolve_runtime.nexus.model_adapter import ModelResponseSchemaError
 from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy
 from cognitive_evolve_runtime.nexus.receipts import DONOR_ROLES, record_reproduction_receipts
@@ -297,6 +297,25 @@ def test_stagnation_policy_quota_can_role_three_crossover_slots_without_allocato
     assert {item["donor_role"] for item in assigned.values()} == DONOR_ROLES
     assert all(item["primary_parent_id"] != item["donor_parent_id"] for item in assigned.values())
     assert all(set(item["required_contribution_map"]) >= {"generic_space_mapping", "borrowed_from_donor"} for item in assigned.values())
+
+
+def test_crossover_slot_quota_env_overrides_metadata(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("COGEV_CROSSOVER_SLOT_QUOTA", "5")
+
+    assert _crossover_slot_quota({"crossover_slot_quota": 2}, stagnation_detected=False) == 5
+
+
+def test_crossover_slot_quota_uses_metadata_without_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("COGEV_CROSSOVER_SLOT_QUOTA", raising=False)
+
+    assert _crossover_slot_quota({"crossover_slot_quota": 2}, stagnation_detected=False) == 2
+
+
+def test_crossover_slot_quota_ignores_invalid_env_values(monkeypatch: pytest.MonkeyPatch) -> None:
+    for value in ("not-an-integer", "-1"):
+        monkeypatch.setenv("COGEV_CROSSOVER_SLOT_QUOTA", value)
+
+        assert _crossover_slot_quota({"crossover_slot_quota": 2}, stagnation_detected=False) == 2
 
 
 def _dict_parent() -> CandidateGenome:

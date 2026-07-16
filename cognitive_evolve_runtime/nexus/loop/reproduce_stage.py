@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import copy
 import math
+import os
 from typing import Any, Callable
 
 from cognitive_evolve_runtime.archives.quality_diversity import candidate_bin_key
@@ -66,6 +67,25 @@ _REQUIRED_CONTRIBUTION_MAP = {
     "incompatibilities": "mapping conflicts",
     "unresolved_obligations": "open merge obligations",
 }
+
+
+def _crossover_slot_quota(policy_metadata: dict[str, Any], *, stagnation_detected: bool) -> int:
+    env_value = os.environ.get("COGEV_CROSSOVER_SLOT_QUOTA")
+    if env_value is not None:
+        try:
+            env_quota = int(env_value)
+        except ValueError:
+            pass
+        else:
+            if env_quota >= 0:
+                return env_quota
+
+    configured_quota = policy_metadata.get("crossover_slot_quota")
+    return (
+        max(0, int(configured_quota))
+        if configured_quota is not None
+        else (1 if stagnation_detected else 0)
+    )
 
 
 class ReproduceStage:
@@ -190,11 +210,9 @@ class ReproduceStage:
         if latent_actions:
             actions = list(dict.fromkeys(latent_actions + actions))
         policy_metadata = generation_policy.metadata if isinstance(generation_policy.metadata, dict) else {}
-        configured_quota = policy_metadata.get("crossover_slot_quota")
-        crossover_quota = (
-            max(0, int(configured_quota))
-            if configured_quota is not None
-            else (1 if diagnosis.stagnation_detected else 0)
+        crossover_quota = _crossover_slot_quota(
+            policy_metadata,
+            stagnation_detected=diagnosis.stagnation_detected,
         )
         crossover_slots = _role_crossover_slots(
             branch_allocation,
@@ -429,11 +447,9 @@ class ReproduceStage:
         action_palette = list(dict.fromkeys(str(action) for action in actions if str(action).strip()))
         if crossover_slots is None:
             policy_metadata = policy.metadata if isinstance(policy.metadata, dict) else {}
-            configured_quota = policy_metadata.get("crossover_slot_quota")
-            crossover_quota = (
-                max(0, int(configured_quota))
-                if configured_quota is not None
-                else (1 if diagnosis.stagnation_detected else 0)
+            crossover_quota = _crossover_slot_quota(
+                policy_metadata,
+                stagnation_detected=diagnosis.stagnation_detected,
             )
             crossover_slots = _role_crossover_slots(
                 branch_allocation,
