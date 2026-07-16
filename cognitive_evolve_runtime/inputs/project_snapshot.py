@@ -49,6 +49,8 @@ SENSITIVE_PATTERNS = {
     "*secret*",
     "*credential*",
     "*token*",
+    "*key*.json",
+    "*keys*",
 }
 
 

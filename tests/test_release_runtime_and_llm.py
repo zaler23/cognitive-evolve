@@ -152,6 +152,25 @@ def test_llm_fixture_json_budget_governor_and_reporting_paths(tmp_path: Path, mo
         llm_json("score_candidate", {}, system="x", schema_hint={})
 
 
+def test_fixture_missing_response_records_failed_call_ledger(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    fixture = tmp_path / "missing-response-fixture.json"
+    fixture.write_text(json.dumps({"responses": {}}), encoding="utf-8")
+    ledger = tmp_path / "llm-call-ledger.jsonl"
+    monkeypatch.setenv("COGEV_LLM_PROVIDER", "fixture")
+    monkeypatch.setenv("COGEV_LLM_FIXTURE", str(fixture))
+    monkeypatch.delenv("COGEV_LLM_BUDGET_USD", raising=False)
+
+    with llm_session(LLMSession(call_ledger_path=str(ledger), journal_dir=str(tmp_path / "llm"))):
+        with pytest.raises(LLMResponseError, match="Fixture has no response for request_type=missing_response"):
+            llm_json("missing_response", {}, system="Return JSON", schema_hint={})
+
+    rows = [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines()]
+    assert [row["status"] for row in rows] == ["started", "failed"]
+    assert rows[0]["call_id"] == rows[1]["call_id"]
+    assert rows[1]["request_type"] == "missing_response"
+    assert rows[1]["error"] == "Fixture has no response for request_type=missing_response"
+
+
 def test_llm_retry_error_classification_and_cli(monkeypatch: pytest.MonkeyPatch) -> None:
     class RateLimitError(RuntimeError):
         status_code = 429
@@ -215,7 +234,7 @@ def test_concurrent_calls_cannot_both_spend_the_same_budget_headroom(monkeypatch
     assert session.budget_reservation_usd == 0.0
 
 
-def test_budgeted_fanout_waits_instead_of_rejecting_ample_headroom(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_budgeted_fanout_calibrates_once_then_uses_reserved_parallel_headroom(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("COGEV_LLM_PROVIDER", "litellm")
     monkeypatch.setenv("COGEV_LLM_MODEL", "test/model")
     monkeypatch.setenv("COGEV_LLM_API_KEY", "test-key")
@@ -245,12 +264,12 @@ def test_budgeted_fanout_waits_instead_of_rejecting_ample_headroom(monkeypatch: 
     provider = Provider()
     session = LLMSession()
     with llm_session(session):
-        results = run_ordered_fanout([1, 2], lambda index: llm_json("unit_test", {"index": index}, system="Return JSON", schema_hint={}, provider=provider), max_workers=2)
+        results = run_ordered_fanout([1, 2, 3], lambda index: llm_json("unit_test", {"index": index}, system="Return JSON", schema_hint={}, provider=provider), max_workers=3)
 
-    assert [item["ok"] for item in results] == [True, True]
-    assert provider.calls == 2
-    assert max_active == 1
-    assert session.total_estimated_cost_usd() == 0.02
+    assert [item["ok"] for item in results] == [True, True, True]
+    assert provider.calls == 3
+    assert max_active > 1
+    assert session.total_estimated_cost_usd() == 0.03
 
 
 def test_budget_reservation_releases_after_provider_error_and_cancellation(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -26,6 +26,27 @@ def _candidate(candidate_id: str, *, answer: float = 0.5, novelty: float = 0.2) 
     )
 
 
+class PairwiseRankModel:
+    def __init__(self, preferences: list[dict[str, object]]) -> None:
+        self.preferences = preferences
+
+    def relative_rank(self, *, candidates: list[CandidateGenome], **_: object) -> dict[str, object]:
+        return {
+            "best_final_answer_id": candidates[0].id,
+            "strongest_mechanism_id": candidates[0].id,
+            "mutation_worthy_ids": [candidate.id for candidate in candidates],
+            "edge_value_ids": [],
+            "auxiliary_ids": [],
+            "dormant_ids": [],
+            "dominated_pairs": [],
+            "crossover_pairs": [],
+            "preserve_incomplete_ids": [],
+            "pairwise_preferences": self.preferences,
+            "multihead_observations": {},
+            "raw_notes": "model rank",
+        }
+
+
 def test_deterministic_relative_rater_emits_non_star_pairwise_preferences() -> None:
     candidates = [_candidate("a", answer=0.9), _candidate("b", answer=0.6), _candidate("c", answer=0.3)]
 
@@ -35,6 +56,42 @@ def test_deterministic_relative_rater_emits_non_star_pairwise_preferences() -> N
     assert ("a", "b", "answer_likelihood") in pairs
     assert ("b", "c", "answer_likelihood") in pairs
     assert ("a", "c", "answer_likelihood") not in pairs
+
+
+def test_relative_rater_drops_untrusted_pairwise_preferences_without_elo_effect() -> None:
+    candidates = [_candidate("A"), _candidate("B")]
+    preferences = [
+        {"winner": "PHANTOM", "loser": "A", "axis": "answer_likelihood", "weight": 1.0},
+        {"winner": "A", "loser": "A", "axis": "answer_likelihood", "weight": 1.0},
+        {"winner": "A", "loser": "B", "axis": "unknown", "weight": 1.0},
+        {"winner": "A", "loser": "B", "axis": "answer_likelihood", "weight": "heavy"},
+        {"winner": "A", "loser": "B", "axis": "answer_likelihood", "weight": float("nan")},
+        {"winner": "A", "loser": "B", "axis": "answer_likelihood", "weight": float("inf")},
+        {"winner": "A", "loser": "B", "axis": "answer_likelihood", "weight": -0.1},
+        {"winner": "A", "loser": "B", "axis": "answer_likelihood", "weight": 1.1},
+    ]
+
+    ranking = RelativeRater(model=PairwiseRankModel(preferences)).rank(candidates=candidates)
+    elo = MultiHeadElo()
+    elo.update_from_relative(ranking)
+
+    assert ranking.pairwise_preferences == []
+    assert "ranking_schema_repair:pairwise_preferences_dropped:8" in ranking.raw_notes
+    assert elo.ratings == {}
+    assert "PHANTOM" not in elo.ratings
+
+
+def test_relative_rater_keeps_valid_pairwise_preference_and_updates_elo() -> None:
+    candidates = [_candidate("A"), _candidate("B")]
+    preference = {"winner": "A", "loser": "B", "axis": "answer_likelihood", "weight": 1.0}
+
+    ranking = RelativeRater(model=PairwiseRankModel([preference])).rank(candidates=candidates)
+    elo = MultiHeadElo()
+    elo.update_from_relative(ranking)
+
+    assert ranking.pairwise_preferences == [preference]
+    assert elo.ratings["A"]["answer_likelihood"] == 1012.0
+    assert elo.ratings["B"]["answer_likelihood"] == 988.0
 
 
 def test_multihead_elo_attaches_reproductive_signal_to_candidates() -> None:

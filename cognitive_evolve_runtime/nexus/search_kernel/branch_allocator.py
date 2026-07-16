@@ -11,7 +11,9 @@ from dataclasses import asdict, dataclass, field
 from typing import Any, Iterable, Mapping
 
 from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome
+from cognitive_evolve_runtime.evaluators.evidence import evaluator_selection_key
 from cognitive_evolve_runtime.nexus._serde import coerce_dict, stable_hash
+from cognitive_evolve_runtime.nexus.receipts import transfer_credit_for_candidate
 from cognitive_evolve_runtime.nexus.search_kernel.fingerprints import (
     base_mechanism_family,
     candidate_phenotype_signature,
@@ -45,6 +47,7 @@ class BranchSlot:
     coverage_bonus: float = 0.0
     coverage_scale: float = 0.0
     allocation_score: float = 0.0
+    coverage_target: dict[str, str] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -56,6 +59,8 @@ class ProductiveBranchAllocation:
     arms: tuple[OperatorArmStats, ...]
     credit_summary: dict[str, int]
     observed_family_counts: dict[str, int] = field(default_factory=dict)
+    credited_transfer_artifact_hashes: tuple[str, ...] = ()
+    coverage_floor: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -72,6 +77,8 @@ class ProductiveBranchAllocation:
             ],
             "credit_summary": dict(self.credit_summary),
             "observed_family_counts": dict(self.observed_family_counts),
+            "credited_transfer_artifact_hashes": list(self.credited_transfer_artifact_hashes),
+            "coverage_floor": dict(self.coverage_floor),
         }
 
 
@@ -101,15 +108,17 @@ def productive_outcomes(
     candidates: Iterable[CandidateGenome],
     *,
     metric_directions: dict[str, str] | None = None,
+    credited_transfer_artifact_hashes: Iterable[str] = (),
 ) -> tuple[ProductiveOutcome, ...]:
     """Score candidates in causal order using post-evaluation observations."""
 
-    directions = {str(key): str(value) for key, value in (metric_directions or {}).items()}
+    selection_binding = _binding_from_metric_directions(metric_directions)
     ordered = sorted(_dedupe_candidates(candidates), key=_candidate_order)
     prior: list[CandidateGenome] = []
     seen_phenotypes: set[str] = set()
     seen_cells: set[str] = set()
     seen_resolved: set[str] = set()
+    credited_transfer_hashes = {str(item) for item in credited_transfer_artifact_hashes if str(item)}
     outcomes: list[ProductiveOutcome] = []
     start = 0
     while start < len(ordered):
@@ -147,8 +156,21 @@ def productive_outcomes(
                     "unbound": unbound,
                     "observed_failure": _observed_failure(candidate),
                     "patch_verified": _patch_state(candidate) == "applied" and verification == "passed",
+                    "transfer_credit": None,
                 }
             )
+        for fact in facts:
+            if (
+                not fact["duplicate"]
+                and not fact["terminal"]
+                and not fact["unbound"]
+                and not fact["observed_failure"]
+                and fact["verification"] != "failed"
+            ):
+                fact["transfer_credit"] = transfer_credit_for_candidate(
+                    fact["candidate"],
+                    credited_artifact_hashes=credited_transfer_hashes,
+                )
         eligible = [
             index
             for index, fact in enumerate(facts)
@@ -157,6 +179,7 @@ def productive_outcomes(
             and not fact["unbound"]
             and not fact["observed_failure"]
             and fact["verification"] != "failed"
+            and (fact["transfer_credit"] is None or fact["transfer_credit"].productive_credit)
         ]
         eligible_set = set(eligible)
         new_cell_groups: dict[str, list[int]] = {}
@@ -175,7 +198,7 @@ def productive_outcomes(
                 continue
             cell = str(facts[index]["cell"] or "")
             candidate = facts[index]["candidate"]
-            if cell and _same_cell_elite_improvement(candidate, prior, cell=cell, directions=directions):
+            if cell and _same_cell_elite_improvement(candidate, prior, cell=cell, binding=selection_binding):
                 improvement_groups.setdefault(cell, []).append(index)
         improvement_rewards = {
             index: 1.0 / len(indices)
@@ -245,6 +268,8 @@ def productive_outcomes(
             elif fact["terminal"] or fact["verification"] == "failed":
                 reasons.append("terminal_or_verification_failure")
                 risk = 1.0
+            elif fact["transfer_credit"] is not None and not fact["transfer_credit"].productive_credit:
+                reasons.append("transfer_" + fact["transfer_credit"].reason)
             elif index in new_cell_rewards:
                 reasons.append("new_grounded_outcome_cell")
                 reward = new_cell_rewards[index]
@@ -265,6 +290,12 @@ def productive_outcomes(
                 reward = probe_rewards[index]
             else:
                 reasons.append("no_grounded_productive_event")
+
+            if fact["transfer_credit"] is not None and fact["transfer_credit"].productive_credit:
+                if reasons == ["no_grounded_productive_event"]:
+                    reasons.clear()
+                reasons.append("transfer_invariant_probe_survived")
+                reward = max(0.5, reward)
 
             # Seeds establish baselines but are not reproduction pulls.
             if candidate.parent_ids:
@@ -303,10 +334,28 @@ def allocate_productive_branches(
     metric_directions: dict[str, str] | None = None,
     total_slots: int,
     observed_family_counts: Mapping[str, int] | None = None,
+    credited_transfer_artifact_hashes: Iterable[str] = (),
+    coverage_floor_targets: Iterable[Mapping[str, Any]] = (),
+    coverage_floor_slots: int = 0,
 ) -> ProductiveBranchAllocation:
     """Allocate real branch slots with lineage-root UCB and an exploration floor."""
 
     candidate_list = _dedupe_candidates(candidates)
+    floor_targets = [
+        {
+            "axis": str(target.get("axis") or "").strip(),
+            "family": str(target.get("family") or "").strip(),
+        }
+        for target in coverage_floor_targets
+        if isinstance(target, Mapping) and (target.get("axis") or target.get("family"))
+    ]
+    floor_limit = min(max(0, int(coverage_floor_slots)), len(floor_targets), max(0, total_slots))
+    floor_audit: dict[str, Any] = {
+        "configured_slots": max(0, int(coverage_floor_slots)),
+        "targets": floor_targets,
+        "reserved_slot_ids": [],
+        "effect": "ordinary_reproduction_slots_only_evaluator_authority_unchanged",
+    }
     family_counts = (
         {family: observed_family_counts[family] for family in sorted(observed_family_counts)}
         if observed_family_counts is not None
@@ -318,9 +367,16 @@ def allocate_productive_branches(
             arms=(),
             credit_summary={},
             observed_family_counts=family_counts,
+            coverage_floor=floor_audit,
         )
-    outcomes = productive_outcomes(candidate_list, metric_directions=metric_directions)
     history = [dict(item) for item in budget_history if isinstance(item, dict)]
+    historical_transfer_hashes = _historical_transfer_credit_hashes(history)
+    historical_transfer_hashes.update(str(item) for item in credited_transfer_artifact_hashes if str(item))
+    outcomes = productive_outcomes(
+        candidate_list,
+        metric_directions=metric_directions,
+        credited_transfer_artifact_hashes=historical_transfer_hashes,
+    )
     planned_slots, rejected_slots = _historical_slot_events(history)
     allocation_epoch = max((_history_round(item) for item in history), default=-1) + 1
     planned_ids = {str(item.get("slot_id") or "") for item in planned_slots}
@@ -396,6 +452,24 @@ def allocate_productive_branches(
         for arm_id in arm_order
     }
 
+    for target in floor_targets[:floor_limit]:
+        selected = max(
+            suggest_budget_allocation(tuple(virtual[arm_id] for arm_id in arm_order)),
+            key=lambda suggestion: (suggestion.suggestion_score, suggestion.arm_id),
+        )
+        _append_slot(
+            slots,
+            arm_id=selected.arm_id,
+            parent_groups=parent_groups,
+            counts=arm_slot_counts,
+            score=selected.suggestion_score,
+            intent="axis_family_coverage_floor",
+            allocation_epoch=allocation_epoch,
+            coverage_target=target,
+        )
+        floor_audit["reserved_slot_ids"].append(slots[-1].slot_id)
+        virtual[selected.arm_id] = _virtual_pull(virtual[selected.arm_id])
+
     # Explicitly try every unobserved selected lineage once before exploitation.
     for arm_id in (arm for arm in arm_order if virtual[arm].pulls == 0):
         if len(slots) >= total_slots:
@@ -449,11 +523,18 @@ def allocate_productive_branches(
         virtual[arm_id] = _virtual_pull(virtual[arm_id])
 
     active_arms = tuple(stats[arm_id] for arm_id in arm_order)
+    credited_transfer_artifact_hashes = tuple(sorted({
+        str(coerce_dict(by_id[outcome.candidate_id].metadata).get("transfer_receipt", {}).get("artifact_hash") or "")
+        for outcome in outcomes
+        if outcome.candidate_id in by_id and "transfer_invariant_probe_survived" in outcome.reason_codes
+    } - {""}))
     return ProductiveBranchAllocation(
         slots=tuple(slots),
         arms=active_arms,
         credit_summary=reason_counts,
         observed_family_counts=family_counts,
+        credited_transfer_artifact_hashes=credited_transfer_artifact_hashes,
+        coverage_floor=floor_audit,
     )
 
 
@@ -469,6 +550,7 @@ def _append_slot(
     allocation_score: float = 0.0,
     intent: str,
     allocation_epoch: int,
+    coverage_target: Mapping[str, Any] | None = None,
 ) -> None:
     index = counts[arm_id]
     parent = parent_groups[arm_id][index % len(parent_groups[arm_id])]
@@ -486,6 +568,12 @@ def _append_slot(
             coverage_bonus=round(float(coverage_bonus), 6),
             coverage_scale=round(float(coverage_scale), 6),
             allocation_score=round(float(allocation_score), 6),
+            coverage_target={
+                "axis": str((coverage_target or {}).get("axis") or ""),
+                "family": str((coverage_target or {}).get("family") or ""),
+            }
+            if coverage_target
+            else {},
         )
     )
     counts[arm_id] += 1
@@ -519,44 +607,29 @@ def _same_cell_elite_improvement(
     prior: list[CandidateGenome],
     *,
     cell: str,
-    directions: dict[str, str],
+    binding: dict[str, Any] | None,
 ) -> bool:
-    vector = _metric_vector(candidate, directions)
-    if not vector:
+    candidate_key = evaluator_selection_key(candidate, binding)[:2]
+    if candidate_key[0] < 0:
         return False
-    peers = [_metric_vector(item, directions) for item in prior if observed_outcome_cell(item) == cell]
-    peers = [item for item in peers if item]
-    return bool(peers) and any(_dominates(vector, item, directions) for item in peers) and not any(_dominates(item, vector, directions) for item in peers)
+    peer_keys = [
+        evaluator_selection_key(item, binding)[:2]
+        for item in prior
+        if observed_outcome_cell(item) == cell
+    ]
+    peer_keys = [item for item in peer_keys if item[0] >= 0]
+    return bool(peer_keys) and candidate_key > max(peer_keys)
 
 
-def _metric_vector(candidate: CandidateGenome, directions: dict[str, str]) -> dict[str, float]:
-    evaluator = coerce_dict(coerce_dict(candidate.metadata).get("evaluator"))
-    metrics = coerce_dict(evaluator.get("metrics"))
-    out: dict[str, float] = {}
-    for name, direction in directions.items():
-        value = metrics.get(name)
-        if isinstance(value, bool):
-            out[name] = float(value)
-        elif isinstance(value, (int, float)) and math.isfinite(float(value)):
-            out[name] = float(value)
-        elif direction == "pass" and name == "correctness" and isinstance(evaluator.get("passed"), bool):
-            out[name] = float(evaluator["passed"])
-    return out
-
-
-def _dominates(left: dict[str, float], right: dict[str, float], directions: dict[str, str]) -> bool:
-    required = set(directions)
-    if not required or set(left) != required or set(right) != required:
-        return False
-    shared = sorted(required)
-    no_worse = True
-    strictly_better = False
-    for name in shared:
-        minimize = directions.get(name) == "minimize"
-        a, b = left[name], right[name]
-        no_worse = no_worse and (a <= b if minimize else a >= b)
-        strictly_better = strictly_better or (a < b if minimize else a > b)
-    return no_worse and strictly_better
+def _binding_from_metric_directions(metric_directions: dict[str, str] | None) -> dict[str, Any] | None:
+    if not metric_directions:
+        return None
+    metric, direction = next(iter(metric_directions.items()))
+    return {
+        "metric": str(metric),
+        "direction": str(direction),
+        "value_type": "boolean" if str(direction) == "pass" else "number",
+    }
 
 
 def _verification_state(candidate: CandidateGenome) -> str:
@@ -700,6 +773,15 @@ def _historical_slot_events(history: Iterable[dict[str, Any]]) -> tuple[list[dic
         rejected.extend(dict(event) for event in harvest.get("rejected", []) if isinstance(event, dict) and str(event.get("reason") or "").startswith("duplicate"))
         rejected.extend(dict(event) for event in plan.get("duplicate_offspring", []) if isinstance(event, dict))
     return slots, rejected
+
+
+def _historical_transfer_credit_hashes(history: Iterable[dict[str, Any]]) -> set[str]:
+    hashes: set[str] = set()
+    for item in history:
+        plan = coerce_dict(item.get("generation_plan")) if isinstance(item, dict) else {}
+        allocation = coerce_dict(plan.get("productive_branch_allocation"))
+        hashes.update(str(value) for value in allocation.get("credited_transfer_artifact_hashes", []) if str(value))
+    return hashes
 
 
 def _history_round(item: dict[str, Any]) -> int:

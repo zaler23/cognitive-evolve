@@ -42,6 +42,27 @@ def test_project_snapshot_excludes_env_and_symlink_targets(tmp_path: Path) -> No
     assert all("secret" not in path.lower() for path in paths)
 
 
+def test_key_named_json_files_are_excluded_from_manifest_sandbox_and_context(tmp_path: Path) -> None:
+    (tmp_path / "safe.py").write_text("SAFE = True\n", encoding="utf-8")
+    sensitive_names = ("api_keys.json", "api-keys.json", "keys.json")
+    for name in sensitive_names:
+        (tmp_path / name).write_text('{"credential": "sensitive"}\n', encoding="utf-8")
+
+    snapshot, world = _build_world(tmp_path)
+    manifest_paths = {item["path"] for item in snapshot.file_manifest}
+    sandbox = PatchSandbox(tmp_path, tmp_path / "sandboxes").prepare("candidate")
+    packet = ContextSelector().build_context_packet(
+        contract=NexusProjectObjectiveContract(original_user_goal="repair", normalized_goal="repair"),
+        snapshot=snapshot,
+        world=world,
+        request=ContextRequest(need_files=list(sensitive_names)),
+    )
+
+    assert all(name not in manifest_paths for name in sensitive_names)
+    assert all(not (sandbox / name).exists() for name in sensitive_names)
+    assert all(name not in packet.raw_file_slices for name in sensitive_names)
+
+
 def test_patch_sandbox_copy_excludes_sensitive_generated_and_symlink_paths(tmp_path: Path) -> None:
     source = tmp_path / "source"
     source.mkdir()

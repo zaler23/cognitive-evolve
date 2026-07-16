@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import sys
 import tempfile
@@ -17,6 +18,15 @@ from .types import VerificationResult
 
 
 _ARTIFACT_ASSERTION_TEMPLATE = "artifact_assertion/v1"
+_TYPED_ARTIFACT_RELATION_TEMPLATE = "artifact_json_relation/v2"
+_METAMORPHIC_JSON_RELATION_TEMPLATE = "metamorphic_json_relation/v1"
+_SUPPORTED_TEMPLATES = {
+    _ARTIFACT_ASSERTION_TEMPLATE,
+    _TYPED_ARTIFACT_RELATION_TEMPLATE,
+    _METAMORPHIC_JSON_RELATION_TEMPLATE,
+}
+_CALIBRATED_TEMPLATES = {_TYPED_ARTIFACT_RELATION_TEMPLATE, _METAMORPHIC_JSON_RELATION_TEMPLATE}
+_PROBE_TIMEOUT_SECONDS = 5.0
 _NOT_JSON = object()
 
 
@@ -35,10 +45,20 @@ def execute_probes(
     budget = max(0, int(regime.adversarial_budget or 0))
     runnable: list[ProbeCase] = []
     results_by_id: dict[str, dict[str, Any]] = {}
+    calibration_results: list[dict[str, Any]] = []
+    preflighted_probe_ids: set[str] = set()
+    preflight_calibrated = False
     for probe in parameterized:
         reason = str(coerce_dict(probe.parameters).get("unsupported_reason") or "")
-        if probe.template_id != _ARTIFACT_ASSERTION_TEMPLATE:
+        if probe.template_id not in _SUPPORTED_TEMPLATES:
             reason = reason or "unsupported_template"
+        if not reason and probe.template_id in _CALIBRATED_TEMPLATES:
+            preflighted_probe_ids.add(probe.probe_id)
+            calibrated, records = _calibrate_probe(probe)
+            calibration_results.extend(records)
+            preflight_calibrated = preflight_calibrated or calibrated
+            if not calibrated:
+                reason = "template_calibration_failed"
         if reason:
             results_by_id[probe.probe_id] = _probe_result(probe, "unsupported", reason=reason)
         else:
@@ -72,14 +92,20 @@ def execute_probes(
             "provenance": probe.provenance,
             "probe_content_sha256": _stable_probe_digest(probe.content),
         }
+    known_good_bad_distinguishable = False
+    if not (_bool_hint(obligation, "known_bad_probe") or _bool_hint(obligation, "force_known_bad")):
+        known_good_bad_distinguishable = preflight_calibrated or _known_good_bad_distinguishable(
+            raw_result,
+            regime,
+            candidate=candidate,
+            obligation=obligation,
+            audit=calibration_results,
+            skip_probe_ids=preflighted_probe_ids,
+        )
     observations.update(
         {
-            "known_good_bad_distinguishable": _known_good_bad_distinguishable(
-                raw_result,
-                regime,
-                candidate=candidate,
-                obligation=obligation,
-            ),
+            "known_good_bad_distinguishable": known_good_bad_distinguishable,
+            "known_good_bad_probe_results": calibration_results,
             "survived_count": len(survived),
             "counterexample_count": len(counterexamples),
             "executed_count": executed_count,
@@ -176,13 +202,29 @@ def apply_probe_counterexample_evidence(
         if existing.source == "engine_parameterized_probe" and str(existing.metadata.get("probe_signature") or "") == signature:
             return existing
     diagnostics = [
-        "parameterized_probe_counterexample:"
-        + str(item.get("assertion_id") or item.get("probe_id") or "")
+        (
+            "metamorphic_relation_violation:" + str(item.get("relation_id"))
+            if item.get("relation_id")
+            else "parameterized_probe_counterexample:"
+            + str(item.get("assertion_id") or item.get("probe_id") or "")
+        )
         + ":"
         + str(item.get("path") or "")
         + ":"
         + str(item.get("operator") or "")
         for item in counterexamples
+    ]
+    metamorphic_violation_receipts = [
+        {
+            "violated_relation": str(item.get("relation_id") or ""),
+            "input_transformation": coerce_dict(item.get("input_transformation")),
+            "before_output_summary": coerce_dict(item.get("before_output_summary")),
+            "before_output_sha256": str(item.get("before_output_sha256") or ""),
+            "after_output_summary": coerce_dict(item.get("after_output_summary")),
+            "after_output_sha256": str(item.get("after_output_sha256") or ""),
+        }
+        for item in counterexamples
+        if item.get("relation_id")
     ]
     executed = max(1, int(metadata.get("probe_executed_count") or 0))
     counterexample_ratio = len(counterexamples) / executed
@@ -215,6 +257,7 @@ def apply_probe_counterexample_evidence(
             "probe_results": counterexamples,
             "probe_signature": signature,
             "provenance": "engine_template_model_parameters",
+            "metamorphic_violation_receipts": metamorphic_violation_receipts,
         },
     )
     apply_evidence_record(candidate, record)
@@ -229,6 +272,9 @@ def _run_artifact_assertions(artifact: Any, probes: list[ProbeCase]) -> list[dic
             "path": str(probe.parameters.get("path") or ""),
             "operator": str(probe.parameters.get("operator") or ""),
             "expected": probe.parameters.get("expected"),
+            "relation_id": str(probe.parameters.get("relation_id") or ""),
+            "mapping_path": str(probe.parameters.get("mapping_path") or ""),
+            "summary_path": str(probe.parameters.get("summary_path") or ""),
         }
         for probe in probes
     ]
@@ -240,10 +286,11 @@ def _run_artifact_assertions(artifact: Any, probes: list[ProbeCase]) -> list[dic
         cases_path = tmp / "cases.json"
         artifact_path.write_text(json.dumps(artifact, ensure_ascii=False, sort_keys=True), encoding="utf-8")
         cases_path.write_text(json.dumps(cases, ensure_ascii=False, sort_keys=True), encoding="utf-8")
-        feedback = ToolRunner().run(
+        feedback = ToolRunner(timeout_seconds=_PROBE_TIMEOUT_SECONDS).run(
             [sys.executable, "-I", str(harness), str(artifact_path), str(cases_path)],
             cwd=tmp,
             env={"LD_LIBRARY_PATH": loader_path} if loader_path else None,
+            timeout_seconds=_PROBE_TIMEOUT_SECONDS,
         )
     if feedback.status != "passed":
         reason = "probe_harness_" + str(feedback.status or "error")
@@ -270,12 +317,16 @@ def _json_artifact(value: Any) -> Any:
 
 
 def _probe_result(probe: ProbeCase, status: str, *, reason: str) -> dict[str, Any]:
-    return {
+    result = {
         "probe_id": probe.probe_id,
         "assertion_id": str(probe.parameters.get("assertion_id") or ""),
+        "probe_template_id": probe.template_id,
         "status": status,
         "reason": reason,
     }
+    if probe.parameters.get("relation_id"):
+        result["relation_id"] = str(probe.parameters["relation_id"])
+    return result
 
 
 def _known_good_bad_distinguishable(
@@ -284,12 +335,184 @@ def _known_good_bad_distinguishable(
     *,
     candidate: Any = None,
     obligation: dict[str, Any],
+    audit: list[dict[str, Any]] | None = None,
+    skip_probe_ids: set[str] | None = None,
 ) -> bool:
+    del raw_result, candidate
     if not regime.probes:
         return False
     if _bool_hint(obligation, "known_bad_probe") or _bool_hint(obligation, "force_known_bad"):
         return False
+    records = audit if audit is not None else []
+    for probe in regime.probes:
+        if probe.probe_id in (skip_probe_ids or set()):
+            continue
+        artifacts = _calibration_artifacts(probe)
+        if artifacts is None:
+            continue
+        good_artifact, bad_artifact = artifacts
+        good = _run_calibration_artifact(probe, good_artifact, "known_good")
+        bad = _run_calibration_artifact(probe, bad_artifact, "known_bad")
+        records.extend([good, bad])
+        if good.get("status") == "survived" and bad.get("status") == "counterexample":
+            return True
     return False
+
+
+def _calibrate_probe(probe: ProbeCase) -> tuple[bool, list[dict[str, Any]]]:
+    artifacts = _calibration_artifacts(probe)
+    if artifacts is None:
+        return False, []
+    good_artifact, bad_artifact = artifacts
+    good = _run_calibration_artifact(probe, good_artifact, "known_good")
+    bad = _run_calibration_artifact(probe, bad_artifact, "known_bad")
+    return good.get("status") == "survived" and bad.get("status") == "counterexample", [good, bad]
+
+
+def _calibration_artifacts(probe: ProbeCase) -> tuple[Any, Any] | None:
+    parameters = coerce_dict(probe.parameters)
+    if probe.template_id not in _SUPPORTED_TEMPLATES or parameters.get("unsupported_reason"):
+        return None
+    if probe.template_id == _METAMORPHIC_JSON_RELATION_TEMPLATE:
+        mapping_path = str(parameters.get("mapping_path") or "")
+        summary_path = str(parameters.get("summary_path") or "")
+        good = _artifact_at_pointers(((mapping_path, {"alpha": 1, "beta": 2}), (summary_path, 3)))
+        bad = _artifact_at_pointers(((mapping_path, {"alpha": 1, "beta": 2}), (summary_path, 4)))
+        return (good, bad) if good is not None and bad is not None else None
+    pointer = str(parameters.get("path") or "")
+    operator = str(parameters.get("operator") or "")
+    try:
+        expected = json.loads(json.dumps(parameters.get("expected"), ensure_ascii=False, allow_nan=False))
+    except (TypeError, ValueError):
+        return None
+
+    if operator == "exists":
+        if not pointer:
+            return None
+        good_value, bad_value = None, _NOT_JSON
+    elif operator == "not_exists":
+        if not pointer:
+            return None
+        good_value, bad_value = _NOT_JSON, None
+    elif operator == "equal":
+        good_value, bad_value = expected, _different_json_value(expected)
+    elif operator == "not_equal":
+        good_value, bad_value = _different_json_value(expected), expected
+    elif operator == "contains":
+        good_value, bad_value = [expected], []
+    elif operator == "not_contains":
+        good_value, bad_value = [], [expected]
+    elif operator in {"lt", "lte", "gt", "gte"}:
+        values = _ordered_calibration_values(operator, expected)
+        if values is None:
+            return None
+        good_value, bad_value = values
+    elif operator == "between":
+        values = _between_calibration_values(expected)
+        if values is None:
+            return None
+        good_value, bad_value = values
+    else:
+        return None
+    return _artifact_at_pointer(pointer, good_value), _artifact_at_pointer(pointer, bad_value)
+
+
+def _run_calibration_artifact(probe: ProbeCase, artifact: Any, role: str) -> dict[str, Any]:
+    results = _run_artifact_assertions(artifact, [probe])
+    matching = [item for item in results if str(item.get("probe_id") or "") == probe.probe_id]
+    if len(matching) == 1:
+        record = dict(matching[0])
+    else:
+        record = _probe_result(probe, "unsupported", reason="calibration_result_missing_or_ambiguous")
+    record.update(
+        {
+            "calibration_role": role,
+            "calibration_artifact_sha256": stable_hash({"artifact": artifact}),
+            "engine_generated": True,
+            "provenance": "engine",
+        }
+    )
+    return record
+
+
+def _artifact_at_pointer(pointer: str, value: Any) -> Any:
+    if not pointer:
+        return None if value is _NOT_JSON else value
+    if value is _NOT_JSON:
+        return {}
+    current = value
+    for raw_part in reversed(pointer[1:].split("/")):
+        part = raw_part.replace("~1", "/").replace("~0", "~")
+        current = {part: current}
+    return current
+
+
+def _artifact_at_pointers(values: tuple[tuple[str, Any], ...]) -> dict[str, Any] | None:
+    artifact: dict[str, Any] = {}
+    for pointer, value in values:
+        if not pointer.startswith("/"):
+            return None
+        parts = [raw.replace("~1", "/").replace("~0", "~") for raw in pointer[1:].split("/")]
+        current = artifact
+        for part in parts[:-1]:
+            existing = current.setdefault(part, {})
+            if not isinstance(existing, dict):
+                return None
+            current = existing
+        if not parts or parts[-1] in current:
+            return None
+        current[parts[-1]] = value
+    return artifact
+
+
+def _different_json_value(expected: Any) -> Any:
+    first = {"__cogev_calibration__": "different"}
+    return first if expected != first else {"__cogev_calibration__": "different_again"}
+
+
+def _ordered_calibration_values(operator: str, expected: Any) -> tuple[Any, Any] | None:
+    if isinstance(expected, bool) or not isinstance(expected, (int, float)):
+        return None
+    if isinstance(expected, float) and not math.isfinite(expected):
+        return None
+    if operator == "lt":
+        good = _adjacent_number(expected, -1)
+        return (good, expected) if good is not None else None
+    if operator == "lte":
+        bad = _adjacent_number(expected, 1)
+        return (expected, bad) if bad is not None else None
+    if operator == "gt":
+        good = _adjacent_number(expected, 1)
+        return (good, expected) if good is not None else None
+    bad = _adjacent_number(expected, -1)
+    return (expected, bad) if bad is not None else None
+
+
+def _between_calibration_values(expected: Any) -> tuple[Any, Any] | None:
+    if not isinstance(expected, list) or len(expected) != 2:
+        return None
+    lower, upper = expected
+    if any(
+        isinstance(value, bool)
+        or not isinstance(value, (int, float))
+        or (isinstance(value, float) and not math.isfinite(value))
+        for value in expected
+    ):
+        return None
+    if lower > upper:
+        return None
+    below = _adjacent_number(lower, -1)
+    if below is not None:
+        return lower, below
+    above = _adjacent_number(upper, 1)
+    return (upper, above) if above is not None else None
+
+
+def _adjacent_number(value: int | float, direction: int) -> int | float | None:
+    if isinstance(value, int):
+        return value + direction
+    adjacent = math.nextafter(value, math.inf if direction > 0 else -math.inf)
+    return adjacent if math.isfinite(adjacent) and adjacent != value else None
 
 
 def _bool_hint(mapping: dict[str, Any], key: str) -> bool:

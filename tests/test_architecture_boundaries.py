@@ -2,19 +2,29 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from cognitive_evolve_runtime.api.models import ChatCompletionRequest
 from cognitive_evolve_runtime.api.payloads import _completion_payload
 from cognitive_evolve_runtime.api.prompting import build_one_shot_prompt
 from cognitive_evolve_runtime.api.streaming import _stream_chunks
 from cognitive_evolve_runtime.engine.orchestrator import EngineOrchestrator
 from cognitive_evolve_runtime.engine.result import NexusEngineResult
+from cognitive_evolve_runtime.llm.env import LLMConfigurationError
 from cognitive_evolve_runtime.nexus.runtime import NexusRuntime
 
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_engine_orchestrator_returns_nexus_result(tmp_path: Path) -> None:
-    result = EngineOrchestrator().run("Audit this architecture.", context={"task_dir": str(tmp_path), "rounds": 1})
+def test_engine_orchestrator_fails_fast_without_model_or_explicit_offline(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.delenv("COGEV_NEXUS_USE_CONFIGURED_LLM", raising=False)
+    with pytest.raises(LLMConfigurationError, match=r"context\['offline'\]"):
+        EngineOrchestrator().run("Audit this architecture.", context={"task_dir": str(tmp_path), "rounds": 1})
+    assert not (tmp_path / "nexus-runtime" / "run-result.json").exists()
+
+
+def test_engine_orchestrator_returns_nexus_result_for_explicit_offline_run(tmp_path: Path) -> None:
+    result = EngineOrchestrator().run("Audit this architecture.", context={"task_dir": str(tmp_path), "rounds": 1, "offline": True})
     assert isinstance(result, NexusEngineResult)
     data = result.to_dict()
     assert data["runtime_architecture"] == "nexus"

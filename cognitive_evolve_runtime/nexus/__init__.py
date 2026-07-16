@@ -26,6 +26,11 @@ _EXPORTS: dict[str, tuple[str, str]] = {
     "ProjectCandidateVerifier": ("cognitive_evolve_runtime.nexus.project_verification", "ProjectCandidateVerifier"),
     "ProjectVerificationSummary": ("cognitive_evolve_runtime.nexus.project_verification", "ProjectVerificationSummary"),
     "NexusModelLike": ("cognitive_evolve_runtime.nexus.protocols", "NexusModelLike"),
+    "RepresentationProvider": ("cognitive_evolve_runtime.nexus.representation_shadow", "RepresentationProvider"),
+    "RepresentationSpec": ("cognitive_evolve_runtime.nexus.representation_shadow", "RepresentationSpec"),
+    "RepresentationVectorStore": ("cognitive_evolve_runtime.nexus.representation_shadow", "RepresentationVectorStore"),
+    "RepresentationShadowLayer": ("cognitive_evolve_runtime.nexus.representation_shadow", "RepresentationShadowLayer"),
+    "DeterministicStubRepresentationProvider": ("cognitive_evolve_runtime.nexus.representation_shadow", "DeterministicStubRepresentationProvider"),
 }
 
 __all__ = list(_EXPORTS)

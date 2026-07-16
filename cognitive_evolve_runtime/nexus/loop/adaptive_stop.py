@@ -4,9 +4,9 @@ from __future__ import annotations
 from typing import Any
 
 from cognitive_evolve_runtime.candidates.genome import CandidateGenome
+from cognitive_evolve_runtime.evaluators.evidence import evaluator_selection_key
 from cognitive_evolve_runtime.nexus.diagnosis import SearchDiagnosis
 from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy
-from cognitive_evolve_runtime.ranking.parent_selection import evaluator_selection_key
 
 
 def adaptive_stagnation_exhausted(

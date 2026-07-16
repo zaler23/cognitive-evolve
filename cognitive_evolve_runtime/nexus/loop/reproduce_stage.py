@@ -1,6 +1,7 @@
 """Reproduction half of one Nexus evolution round."""
 from __future__ import annotations
 
+import copy
 import math
 from typing import Any, Callable
 
@@ -11,7 +12,7 @@ from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateG
 from cognitive_evolve_runtime.candidates.mutation import MutationOperator, MutationPlan
 from cognitive_evolve_runtime.contracts.objective_contract import NexusObjectiveContract
 from cognitive_evolve_runtime.evaluators import EvaluatorSpec, evidence_advisory_features
-from cognitive_evolve_runtime.evaluators.evidence import select_preliminary_incumbent
+from cognitive_evolve_runtime.evaluators.evidence import evaluator_selection_key, select_preliminary_incumbent
 from cognitive_evolve_runtime.nexus.critique import CandidateCritique
 from cognitive_evolve_runtime.nexus.activation_reseed import emergency_activation_reseed
 from cognitive_evolve_runtime.nexus._serde import stable_hash
@@ -19,11 +20,19 @@ from cognitive_evolve_runtime.nexus.exploration import action_palette_for_round
 from cognitive_evolve_runtime.nexus.diagnosis import SearchDiagnosis
 from cognitive_evolve_runtime.nexus.generation_plan import GenerationPlan, assert_stage_ready, expected_generation_plan_id
 from cognitive_evolve_runtime.nexus.model_adapter import ModelResponseSchemaError
+from cognitive_evolve_runtime.nexus.move_replay import (
+    MoveReplayView,
+    ReplaySelection,
+    derive_move_replay_view,
+    replay_query_for_parent,
+    select_contextual_replay,
+)
 from cognitive_evolve_runtime.nexus.nextgen import ensure_nextgen_identity, structurally_blocked
 from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy
 from cognitive_evolve_runtime.nexus.population_control import compact_live_population
 from cognitive_evolve_runtime.nexus.prompt_view import archive_prompt_view
 from cognitive_evolve_runtime.nexus.repair_reactivation import recover_failure_archive_repair_seeds, recover_repairable_dormant_seeds
+from cognitive_evolve_runtime.nexus.receipts import DONOR_ROLES, record_reproduction_receipts
 from cognitive_evolve_runtime.nexus.search_kernel.fingerprints import candidate_outcome_signature, candidate_phenotype_signature
 from cognitive_evolve_runtime.nexus.search_kernel.branch_allocator import ProductiveBranchAllocation
 from cognitive_evolve_runtime.nexus.search_kernel.islands import allocate_logical_islands, assign_candidate_islands, derive_island_count
@@ -43,10 +52,20 @@ from cognitive_evolve_runtime.theory import build_population_representation
 from cognitive_evolve_runtime.nexus.v23_theory_config import CACrossoverConfig, V23TheoryRuntimeConfig
 from cognitive_evolve_runtime.ranking.relative_rater import RelativeRankingResult
 
-from .offspring import _generate_offspring, _plan_mutations
+from .offspring import _generate_offspring, _plan_mutations, _slot_sampling_policy
 from .policy_directives import _attach_policy_directives_to_plans, _critique_actions
 from .stage_helpers import _eligibility_policy, _theory_config_from_policy
 
+
+_REQUIRED_CONTRIBUTION_MAP = {
+    "generic_space_mapping": "element-level shared structural role mapping",
+    "retained_from_primary": "primary elements retained by the child",
+    "borrowed_from_donor": "donor elements materially present in the child",
+    "structural_correspondence": "cross-parent structural relation",
+    "emergent_delta": "child-only structure",
+    "incompatibilities": "mapping conflicts",
+    "unresolved_obligations": "open merge obligations",
+}
 
 
 class ReproduceStage:
@@ -72,6 +91,16 @@ class ReproduceStage:
         if plan is not None:
             assert_stage_ready(plan, "select_parents", completed_stage_ops)
         island_config = dict(policy.metadata.get("islands") or {}) if isinstance(policy.metadata, dict) and isinstance(policy.metadata.get("islands"), dict) else {}
+        coverage_floor = diagnosis.metadata.get("axis_family_coverage_floor") if isinstance(diagnosis.metadata, dict) else None
+        if isinstance(coverage_floor, dict):
+            island_config["coverage_floor_targets"] = list(coverage_floor.get("targets") or [])
+            island_config["coverage_floor_slots"] = int(coverage_floor.get("floor_slots") or 0)
+        archive_admission, archive_admission_audit = _archive_elite_admission_view(
+            population=population.candidates,
+            archives=archives,
+            limit=_archive_elite_reentry_limit(policy),
+            current_round=current_round,
+        )
         active_lineages = {
             candidate.lineage[0] if candidate.lineage else candidate.id
             for candidate in population.candidates
@@ -93,6 +122,7 @@ class ReproduceStage:
             rankings=rankings,
             diagnosis=diagnosis,
             repair_parent_candidates=repair_parent_candidates,
+            archive_admission_candidates=archive_admission,
         )
         if not parents:
             return "no_parents_available", [], {}
@@ -100,13 +130,14 @@ class ReproduceStage:
         metric_directions = {item.name: item.direction for item in evaluator_spec.metrics}
         if island_count > 1:
             island_config["count"] = island_count
+        branch_credit_candidates = _branch_credit_candidates(
+            population=population,
+            archives=archives,
+            repair_parent_candidates=repair_parent_candidates,
+        )
         island_allocation = allocate_logical_islands(
             parents=parents,
-            candidates=_branch_credit_candidates(
-                population=population,
-                archives=archives,
-                repair_parent_candidates=repair_parent_candidates,
-            ),
+            candidates=branch_credit_candidates,
             budget_history=self.budget.history,
             metric_directions=metric_directions,
             total_slots=self._branch_limit(),
@@ -120,17 +151,34 @@ class ReproduceStage:
         parent_by_id = {parent.id: parent for parent in parents}
         allocated_parent_ids = list(dict.fromkeys(slot.parent_id for slot in branch_allocation.slots))
         parents = [parent_by_id[parent_id] for parent_id in allocated_parent_ids]
+        archive_admission_audit["selected_candidate_ids"] = [
+            parent.id
+            for parent in parents
+            if bool(parent.metadata.get("archive_elite_reentry"))
+        ]
         if plan is not None:
             completed_stage_ops.append("select_parents")
             self.last_generation_plan["parent_ids"] = [parent.id for parent in parents]
             self.last_generation_plan["productive_branch_allocation"] = branch_allocation.to_dict()
             self.last_generation_plan["logical_islands"] = island_allocation.to_dict()
+            self.last_generation_plan["archive_elite_reentry"] = archive_admission_audit
+            if isinstance(coverage_floor, dict):
+                self.last_generation_plan["axis_family_coverage_floor"] = {
+                    **coverage_floor,
+                    "reserved_slot_ids": list(branch_allocation.coverage_floor.get("reserved_slot_ids") or []),
+                }
             self._refresh_generation_plan_id()
             self._record_generation_stage_progress(completed_stage_ops)
         generation_policy = EvolutionPolicy.from_dict(policy.to_dict())
         generation_policy.metadata["productive_branch_allocation"] = branch_allocation.to_dict()
         generation_policy.metadata["slot_islands"] = dict(island_allocation.slot_islands)
         generation_policy.metadata["requested_candidate_count"] = len(branch_allocation.slots)
+        replay_view = derive_move_replay_view(
+            budget_history=self.budget.history,
+            candidates=branch_credit_candidates,
+            metric_directions=metric_directions,
+            before_round=current_round,
+        )
         model_backed_path = self.model is not None
         evaluator_led = self._evaluator_led()
         actions = action_palette_for_round(
@@ -141,6 +189,33 @@ class ReproduceStage:
         latent_actions = [str(item) for item in latent_exploration_plan.get("mutation_actions", []) if item]
         if latent_actions:
             actions = list(dict.fromkeys(latent_actions + actions))
+        policy_metadata = generation_policy.metadata if isinstance(generation_policy.metadata, dict) else {}
+        configured_quota = policy_metadata.get("crossover_slot_quota")
+        crossover_quota = (
+            max(0, int(configured_quota))
+            if configured_quota is not None
+            else (1 if diagnosis.stagnation_detected else 0)
+        )
+        crossover_slots = _role_crossover_slots(
+            branch_allocation,
+            parent_ids=[parent.id for parent in parents],
+            quota=crossover_quota if model_backed_path else 0,
+            roles=policy_metadata.get("crossover_donor_roles"),
+            blocked_parent_ids={
+                parent.id
+                for parent in parents
+                if _pending_blend_obligation_ids(parent)
+            },
+        )
+        replay_selections = _slot_replay_selections(
+            view=replay_view,
+            allocation=branch_allocation,
+            parents=parents,
+            diagnosis=diagnosis,
+            actions=actions,
+            policy=generation_policy,
+            crossover_slots=crossover_slots,
+        )
         round_context = provided_context
         if context_provider is not None and not model_backed_path:
             round_context = context_provider(parents, "; ".join(actions)) or provided_context
@@ -160,6 +235,8 @@ class ReproduceStage:
                 latent_exploration_plan=latent_exploration_plan,
                 policy=generation_policy,
                 evaluator_led=evaluator_led,
+                crossover_slots=crossover_slots,
+                replay_selections=replay_selections,
             )
             plans = [direct_plan]
             if context_provider is not None:
@@ -183,6 +260,14 @@ class ReproduceStage:
                 policy=generation_policy,
                 provided_context=round_context,
                 target_count=len(branch_allocation.slots),
+                preferred_actions_by_parent=_preferred_actions_by_parent(
+                    branch_allocation,
+                    replay_selections,
+                ),
+                grounded_emitter_credit_by_parent=_grounded_emitter_credit_by_parent(
+                    branch_allocation,
+                    replay_selections,
+                ),
             )
             plans, latent_exploration_plan = apply_latent_exploration_to_mutation_plans(plans, contract, exploration=latent_exploration_plan)
             plans = self._apply_search_pressure_to_plans(plans, parents=parents)
@@ -194,13 +279,31 @@ class ReproduceStage:
                 include_manifest=False,
                 rejected_out=unallocated_plans,
             )
+            plans = _attach_replay_to_plans(plans, replay_selections)
         v23_config = V23TheoryRuntimeConfig.from_runtime_context(policy=policy, contract=contract, branch_factor=self.budget.branch_factor, population_size=len(population.candidates))
         if not model_backed_path:
             plans = self._apply_ca_crossover_to_plans(plans, parents=parents, population=population.candidates, config=v23_config.ca_crossover)
+        slot_payloads = (
+            [
+                dict(item)
+                for item in plans[0].metadata.get("branch_slots", [])
+                if isinstance(item, dict)
+            ]
+            if model_backed_path and plans and isinstance(plans[0].metadata, dict)
+            else _branch_slots_with_replay(branch_allocation, replay_selections)
+        )
+        slot_sampling_profiles = _slot_sampling_profile_audit(generation_policy, slot_payloads)
         if plan is not None:
             completed_stage_ops.append("plan_mutations")
             self.last_generation_plan["mutation_objectives"] = list(actions)
             self.last_generation_plan["mutation_plan_count"] = len(plans)
+            self.last_generation_plan["move_replay_audit"] = _move_replay_audit(
+                replay_view,
+                replay_selections,
+                current_round=current_round,
+            )
+            if slot_sampling_profiles:
+                self.last_generation_plan["slot_sampling_profiles"] = slot_sampling_profiles
             if unallocated_plans:
                 self.last_generation_plan["unallocated_mutation_plans"] = unallocated_plans
             if model_backed_path:
@@ -238,6 +341,7 @@ class ReproduceStage:
             completed_stage_ops.append("generate_offspring")
             self.last_generation_plan["offspring_ids"] = [candidate.id for candidate in offspring]
             self.last_generation_plan["offspring_harvest"] = dict(self.last_offspring_harvest_outcome)
+            self.last_generation_plan["offspring_transport"] = dict(self.last_offspring_harvest_outcome.get("transport") or {})
             self.last_generation_plan["duplicate_offspring"] = duplicate_offspring
             self.last_generation_plan["cell_activation_map"] = activation_map
             self._record_generation_stage_progress(completed_stage_ops)
@@ -258,7 +362,7 @@ class ReproduceStage:
             candidate.metadata["created_in_round"] = current_round
         if plan is not None:
             assert_stage_ready(plan, "verify_offspring", completed_stage_ops)
-        return self._verify_and_integrate_offspring(
+        result = self._verify_and_integrate_offspring(
             offspring=offspring,
             offspring_verifier=offspring_verifier,
             population=population,
@@ -268,6 +372,16 @@ class ReproduceStage:
             generation_plan=plan,
             completed_stage_ops=completed_stage_ops,
         )
+        if plan is not None:
+            record_reproduction_receipts(
+                self.last_generation_plan,
+                diagnosis=diagnosis,
+                mutation_plans=plans,
+                offspring=offspring,
+                outcomes=result[1],
+            )
+            self._refresh_generation_plan_id()
+        return result
 
     def _record_generation_stage_progress(self, completed_stage_ops: list[str]) -> None:
         self.last_completed_stage_ops = list(completed_stage_ops)
@@ -301,6 +415,8 @@ class ReproduceStage:
         latent_exploration_plan: dict[str, Any],
         policy: EvolutionPolicy,
         evaluator_led: bool,
+        crossover_slots: dict[str, dict[str, Any]] | None = None,
+        replay_selections: dict[str, ReplaySelection] | None = None,
     ) -> tuple[MutationPlan, dict[str, Any]]:
         parent_ids = list(dict.fromkeys(parent.id for parent in parents if parent.id))
         plan_id = "runtime-direct-" + stable_hash(
@@ -311,22 +427,58 @@ class ReproduceStage:
             }
         )[:16]
         action_palette = list(dict.fromkeys(str(action) for action in actions if str(action).strip()))
-        slot_plans = [
-            MutationPlan(
-                operator="ModelDirected",
-                parent_ids=[slot.parent_id],
-                instruction=(
-                    f"Branch intent: {slot.intent}. "
-                    + (
-                        f"Optional semantic direction: {action_palette[index % len(action_palette)]}. "
-                        if action_palette
-                        else ""
-                    )
-                    + "Choose the concrete mutation strategy that best advances the objective; the hint is not a fixed operator."
+        if crossover_slots is None:
+            policy_metadata = policy.metadata if isinstance(policy.metadata, dict) else {}
+            configured_quota = policy_metadata.get("crossover_slot_quota")
+            crossover_quota = (
+                max(0, int(configured_quota))
+                if configured_quota is not None
+                else (1 if diagnosis.stagnation_detected else 0)
+            )
+            crossover_slots = _role_crossover_slots(
+                branch_allocation,
+                parent_ids=parent_ids,
+                quota=crossover_quota,
+                roles=policy_metadata.get("crossover_donor_roles"),
+            )
+        replay_selections = dict(replay_selections or {})
+        slot_plans: list[MutationPlan] = []
+        for index, slot in enumerate(branch_allocation.slots):
+            crossover_slot = crossover_slots.get(slot.slot_id, {})
+            replay = replay_selections.get(slot.slot_id)
+            slot_parent_ids = [slot.parent_id]
+            if crossover_slot:
+                slot_parent_ids.append(str(crossover_slot["donor_parent_id"]))
+            instruction = (
+                f"Branch intent: {slot.intent}. "
+                + (
+                    "Fill the zero-occupancy coverage target "
+                    f"axis={slot.coverage_target.get('axis') or 'unchanged'}, "
+                    f"family={slot.coverage_target.get('family') or 'unchanged'}. "
+                    if slot.coverage_target
+                    else ""
+                )
+                + (
+                    f"Optional semantic direction: {replay.preferred_emitter.move_kind if replay else action_palette[index % len(action_palette)]}. "
+                    if replay or action_palette
+                    else ""
+                )
+                + "Choose the concrete mutation strategy that best advances the objective; the hint is not a fixed operator."
+            )
+            if replay is not None:
+                instruction += _replay_instruction(replay)
+            if crossover_slot:
+                instruction += (
+                    " This is a role-constrained crossover slot: materially combine the primary and donor, and return "
+                    "metadata.blend_receipt with every field declared in required_contribution_map."
+                )
+            slot_plans.append(
+                MutationPlan(
+                    operator="ModelDirected",
+                    parent_ids=slot_parent_ids,
+                    instruction=instruction,
                 ),
             )
-            for index, slot in enumerate(branch_allocation.slots)
-        ]
         slot_plans = _attach_policy_directives_to_plans(slot_plans, policy, parents=parents)
         slot_plans, latent_exploration_plan = apply_latent_exploration_to_mutation_plans(
             slot_plans,
@@ -336,6 +488,7 @@ class ReproduceStage:
         slot_plans = self._apply_search_pressure_to_plans(slot_plans, parents=parents)
         branch_slots: list[dict[str, Any]] = []
         for index, (slot, slot_plan) in enumerate(zip(branch_allocation.slots, slot_plans)):
+            replay = replay_selections.get(slot.slot_id)
             plan_metadata = dict(slot_plan.metadata or {})
             runtime_keys = (
                 "search_pressure",
@@ -351,8 +504,14 @@ class ReproduceStage:
             )
             directive = {
                 "instruction": slot_plan.instruction,
-                "action_hint": action_palette[index % len(action_palette)] if action_palette else "",
+                "action_hint": (
+                    replay.preferred_emitter.move_kind
+                    if replay is not None
+                    else action_palette[index % len(action_palette)] if action_palette else ""
+                ),
             }
+            if replay is not None:
+                directive["move_replay"] = replay.to_directive()
             for key in runtime_keys:
                 if key in plan_metadata:
                     directive[key] = plan_metadata[key]
@@ -366,6 +525,7 @@ class ReproduceStage:
             branch_slots.append(
                 {
                     **slot.to_dict(),
+                    **crossover_slots.get(slot.slot_id, {}),
                     "island_id": policy.metadata.get("slot_islands", {}).get(slot.slot_id),
                     "directive": directive,
                 }
@@ -385,7 +545,8 @@ class ReproduceStage:
             instruction=(
                 "Directly evolve actual task artifacts from the allocated primary parents. "
                 "For every branch slot return exactly one materially changed artifact, copy slot_id into metadata.branch_slot_id, "
-                "and put slot.parent_id first in truthful parent_ids. You may use other selected parents as secondary sources. "
+                "and put slot.parent_id first in truthful parent_ids. A slot with donor_parent_id must receive both parents and "
+                "must return a blend receipt; otherwise use only its primary parent. "
                 "Actions and slot directives are semantic search guidance, not fixed operators; choose the mutation, transfer, "
                 "representation, probe, or crossover strategy yourself. Return artifacts, not plans, commentary, or unchanged copies."
             ),
@@ -424,6 +585,7 @@ class ReproduceStage:
         rankings: RelativeRankingResult,
         diagnosis: SearchDiagnosis,
         repair_parent_candidates: list[CandidateGenome] | None,
+        archive_admission_candidates: list[CandidateGenome] | None = None,
         limit_override: int | None = None,
     ) -> list[CandidateGenome]:
         limit = max(1, int(limit_override or self._branch_limit()))
@@ -432,11 +594,26 @@ class ReproduceStage:
         def _with_incumbent(selected: list[CandidateGenome]) -> list[CandidateGenome]:
             if preliminary_incumbent is None or structurally_blocked(preliminary_incumbent):
                 return selected[:limit]
-            ordered = [preliminary_incumbent, *selected]
+            ordered = (
+                [*selected, preliminary_incumbent]
+                if self.budget.search_phase == "explore"
+                else [preliminary_incumbent, *selected]
+            )
             return list({candidate.id: candidate for candidate in ordered}.values())[:limit]
 
         advisory_features = self._combined_advisory_features(policy=policy, candidates=population.candidates, current_round=current_round)
-        parents = self.selector.select(population.candidates, archives, limit=limit, eligibility_policy=_eligibility_policy(policy), advisory_features=advisory_features)
+        selection_candidates = [*population.candidates, *(archive_admission_candidates or [])]
+        if self.budget.search_phase == "explore" and repair_parent_candidates:
+            selection_candidates = [*selection_candidates, *repair_parent_candidates]
+        selection_candidates = list({candidate.id: candidate for candidate in selection_candidates}.values())
+        parents = self.selector.select(
+            selection_candidates,
+            archives,
+            limit=limit,
+            eligibility_policy=_eligibility_policy(policy),
+            advisory_features=advisory_features,
+            search_phase=self.budget.search_phase,
+        )
         if parents:
             return _with_incumbent(parents)
         parents = ranked_repair_fallback_parents(population.candidates, rankings=rankings, diagnosis=diagnosis, limit=limit, current_round=current_round)
@@ -473,6 +650,7 @@ class ReproduceStage:
         rankings: RelativeRankingResult,
         diagnosis: SearchDiagnosis,
         repair_parent_candidates: list[CandidateGenome] | None,
+        archive_admission_candidates: list[CandidateGenome] | None = None,
     ) -> list[CandidateGenome]:
         if island_count <= 1:
             return self._select_reproduction_parents(
@@ -485,8 +663,9 @@ class ReproduceStage:
                 rankings=rankings,
                 diagnosis=diagnosis,
                 repair_parent_candidates=repair_parent_candidates,
+                archive_admission_candidates=archive_admission_candidates,
             )
-        all_candidates = [*population.candidates, *(repair_parent_candidates or [])]
+        all_candidates = [*population.candidates, *(repair_parent_candidates or []), *(archive_admission_candidates or [])]
         assignments = assign_candidate_islands(all_candidates, island_count=island_count)
         for candidate in all_candidates:
             candidate.metadata["island_id"] = assignments[candidate.id]
@@ -501,6 +680,11 @@ class ReproduceStage:
                 for candidate in repair_parent_candidates or []
                 if assignments[candidate.id] == island_id
             ]
+            island_admission = [
+                candidate
+                for candidate in archive_admission_candidates or []
+                if assignments[candidate.id] == island_id
+            ]
             parents = self._select_reproduction_parents(
                 current_round=current_round,
                 population=island_population,
@@ -511,6 +695,7 @@ class ReproduceStage:
                 rankings=rankings,
                 diagnosis=diagnosis,
                 repair_parent_candidates=island_repair,
+                archive_admission_candidates=island_admission,
                 limit_override=base_slots + int(island_id < extra_slots),
             )
             if not parents:
@@ -524,6 +709,7 @@ class ReproduceStage:
                     rankings=rankings,
                     diagnosis=diagnosis,
                     repair_parent_candidates=repair_parent_candidates,
+                    archive_admission_candidates=archive_admission_candidates,
                 )
             selected.extend(parents)
         return list({candidate.id: candidate for candidate in selected}.values())
@@ -657,6 +843,7 @@ class ReproduceStage:
             provided_context=provided_context,
             target_size=requested_offspring_count,
             harvest_outcome=harvest_outcome,
+            budget_history=self.budget.history,
         )
         self.last_offspring_harvest_outcome = harvest_outcome
         if self.model is None:
@@ -727,6 +914,175 @@ class ReproduceStage:
 
 
 
+def _slot_replay_selections(
+    *,
+    view: MoveReplayView,
+    allocation: ProductiveBranchAllocation,
+    parents: list[CandidateGenome],
+    diagnosis: SearchDiagnosis,
+    actions: list[str],
+    policy: EvolutionPolicy,
+    crossover_slots: dict[str, dict[str, Any]],
+) -> dict[str, ReplaySelection]:
+    parent_by_id = {parent.id: parent for parent in parents}
+    selections: dict[str, ReplaySelection] = {}
+    for slot in allocation.slots:
+        parent = parent_by_id[slot.parent_id]
+        crossover_slot = crossover_slots.get(slot.slot_id, {})
+        donor_role = str(crossover_slot.get("donor_role") or "none")
+        available_moves = ["crossover"] if crossover_slot else list(actions)
+        slot_payload = {**slot.to_dict(), **crossover_slot}
+        default_sampling = _slot_sampling_policy(policy, slot_payload)
+        selections[slot.slot_id] = select_contextual_replay(
+            view,
+            replay_query_for_parent(parent, diagnosis=diagnosis),
+            available_move_kinds=available_moves,
+            donor_role=donor_role,
+            default_sampling_profile=(
+                str(default_sampling.sampling_profile_id)
+                if default_sampling is not None and default_sampling.sampling_profile_id
+                else "default"
+            ),
+        )
+    return selections
+
+
+def _preferred_actions_by_parent(
+    allocation: ProductiveBranchAllocation,
+    selections: dict[str, ReplaySelection],
+) -> dict[str, str]:
+    preferred: dict[str, str] = {}
+    for slot in allocation.slots:
+        selection = selections.get(slot.slot_id)
+        if selection is not None:
+            preferred.setdefault(slot.parent_id, selection.preferred_emitter.move_kind)
+    return preferred
+
+
+def _grounded_emitter_credit_by_parent(
+    allocation: ProductiveBranchAllocation,
+    selections: dict[str, ReplaySelection],
+) -> dict[str, dict[str, Any]]:
+    credit: dict[str, dict[str, Any]] = {}
+    for slot in allocation.slots:
+        selection = selections.get(slot.slot_id)
+        if selection is not None:
+            credit.setdefault(slot.parent_id, selection.to_dict())
+    return credit
+
+
+def _attach_replay_to_plans(
+    plans: list[MutationPlan],
+    selections: dict[str, ReplaySelection],
+) -> list[MutationPlan]:
+    out: list[MutationPlan] = []
+    for plan in plans:
+        metadata = dict(plan.metadata or {})
+        selection = selections.get(str(metadata.get("branch_slot_id") or ""))
+        if selection is None:
+            out.append(plan)
+            continue
+        metadata["move_replay"] = selection.to_directive()
+        metadata["grounded_emitter_credit"] = selection.to_dict()
+        out.append(
+            MutationPlan.from_dict(
+                {
+                    **plan.to_dict(),
+                    "instruction": (plan.instruction.rstrip() + _replay_instruction(selection)).strip(),
+                    "metadata": metadata,
+                }
+            )
+        )
+    return out
+
+
+def _branch_slots_with_replay(
+    allocation: ProductiveBranchAllocation,
+    selections: dict[str, ReplaySelection],
+) -> list[dict[str, Any]]:
+    slots: list[dict[str, Any]] = []
+    for slot in allocation.slots:
+        payload = slot.to_dict()
+        selection = selections.get(slot.slot_id)
+        if selection is not None:
+            payload["directive"] = {"move_replay": selection.to_directive()}
+        slots.append(payload)
+    return slots
+
+
+def _slot_sampling_profile_audit(
+    policy: EvolutionPolicy,
+    slots: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    profiles: list[dict[str, Any]] = []
+    for slot in slots:
+        sampling = _slot_sampling_policy(policy, slot)
+        if sampling is None:
+            continue
+        profiles.append(
+            {
+                "slot_id": str(slot.get("slot_id") or ""),
+                "intent": str(slot.get("intent") or ""),
+                "search_phase": sampling.search_phase,
+                "sampling_profile_id": sampling.sampling_profile_id,
+                "temperature": sampling.temperature,
+                "top_p": sampling.top_p,
+                "seed": sampling.seed,
+            }
+        )
+    return profiles
+
+
+def _move_replay_audit(
+    view: MoveReplayView,
+    selections: dict[str, ReplaySelection],
+    *,
+    current_round: int,
+) -> dict[str, Any]:
+    return {
+        "schema": "move-replay-audit/v1",
+        "authority": "read_only_budget_history_generation_plan_receipts_lineage",
+        "view_id": view.view_id,
+        "source_cutoff_round_exclusive": int(current_round),
+        "entry_count": len(view.entries),
+        "slots": [
+            {"slot_id": slot_id, **selections[slot_id].to_dict()}
+            for slot_id in sorted(selections)
+        ],
+    }
+
+
+def _replay_instruction(selection: ReplaySelection) -> str:
+    directive = selection.to_directive()
+    examples = [
+        str(item.get("summary") or "")
+        for item in [
+            *directive["successful_moves"],
+            *directive["failed_counterexamples"],
+        ]
+        if item.get("summary")
+    ]
+    receipt_refs = ",".join(directive["receipt_refs"]) or "none"
+    obligations = ",".join(directive["target_obligation_ids"]) or "none"
+    summaries = " | ".join(examples) or "none available"
+    return (
+        "\n\nUse receipt-grounded replay summaries only; do not request or reproduce hidden reasoning. "
+        f"preferred_move={selection.preferred_emitter.move_kind}; target_obligations={obligations}; "
+        f"receipt_refs={receipt_refs}; examples={summaries}."
+    )
+
+
+def _pending_blend_obligation_ids(candidate: CandidateGenome) -> list[str]:
+    return [
+        str(item.get("id") or item.get("obligation_id") or "")
+        for item in candidate.proof_obligations
+        if isinstance(item, dict)
+        and str(item.get("source") or "") == "blend_receipt"
+        and str(item.get("status") or "pending").lower() not in {"passed", "discharged", "refuted", "resolved"}
+        and str(item.get("id") or item.get("obligation_id") or "")
+    ]
+
+
 def _search_pressure_has_effect(pressure: Any) -> bool:
     return bool(
         getattr(pressure, "target_challenge_ids", None)
@@ -793,12 +1149,71 @@ def _attach_branch_allocation_to_plans(
                     "branch_slot_parent_id": slot.parent_id,
                     "branch_intent": slot.intent,
                     "branch_slot_binding_status": "planned",
+                    "coverage_target": dict(slot.coverage_target),
                 }
             )
         if include_manifest and not out:
             metadata["branch_slots"] = [item.to_dict() for item in allocation.slots]
         out.append(MutationPlan.from_dict({**plan.to_dict(), "metadata": metadata}))
     return out
+
+
+def _archive_elite_reentry_limit(policy: EvolutionPolicy) -> int:
+    metadata = policy.metadata if isinstance(policy.metadata, dict) else {}
+    return max(0, int(metadata.get("archive_elite_reentry_limit", 1)))
+
+
+def _archive_elite_admission_view(
+    *,
+    population: list[CandidateGenome],
+    archives: ArchiveManager,
+    limit: int,
+    current_round: int,
+) -> tuple[list[CandidateGenome], dict[str, Any]]:
+    existing_ids = {candidate.id for candidate in population}
+    by_id: dict[str, tuple[float, CandidateGenome]] = {}
+    stores = (
+        archives.quality_diversity.elites_by_niche,
+        archives.quality_diversity.cell_elites,
+    )
+    excluded: list[dict[str, str]] = []
+    for store in stores:
+        for raw in store.values():
+            if not isinstance(raw, dict) or not isinstance(raw.get("candidate"), dict):
+                continue
+            candidate = candidate_from_dict(copy.deepcopy(raw["candidate"]))
+            if candidate.id in existing_ids:
+                continue
+            if structurally_blocked(candidate):
+                excluded.append({"candidate_id": candidate.id, "reason": "structural_or_safety_blocked"})
+                continue
+            score = max(float(raw.get("search_quality", -1.0)), float(raw.get("final_quality", -1.0)))
+            current = by_id.get(candidate.id)
+            if current is None or score > current[0]:
+                by_id[candidate.id] = (score, candidate)
+    ranked = sorted(
+        by_id.values(),
+        key=lambda item: (*evaluator_selection_key(item[1])[:2], item[0], item[1].id),
+        reverse=True,
+    )
+    admitted: list[CandidateGenome] = []
+    for score, candidate in ranked[: max(0, int(limit))]:
+        candidate.current_fate = CandidateFate.ELITE.value
+        candidate.metadata["archive_elite_reentry"] = {
+            "source": "quality_diversity_archive",
+            "round": int(current_round),
+            "archive_quality": score,
+            "effect": "parent_selection_admission_only",
+        }
+        admitted.append(candidate)
+    audit = {
+        "limit": max(0, int(limit)),
+        "admitted_candidate_ids": [candidate.id for candidate in admitted],
+        "selected_candidate_ids": [],
+        "excluded": excluded,
+        "effect": "parent_selector_admission_only_archive_unchanged",
+    }
+    return admitted, audit
 
 
 def _branch_credit_candidates(
@@ -899,6 +1314,60 @@ def _percentile(values: list[float], quantile: float) -> float:
         return 0.0
     index = min(len(values) - 1, max(0, math.ceil(float(quantile or 0.0) * len(values)) - 1))
     return float(values[index])
+
+
+def _role_crossover_slots(
+    allocation: ProductiveBranchAllocation,
+    *,
+    parent_ids: list[str],
+    quota: int,
+    roles: Any = None,
+    blocked_parent_ids: set[str] | None = None,
+) -> dict[str, dict[str, Any]]:
+    if quota <= 0 or len(parent_ids) < 2:
+        return {}
+    role_items = (
+        [str(item) for item in roles if str(item)]
+        if isinstance(roles, list)
+        else [
+            "representation_donor",
+            "repair_pattern_donor",
+            "mechanism_fragment_donor",
+        ]
+    )
+    invalid = [role for role in role_items if role not in DONOR_ROLES]
+    if invalid:
+        raise ValueError(f"unsupported crossover donor role: {invalid[0]}")
+    if not role_items:
+        raise ValueError("crossover donor roles must not be empty")
+    assigned: dict[str, dict[str, Any]] = {}
+    blocked = set(blocked_parent_ids or set())
+    for slot in allocation.slots:
+        if len(assigned) >= quota:
+            break
+        if slot.parent_id not in parent_ids:
+            continue
+        if slot.parent_id in blocked:
+            continue
+        primary_index = parent_ids.index(slot.parent_id)
+        donor_id = next(
+            (
+                parent_ids[(primary_index + offset) % len(parent_ids)]
+                for offset in range(1, len(parent_ids))
+                if parent_ids[(primary_index + offset) % len(parent_ids)] != slot.parent_id
+            ),
+            "",
+        )
+        if not donor_id:
+            continue
+        role = role_items[len(assigned) % len(role_items)]
+        assigned[slot.slot_id] = {
+            "primary_parent_id": slot.parent_id,
+            "donor_parent_id": donor_id,
+            "donor_role": role,
+            "required_contribution_map": dict(_REQUIRED_CONTRIBUTION_MAP),
+        }
+    return assigned
 
 
 def _cell_activation_map(*, parents: list[CandidateGenome], plans: list[MutationPlan], offspring: list[CandidateGenome]) -> dict[str, Any]:

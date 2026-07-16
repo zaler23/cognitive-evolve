@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import asdict, dataclass, field
 from typing import Any, Iterable
 
@@ -313,21 +314,56 @@ def select_preliminary_incumbent(candidates: Iterable[Any]) -> Any | None:
     return max(evaluated, key=_preliminary_incumbent_key)
 
 
+def evaluator_selection_key(candidate: Any, binding: Any | None = None) -> tuple[int, float, str]:
+    """Return the single direction-aware key used by evaluator-led selection."""
+
+    payload = _external_evaluator_payload(candidate)
+    status = str(payload.get("status") or "").strip().lower()
+    if payload.get("passed") is True or status in {"passed", "pass", "ok", "success"}:
+        tier = 2
+    elif payload.get("passed") is False or status in {"failed", "fail", "error", "invalid", "rejected"}:
+        tier = 0
+    else:
+        tier = 1
+    metrics = coerce_dict(payload.get("metrics"))
+    binding_value = binding.to_dict() if hasattr(binding, "to_dict") else binding
+    selection_binding = coerce_dict(binding_value) or coerce_dict(payload.get("selection_binding"))
+    if selection_binding:
+        metric = str(selection_binding.get("metric") or "").strip()
+        direction = str(selection_binding.get("direction") or "").strip().lower()
+        value_type = str(selection_binding.get("value_type") or "").strip().lower()
+        raw_score = metrics.get(metric)
+        if (
+            not metric
+            or direction not in {"maximize", "minimize", "pass"}
+            or value_type not in {"number", "integer", "boolean"}
+            or not _selection_value_matches_type(raw_score, value_type)
+        ):
+            return -1, 0.0, str(getattr(candidate, "id", ""))
+    else:
+        direction = "maximize"
+        raw_score = metrics.get("score")
+        if raw_score is None:
+            raw_score = coerce_dict(getattr(candidate, "multihead_scores", {})).get("objective_score")
+        if raw_score is None:
+            raw_score = 1.0 if tier == 2 else 0.0
+    try:
+        score = float(raw_score)
+    except (TypeError, ValueError):
+        return -1 if selection_binding else tier, 0.0, str(getattr(candidate, "id", ""))
+    if not math.isfinite(score):
+        return -1 if selection_binding else tier, 0.0, str(getattr(candidate, "id", ""))
+    directed_score = -score if direction == "minimize" else score
+    return tier, directed_score, str(getattr(candidate, "id", ""))
+
+
 def _external_evaluator_payload(candidate: Any) -> dict[str, Any]:
     metadata = coerce_dict(getattr(candidate, "metadata", {}))
     return coerce_dict(metadata.get("evaluator"))
 
 
 def _preliminary_incumbent_key(candidate: Any) -> tuple[int, float, int, int, int, str]:
-    payload = _external_evaluator_payload(candidate)
-    status = str(payload.get("status") or "").strip().lower()
-    passed = bool(payload.get("passed")) or status in {"passed", "pass", "ok", "success"}
-    metrics = coerce_dict(payload.get("metrics"))
-    raw_score = metrics.get("score")
-    if raw_score is None:
-        raw_score = coerce_dict(getattr(candidate, "multihead_scores", {})).get("objective_score")
-    if raw_score is None:
-        raw_score = 1.0 if passed else 0.0
+    tier, score, _candidate_id = evaluator_selection_key(candidate)
     metadata = coerce_dict(getattr(candidate, "metadata", {}))
     initial = bool(metadata.get("initial_candidate") or metadata.get("initial_incumbent") or metadata.get("operator_provided_incumbent"))
     try:
@@ -339,13 +375,21 @@ def _preliminary_incumbent_key(candidate: Any) -> tuple[int, float, int, int, in
     except (TypeError, ValueError):
         created_round = 0
     return (
-        int(passed),
-        bounded_score(raw_score),
+        tier,
+        score,
         int(initial),
         -generation,
         -created_round,
         str(getattr(candidate, "id", "")),
     )
+
+
+def _selection_value_matches_type(value: Any, value_type: str) -> bool:
+    if value_type == "boolean":
+        return isinstance(value, bool)
+    if value_type == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
 def evidence_advisory_features(candidates: list[Any]) -> dict[str, Any]:
@@ -514,6 +558,7 @@ __all__ = [
     "evidence_state",
     "evidence_state_from_records",
     "evidence_terminal_reject",
+    "evaluator_selection_key",
     "has_repair_value",
     "latest_evidence_record",
     "repair_value_from_record",

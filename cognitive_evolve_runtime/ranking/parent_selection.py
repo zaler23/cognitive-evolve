@@ -8,6 +8,7 @@ from cognitive_evolve_runtime.archives.quality_diversity import pareto_frontier_
 from cognitive_evolve_runtime.nexus.adaptive_signals import mean_percentile, percentile_rank
 from cognitive_evolve_runtime.nexus.obligations import candidate_has_obligation_or_evidence_delta
 from cognitive_evolve_runtime.core.serialization import coerce_dict
+from cognitive_evolve_runtime.evaluators.evidence import evaluator_selection_key
 from cognitive_evolve_runtime.nexus.population_vitality import repair_slot_count
 from cognitive_evolve_runtime.nexus.nextgen import (
     budget_eligible_candidates,
@@ -103,27 +104,6 @@ def reproductive_value(
     )
 
 
-def evaluator_selection_key(candidate: CandidateGenome) -> tuple[int, float, str]:
-    """Return the runtime-grounded lexicographic evaluator tier and score."""
-
-    metadata = candidate.metadata if isinstance(candidate.metadata, dict) else {}
-    evaluator = metadata.get("evaluator") if isinstance(metadata.get("evaluator"), dict) else {}
-    status = str(evaluator.get("status") or "").strip().lower()
-    if evaluator.get("passed") is True or status in {"passed", "pass", "ok", "success"}:
-        tier = 2
-    elif evaluator.get("passed") is False or status in {"failed", "fail", "error", "invalid", "rejected"}:
-        tier = 0
-    else:
-        tier = 1
-    metrics = evaluator.get("metrics") if isinstance(evaluator.get("metrics"), dict) else {}
-    raw_score = metrics.get("score", candidate.multihead_scores.get("evaluator_score", candidate.multihead_scores.get("objective_score", 0.0)))
-    try:
-        score = float(raw_score)
-    except (TypeError, ValueError):
-        score = 0.0
-    return tier, score if score == score else 0.0, candidate.id
-
-
 def _archive_directive_adjustment(candidate: CandidateGenome, archives: object | None) -> float:
     qd = getattr(archives, "quality_diversity", None)
     if qd is None or not hasattr(qd, "directive_boost"):
@@ -171,11 +151,22 @@ class ParentSelector:
         limit: int = 2,
         eligibility_policy: dict[str, object] | None = None,
         advisory_features: Mapping[str, Any] | None = None,
+        search_phase: str | None = None,
     ) -> list[CandidateGenome]:
+        phase = str(search_phase or "exit_sweep").strip().lower()
+        if phase not in {"explore", "exit_sweep"}:
+            raise ValueError("search_phase must be explore or exit_sweep")
         viable = budget_eligible_candidates(population)
         target = max(0, limit)
-        round_index = _int(coerce_dict(eligibility_policy).get("current_round"), default=0)
-        selection_pressure = coerce_dict(coerce_dict(eligibility_policy).get("selection_pressure"))
+        eligibility = coerce_dict(eligibility_policy)
+        round_index = _int(eligibility.get("current_round"), default=0)
+        selection_pressure = coerce_dict(eligibility.get("selection_pressure"))
+        frontier_pressure = eligibility.get("frontier_exploration_pressure")
+        if isinstance(frontier_pressure, Mapping):
+            frontier_pressure = frontier_pressure.get("frontier_exploration_pressure")
+        if frontier_pressure is not None:
+            selection_pressure = dict(selection_pressure)
+            selection_pressure["frontier_exploration_pressure"] = frontier_pressure
         pressure_adjustments = {
             candidate.id: _selection_pressure_adjustment(candidate, selection_pressure)
             for candidate in viable
@@ -213,7 +204,7 @@ class ParentSelector:
         by_value = sorted(
             viable,
             key=lambda candidate: (
-                *evaluator_selection_key(candidate)[:2],
+                *_phase_selection_tier(candidate, phase),
                 _order(candidate, floor=-1.0),
                 base_values.get(candidate.id, -1.0),
                 candidate.id,
@@ -223,7 +214,11 @@ class ParentSelector:
         # Advisory features are never eligibility gates: they may reorder viable
         # parents, but the >=0 reproductive threshold remains the original base
         # runtime value.
-        ranked = [candidate for candidate in by_value if base_values.get(candidate.id, -1.0) >= 0.0]
+        ranked = [
+            candidate
+            for candidate in by_value
+            if base_values.get(candidate.id, -1.0) >= 0.0
+        ]
         primary = [candidate for candidate in ranked if CandidateFate.normalize(candidate.current_fate) in {CandidateFate.ACTIVE.value, CandidateFate.ELITE.value}]
         incubating = [
             candidate
@@ -244,21 +239,25 @@ class ParentSelector:
             )
             if resurrection_candidates:
                 repair_slots = max(repair_slots, min(resurrection_quota(target, pool_size=len(resurrection_candidates)), len(resurrection_candidates), target))
+            exploratory_repair = [candidate for candidate in incubating if _repair_target_candidate(candidate)]
+            if phase == "explore" and exploratory_repair:
+                repair_slots = max(repair_slots, 1)
             selected, trace = select_diverse(
                 primary,
                 limit=max(0, target - repair_slots),
                 quality_fn=lambda candidate: _order(candidate, floor=0.0),
-                tier_fn=lambda candidate: evaluator_selection_key(candidate)[:2],
+                tier_fn=lambda candidate: _phase_selection_tier(candidate, phase),
                 archives=archives,
                 advisory_features=advisory_features,
                 eligibility_policy=eligibility_policy,
             )
             if len(selected) < target and incubating:
+                repair_pool = [*exploratory_repair, *[candidate for candidate in incubating if candidate not in exploratory_repair]] if phase == "explore" else incubating
                 repair_selected, repair_trace = select_diverse(
-                    incubating,
+                    repair_pool,
                     limit=max(0, target - len(selected)),
                     quality_fn=lambda candidate: _order(candidate, floor=0.0),
-                    tier_fn=lambda candidate: evaluator_selection_key(candidate)[:2],
+                    tier_fn=lambda candidate: _phase_selection_tier(candidate, phase),
                     archives=archives,
                     advisory_features=advisory_features,
                     eligibility_policy=eligibility_policy,
@@ -276,7 +275,7 @@ class ParentSelector:
                 incubating,
                 limit=target,
                 quality_fn=lambda candidate: _order(candidate, floor=0.0),
-                tier_fn=lambda candidate: evaluator_selection_key(candidate)[:2],
+                tier_fn=lambda candidate: _phase_selection_tier(candidate, phase),
                 archives=archives,
                 advisory_features=advisory_features,
                 eligibility_policy=eligibility_policy,
@@ -302,7 +301,7 @@ class ParentSelector:
                 primary_floor,
                 limit=target,
                 quality_fn=lambda candidate: _order(candidate, floor=0.0),
-                tier_fn=lambda candidate: evaluator_selection_key(candidate)[:2],
+                tier_fn=lambda candidate: _phase_selection_tier(candidate, phase),
                 archives=archives,
                 advisory_features=advisory_features,
                 eligibility_policy=eligibility_policy,
@@ -324,7 +323,7 @@ class ParentSelector:
             repairable,
             limit=target,
             quality_fn=lambda candidate: _order(candidate, floor=0.0),
-            tier_fn=lambda candidate: evaluator_selection_key(candidate)[:2],
+            tier_fn=lambda candidate: _phase_selection_tier(candidate, phase),
             archives=archives,
             advisory_features=advisory_features,
             eligibility_policy=eligibility_policy,
@@ -381,6 +380,13 @@ def _repair_target_candidate(candidate: CandidateGenome) -> bool:
     return bool(guidance)
 
 
+def _phase_selection_tier(candidate: CandidateGenome, search_phase: str) -> tuple[int, float] | tuple[int, int, float]:
+    evaluator_tier, evaluator_score, _candidate_id = evaluator_selection_key(candidate)
+    if search_phase == "explore":
+        return int(_repair_target_candidate(candidate)), evaluator_tier, evaluator_score
+    return evaluator_tier, evaluator_score
+
+
 def _stage_parent_eligible(candidate: CandidateGenome) -> bool:
     metadata = candidate.metadata if isinstance(candidate.metadata, dict) else {}
     if structurally_blocked(candidate):
@@ -408,6 +414,12 @@ def _selection_pressure_adjustment(candidate: CandidateGenome, pressure: dict[st
     if family_terms.intersection(under | prematurely_culled):
         adjustment += under_bonus
         _selection_pressure_metadata(candidate)["under_explored_bonus"] = sorted(family_terms.intersection(under | prematurely_culled))
+    frontier_pressure = _bounded_float(data.get("frontier_exploration_pressure"), default=0.0)
+    frontier_score = _bounded_float(candidate.multihead_scores.get("frontier_score"), default=0.0)
+    if frontier_pressure and frontier_score:
+        bonus = frontier_pressure * frontier_score
+        adjustment += bonus
+        _selection_pressure_metadata(candidate)["frontier_exploration_bonus"] = bonus
     return adjustment
 
 
@@ -483,4 +495,4 @@ def _int(value: object, *, default: int) -> int:
         return default
 
 
-__all__ = ["ParentSelector", "reproductive_value"]
+__all__ = ["ParentSelector", "evaluator_selection_key", "reproductive_value"]

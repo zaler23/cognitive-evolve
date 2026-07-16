@@ -18,7 +18,8 @@ from cognitive_evolve_runtime.nexus.obligations import (
 )
 from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy
 from cognitive_evolve_runtime.nexus.protocols import NexusModelLike
-from cognitive_evolve_runtime.nexus.nextgen import budget_eligible_candidates
+from cognitive_evolve_runtime.nexus.nextgen import budget_eligible_candidates, structurally_blocked
+from cognitive_evolve_runtime.nexus.receipts import intervention_credit_records
 from cognitive_evolve_runtime.ranking.lineage_saturation import detect_lineage_saturation
 
 STAGNATION_TYPES = [
@@ -143,6 +144,31 @@ class SearchStateDiagnoser:
         policy: EvolutionPolicy | None = None,
         tool_feedback: list[dict[str, Any]] | None = None,
     ) -> SearchDiagnosis:
+        diagnosis = self._diagnose_raw(
+            population=population,
+            archives=archives,
+            history=history,
+            contract=contract,
+            policy=policy,
+            tool_feedback=tool_feedback,
+        )
+        return _finalize_diagnosis(
+            diagnosis,
+            population=population,
+            policy=policy,
+            history=history or [],
+        )
+
+    def _diagnose_raw(
+        self,
+        *,
+        population: list[CandidateGenome],
+        archives: ArchiveManager,
+        history: list[dict[str, Any]] | None = None,
+        contract: Any | None = None,
+        policy: EvolutionPolicy | None = None,
+        tool_feedback: list[dict[str, Any]] | None = None,
+    ) -> SearchDiagnosis:
         if self.model is not None and hasattr(self.model, "diagnose_search_state"):
             raw = self.model.diagnose_search_state(population=population, archives=archives, history=history or [], contract=contract, policy=policy)
             if isinstance(raw, SearchDiagnosis):
@@ -252,6 +278,133 @@ class SearchStateDiagnoser:
                 metadata={"open_family_pressure": pressure},
             )
         return SearchDiagnosis(stagnation_detected=False, recommended_actions=["continue"], notes="no generic stagnation detected")
+
+
+def _finalize_diagnosis(
+    diagnosis: SearchDiagnosis,
+    *,
+    population: list[CandidateGenome],
+    policy: EvolutionPolicy | None,
+    history: list[dict[str, Any]],
+) -> SearchDiagnosis:
+    coverage = _axis_family_coverage_floor(population, policy)
+    diagnosis.metadata["axis_family_coverage_floor"] = coverage
+    diagnosis.under_explored_families = list(
+        dict.fromkeys(
+            [
+                *diagnosis.under_explored_families,
+                *coverage["missing_families"],
+                *(f"axis:{axis}" for axis in coverage["missing_axes"]),
+            ]
+        )
+    )
+    credits = [
+        record
+        for record in intervention_credit_records(history)
+        if str(record.get("diagnosed_pressure", {}).get("stagnation_type") or "") == diagnosis.stagnation_type
+    ]
+    if not credits:
+        return diagnosis
+    diagnosis.metadata["intervention_credit"] = credits[-8:]
+    latest = credits[-1]
+    target_action = str(latest.get("target", {}).get("action") or "")
+    if latest["decision"] == "attenuate_pressure":
+        diagnosis.recommended_actions = [
+            action
+            for action in diagnosis.recommended_actions
+            if _action_key(action) != _action_key(target_action)
+        ] or ["continue"]
+        return diagnosis
+    next_action = str(latest["next_action"])
+    diagnosis.recommended_actions = list(
+        dict.fromkeys(
+            [
+                next_action,
+                *(
+                    action
+                    for action in diagnosis.recommended_actions
+                    if _action_key(action) != _action_key(target_action)
+                ),
+            ]
+        )
+    )
+    return diagnosis
+
+
+def _axis_family_coverage_floor(
+    population: list[CandidateGenome],
+    policy: EvolutionPolicy | None,
+) -> dict[str, Any]:
+    metadata = coerce_dict(getattr(policy, "metadata", None))
+    contract = coerce_dict(metadata.get("seed_portfolio_contract"))
+    required_axes = coerce_str_list(contract.get("required_axes"))
+    if not required_axes:
+        required_axes = list(
+            dict.fromkeys(
+                str(slot.get("seed_axis") or "").strip()
+                for slot in metadata.get("seed_portfolio", [])
+                if isinstance(slot, dict) and str(slot.get("seed_axis") or "").strip()
+            )
+        )
+    search_space = coerce_dict(getattr(policy, "search_space", None))
+    raw_families = (
+        search_space.get("candidate_families")
+        or search_space.get("exploration_planes")
+        or search_space.get("families")
+        or search_space.get("planes")
+        or []
+    )
+    required_families = list(
+        dict.fromkeys(
+            str(family.get("id") or family.get("name") or "").strip()
+            for family in raw_families
+            if isinstance(family, dict) and str(family.get("id") or family.get("name") or "").strip()
+        )
+    )
+    live_fates = {CandidateFate.ACTIVE.value, CandidateFate.ELITE.value, CandidateFate.INCUBATING.value}
+    live = [
+        candidate
+        for candidate in population
+        if CandidateFate.normalize(candidate.current_fate) in live_fates and not structurally_blocked(candidate)
+    ]
+    observed_axes: set[str] = set()
+    observed_families: set[str] = set()
+    for candidate in live:
+        candidate_space = coerce_dict(coerce_dict(candidate.metadata).get("search_space"))
+        axis = str(candidate_space.get("seed_axis") or "").strip()
+        family = str(candidate_space.get("family_id") or candidate_space.get("plane_id") or "").strip()
+        if axis:
+            observed_axes.add(axis)
+        if family:
+            observed_families.add(family)
+    missing_axes = [axis for axis in required_axes if axis not in observed_axes]
+    missing_families = [family for family in required_families if family not in observed_families]
+    targets = [
+        {
+            "axis": missing_axes[index] if index < len(missing_axes) else "",
+            "family": missing_families[index] if index < len(missing_families) else "",
+        }
+        for index in range(max(len(missing_axes), len(missing_families)))
+    ]
+    floor_slots = max(0, int(metadata.get("axis_family_floor_slots", 1)))
+    return {
+        "schema": "cogev.axis_family_coverage_floor.v1",
+        "basis": "current_live_candidate_occupancy",
+        "required_axes": required_axes,
+        "required_families": required_families,
+        "observed_axes": sorted(observed_axes),
+        "observed_families": sorted(observed_families),
+        "missing_axes": missing_axes,
+        "missing_families": missing_families,
+        "targets": targets,
+        "floor_slots": floor_slots,
+        "effect": "reproduction_branch_slots_only_evaluator_authority_unchanged",
+    }
+
+
+def _action_key(action: Any) -> str:
+    key = "".join(character for character in str(action or "").lower() if character.isalnum())
+    return "strategyrestart" if key == "lineagerestart" else key
 
 
 def _frontier_candidates(population: list[CandidateGenome]) -> list[CandidateGenome]:

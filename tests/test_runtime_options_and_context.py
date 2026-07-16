@@ -205,6 +205,38 @@ def test_search_mechanics_are_resolved_once_and_legacy_checkpoints_keep_old_mode
     assert legacy["legacy_mechanics_restored"] is True
 
 
+def test_default_offspring_transport_is_slot_and_single_batch_is_explicit() -> None:
+    assert resolve_runtime_options(environment={})["search.offspring_parallel_mode"] == "slot"
+    assert resolve_runtime_options(environment={"COGEV_OFFSPRING_PARALLEL_MODE": "single_batch"})["search.offspring_parallel_mode"] == "single_batch"
+
+
+def test_single_batch_truncation_threshold_is_public_and_bounded() -> None:
+    assert resolve_runtime_options(environment={})["search.single_batch_truncation_rate_threshold"] == 0.05
+    assert resolve_runtime_options(
+        environment={"COGEV_SINGLE_BATCH_TRUNCATION_RATE_THRESHOLD": "0.2"}
+    )["search.single_batch_truncation_rate_threshold"] == 0.2
+    with pytest.raises(ValueError, match="single_batch_truncation_rate_threshold"):
+        resolve_runtime_options(environment={"COGEV_SINGLE_BATCH_TRUNCATION_RATE_THRESHOLD": "1.1"})
+
+
+def test_slot_sampling_profiles_are_public_phase_aware_runtime_options() -> None:
+    options = resolve_runtime_options(environment={})
+    profiles = options["search.slot_sampling_profiles"]
+
+    assert profiles["explore"]["explore_fresh"][0] == {"temperature": 0.9, "top_p": 0.95, "seed": 1101}
+    assert profiles["exit_sweep"]["exploit_deepen"][0] == {"temperature": 0.1, "top_p": 0.4, "seed": 2201}
+
+    custom = {
+        "explore": {"default": [{"temperature": 0.7, "top_p": 0.8, "seed": 7}]},
+        "exit_sweep": {"default": [{"temperature": 0.0, "top_p": 0.2, "seed": 8}]},
+    }
+    resolved = resolve_runtime_options(request_options={"search.slot_sampling_profiles": custom}, environment={})
+    assert resolved["search.slot_sampling_profiles"] == custom
+
+    with pytest.raises(ValueError, match="search.slot_sampling_profiles"):
+        resolve_runtime_options(request_options={"search.slot_sampling_profiles": {"explore": []}}, environment={})
+
+
 def test_checkpoint_schema_upgrades_legacy_and_rejects_future(tmp_path: Path) -> None:
     checkpoint = build_checkpoint_state(
         round=1,

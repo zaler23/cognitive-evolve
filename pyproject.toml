@@ -24,7 +24,6 @@ requires-python = ">=3.11,<3.14"
 dependencies = [
   "litellm>=1.60.0",
   "pydantic>=2.7.0",
-  "tenacity>=8.2.0",
   "jsonschema>=4.22.0",
   "fastapi>=0.111.0",
   "uvicorn>=0.30.0",
@@ -37,7 +36,8 @@ test = [
   "pytest>=8.0",
   "pytest-cov>=5.0",
   "coverage>=7.0",
-  "pytest-asyncio>=0.24"
+  "pytest-asyncio>=0.24",
+  "z3-solver>=4.13.0.0,<5"
 ]
 
 [tool.pytest.ini_options]
@@ -61,7 +61,7 @@ runtime_authority = "nexus"
 alternate_runtime_backends = []
 external_integration_boundary = "adapters_only_no_alternate_runtime"
 llm_required = true
-no_llm_fallback_allowed = true
+no_llm_fallback_allowed = false # Provider failures may use recorded, auditable local degradation; silent fallback is forbidden.
 required_external_backends = ["llm"]
 
 [project.scripts]

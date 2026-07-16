@@ -1,21 +1,39 @@
 """Offspring planning, allocation, and model generation for Nexus rounds."""
 from __future__ import annotations
 
+import math
 import os
+from contextlib import nullcontext
+from dataclasses import asdict
 from typing import Any
 
 from cognitive_evolve_runtime.archives.manager import ArchiveManager
 from cognitive_evolve_runtime.candidates.crossover import crossover, neighborhood_crossover_partner
 from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome, candidate_from_dict
-from cognitive_evolve_runtime.candidates.mutation import MutationEngine, MutationOperator, MutationPlan, MutationPlanner
+from cognitive_evolve_runtime.candidates.mutation import (
+    attach_semantic_move_contract,
+    MoveContractError,
+    MutationEngine,
+    MutationOperator,
+    MutationPlan,
+    MutationPlanner,
+    apply_strategy_restart,
+    validate_move_plan,
+)
 from cognitive_evolve_runtime.contracts.objective_contract import NexusObjectiveContract
 from cognitive_evolve_runtime.nexus._serde import coerce_str_list, stable_hash
 from cognitive_evolve_runtime.llm.fanout import run_ordered_fanout
 from cognitive_evolve_runtime.llm.request_policy import LLMRequestPolicy
 from cognitive_evolve_runtime.llm.session import logical_llm_call
+from cognitive_evolve_runtime.llm.transport import max_tokens_for_request
 from cognitive_evolve_runtime.nexus.diagnosis import SearchDiagnosis
 from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy
 from cognitive_evolve_runtime.nexus.protocols import NexusModelLike, NexusMutationPlannerModelProtocol, NexusOffspringModelProtocol
+from cognitive_evolve_runtime.nexus.receipts import (
+    DONOR_ROLES,
+    ReceiptValidationError,
+    canonical_blend_receipt,
+)
 from cognitive_evolve_runtime.nexus._shared import (
     MODEL_BOUNDARY_ERRORS,
     call_with_optional_context,
@@ -51,6 +69,7 @@ _TRUSTED_BRANCH_DIRECTIVE_KEYS = (
     "problem_model_decision_trace",
     "problem_model_snapshot_hash",
     "problem_model_ledger_cursor",
+    "move_replay",
 )
 
 _LINEAGE_ENVELOPE_METADATA_KEYS = (
@@ -77,9 +96,17 @@ def _plan_mutations(
     policy: EvolutionPolicy,
     provided_context: dict[str, Any] | None = None,
     target_count: int | None = None,
+    preferred_actions_by_parent: dict[str, str] | None = None,
+    grounded_emitter_credit_by_parent: dict[str, dict[str, Any]] | None = None,
 ) -> list[MutationPlan]:
     if model is None:
-        fallback = mutation_planner.plan_from_actions(parents, actions, rarity_seeds=archives.rarity_archive.rare_seeds(limit=max(2, len(parents))))
+        fallback = mutation_planner.plan_from_actions(
+            parents,
+            actions,
+            rarity_seeds=archives.rarity_archive.rare_seeds(limit=max(2, len(parents))),
+            preferred_actions_by_parent=preferred_actions_by_parent,
+            grounded_emitter_credit_by_parent=grounded_emitter_credit_by_parent,
+        )
         return _attach_policy_directives_to_plans(fallback, policy, parents=parents)
     if not isinstance(model, NexusMutationPlannerModelProtocol):
         raise LLMConfigurationError("configured model does not implement NexusMutationPlannerModelProtocol")
@@ -89,6 +116,7 @@ def _plan_mutations(
     seen: set[str] = set()
     low_gain_streak = 0
     valid_parent_ids = {parent.id for parent in parents}
+    parent_by_id = {parent.id: parent for parent in parents}
     for batch_index in range(_mutation_plan_batch_limit(target)):
         raw = call_with_optional_context(
             model.plan_mutations,
@@ -134,6 +162,18 @@ def _plan_mutations(
             if claimed_plan_source:
                 metadata["model_claimed_plan_source"] = claimed_plan_source
             plan = MutationPlan.from_dict({**plan.to_dict(), "metadata": metadata})
+            try:
+                validate_move_plan(parent_by_id[bound_parent_ids[0]], plan)
+            except MoveContractError as exc:
+                rejected.append(
+                    {
+                        "batch": batch_index,
+                        "reason": "invalid_move_contract",
+                        "parent_ids": bound_parent_ids,
+                        "error": str(exc),
+                    }
+                )
+                continue
             sig = plan_signature(plan)
             plan.metadata["search_kernel_plan_signature"] = sig
             plan.metadata["plan_id"] = sig
@@ -186,6 +226,7 @@ def _generate_offspring(
     provided_context: dict[str, Any] | None = None,
     target_size: int | None = None,
     harvest_outcome: dict[str, Any] | None = None,
+    budget_history: list[dict[str, Any]] | None = None,
 ) -> list[CandidateGenome]:
     if harvest_outcome is not None:
         harvest_outcome.clear()
@@ -201,15 +242,21 @@ def _generate_offspring(
         raise LLMConfigurationError("configured model does not implement NexusOffspringModelProtocol")
     branch_slots = _branch_slots_from_plans(plans)
     policy_metadata = policy.metadata if isinstance(policy.metadata, dict) else {}
-    mode = str(
+    requested_mode = str(
         policy_metadata.get("offspring_parallel_mode")
         or os.environ.get("COGEV_OFFSPRING_PARALLEL_MODE")
         or "slot"
     ).strip().lower()
-    if mode not in {"slot", "single_batch"}:
+    if requested_mode not in {"slot", "single_batch"}:
         raise ValueError("COGEV_OFFSPRING_PARALLEL_MODE must be slot or single_batch")
-    if branch_slots and mode == "slot":
-        return _generate_slot_offspring(
+    transport = _offspring_transport_decision(
+        policy=policy,
+        branch_slots=branch_slots,
+        budget_history=budget_history or [],
+        target_size=max(1, int(target_size or len(plans) or 1)),
+    )
+    if branch_slots and transport["selected_mode"] == "slot":
+        offspring = _generate_slot_offspring(
             model=model,
             parents=parents,
             plans=plans,
@@ -221,10 +268,13 @@ def _generate_offspring(
             provided_context=provided_context,
             harvest_outcome=harvest_outcome,
         )
+        if harvest_outcome is not None:
+            harvest_outcome["transport"] = transport
+        return offspring
     harvest_error: Exception | None = None
     saw_model_items = False
     target = max(1, int(target_size or len(plans) or 1))
-    direct_single_batch = target_size is not None and any(_branch_slots_from_plans(plans))
+    direct_single_batch = bool(branch_slots and transport["selected_mode"] == "single_batch")
     existing_candidates = list(candidate_pool or [])
     existing_ids = {candidate.id for candidate in existing_candidates}
     existing_candidates.extend(parent for parent in parents if parent.id not in existing_ids)
@@ -252,15 +302,25 @@ def _generate_offspring(
             kind="offspring",
         )
         batch_policy.metadata["requested_candidate_count"] = max(1, target - len(target_qualified_candidates(accepted)))
-        raw = call_with_optional_context(
-            model.generate_offspring,
-            plans=plans,
-            parents=parents,
-            world=world,
-            contract=contract,
-            policy=batch_policy,
-            provided_context=provided_context,
+        batch_call = (
+            logical_llm_call(
+                f"{str((plans[0].metadata or {}).get('plan_id') or 'runtime-lineage-envelope')}/single-batch",
+                template_version=_OFFSPRING_PROMPT_TEMPLATE_VERSION,
+                request_policy=_slot_sampling_policy(policy, branch_slots[0]) if branch_slots else None,
+            )
+            if direct_single_batch
+            else nullcontext()
         )
+        with batch_call:
+            raw = call_with_optional_context(
+                model.generate_offspring,
+                plans=plans,
+                parents=parents,
+                world=world,
+                contract=contract,
+                policy=batch_policy,
+                provided_context=provided_context,
+            )
         raw_items = list(raw or [])
         saw_model_items = saw_model_items or bool(raw_items)
         model_offspring = [_candidate_from_model_offspring(item) for item in raw_items if isinstance(item, (CandidateGenome, dict))]
@@ -274,10 +334,52 @@ def _generate_offspring(
         recoverable_errors=MODEL_BOUNDARY_ERRORS,
     )
     harvest_error = result.fatal_model_error
+    if direct_single_batch and harvest_error is not None:
+        fallback = {
+            "attempted": True,
+            "passes": 1,
+            "from": "single_batch",
+            "to": "slot",
+            "status": "failed",
+            "error_type": harvest_error.__class__.__name__,
+            "error": str(harvest_error),
+        }
+        transport["fallback"] = fallback
+        slot_outcome: dict[str, Any] = {}
+        try:
+            offspring = _generate_slot_offspring(
+                model=model,
+                parents=parents,
+                plans=plans,
+                branch_slots=branch_slots,
+                world=world,
+                contract=contract,
+                policy=policy,
+                candidate_pool=candidate_pool or [],
+                provided_context=provided_context,
+                harvest_outcome=slot_outcome,
+            )
+        except MODEL_BOUNDARY_ERRORS:
+            if harvest_outcome is not None:
+                harvest_outcome.update(result.to_dict())
+                harvest_outcome["transport"] = transport
+                harvest_outcome["partial_failure_blast_radius"] = len(branch_slots)
+            raise
+        fallback["status"] = "succeeded"
+        slot_outcome["batch_error"] = f"{harvest_error.__class__.__name__}: {harvest_error}"
+        slot_outcome["transport"] = transport
+        slot_outcome["partial_failure_blast_radius"] = max(
+            len(branch_slots),
+            int(slot_outcome.get("partial_failure_blast_radius") or 0),
+        )
+        if harvest_outcome is not None:
+            harvest_outcome.update(slot_outcome)
+        return offspring
     if result.accepted:
         if harvest_outcome is not None:
             harvest_outcome.update(result.to_dict())
             harvest_outcome["status"] = "accepted"
+            harvest_outcome["transport"] = transport
         offspring = list(result.accepted)
         for candidate in offspring:
             candidate.metadata.setdefault("offspring_harvest", result.to_dict())
@@ -295,12 +397,14 @@ def _generate_offspring(
         if harvest_outcome is not None:
             harvest_outcome.update(result.to_dict())
             harvest_outcome["status"] = "model_abstained"
+            harvest_outcome["transport"] = transport
         return []
     rejection_reasons = {str(item.get("reason") or "") for item in result.rejected}
     if rejection_reasons and rejection_reasons <= {"duplicate_materialized_artifact"}:
         if harvest_outcome is not None:
             harvest_outcome.update(result.to_dict())
             harvest_outcome["status"] = "duplicate_exhausted"
+            harvest_outcome["transport"] = transport
         return []
     raise ModelResponseSchemaError("nexus_generate_offspring returned no valid offspring")
 
@@ -324,8 +428,17 @@ def _generate_slot_offspring(
 
     def _request_slot(slot: dict[str, Any]) -> tuple[CandidateGenome | None, Exception | None]:
         slot_id = str(slot["slot_id"])
-        parent_id = str(slot["parent_id"])
-        parent = parent_by_id[parent_id]
+        parent_id = str(slot.get("primary_parent_id") or slot["parent_id"])
+        slot_parent_ids = [parent_id]
+        donor_id = str(slot.get("donor_parent_id") or "")
+        if donor_id:
+            donor_role = str(slot.get("donor_role") or "")
+            if donor_role not in DONOR_ROLES:
+                raise ModelResponseSchemaError(f"offspring slot {slot_id} has unsupported donor_role: {donor_role}")
+            if donor_id == parent_id or donor_id not in parent_by_id:
+                raise ModelResponseSchemaError(f"offspring slot {slot_id} has unavailable donor parent")
+            slot_parent_ids.append(donor_id)
+        slot_parents = [parent_by_id[item] for item in slot_parent_ids]
         slot_plan_id = stable_hash({"parent_plan_id": parent_plan_id, "slot_id": slot_id})[:20]
         slot_metadata = {
             **dict(source_plan.metadata or {}),
@@ -336,7 +449,7 @@ def _generate_slot_offspring(
         slot_plan = MutationPlan.from_dict(
             {
                 **source_plan.to_dict(),
-                "parent_ids": [parent_id],
+                "parent_ids": slot_parent_ids,
                 "metadata": slot_metadata,
             }
         )
@@ -353,7 +466,7 @@ def _generate_slot_offspring(
                 raw = call_with_optional_context(
                     model.generate_offspring,
                     plans=[slot_plan],
-                    parents=[parent],
+                    parents=slot_parents,
                     world=world,
                     contract=contract,
                     policy=slot_policy,
@@ -363,7 +476,16 @@ def _generate_slot_offspring(
             if len(raw_items) != 1 or not isinstance(raw_items[0], (CandidateGenome, dict)):
                 raise ModelResponseSchemaError(f"offspring slot {slot_id} must return exactly one candidate")
             candidate = _candidate_from_model_offspring(raw_items[0])
-            _merge_plan_metadata_into_model_offspring([candidate], [slot_plan], [parent])
+            claimed_parent_ids = list(dict.fromkeys(coerce_str_list(candidate.parent_ids)))
+            if not claimed_parent_ids or claimed_parent_ids[0] != parent_id:
+                raise ModelResponseSchemaError(
+                    f"offspring slot {slot_id} must put its primary parent first"
+                )
+            claimed_slot_id = str(candidate.metadata.get("branch_slot_id") or "")
+            if claimed_slot_id and claimed_slot_id != slot_id:
+                candidate.metadata["model_claimed_branch_slot_id"] = claimed_slot_id
+            candidate.metadata["branch_slot_id"] = slot_id
+            _merge_plan_metadata_into_model_offspring([candidate], [slot_plan], slot_parents)
             return candidate, None
         except MODEL_BOUNDARY_ERRORS as exc:
             return None, exc
@@ -371,6 +493,11 @@ def _generate_slot_offspring(
     slot_results = run_ordered_fanout(branch_slots, _request_slot, thread_name_prefix="cogev-offspring-slot")
     successful = [candidate for candidate, error in slot_results if candidate is not None and error is None]
     errors = [error for candidate, error in slot_results if candidate is None and error is not None]
+    failed_slot_ids = [
+        str(slot.get("slot_id") or "")
+        for slot, (candidate, error) in zip(branch_slots, slot_results)
+        if candidate is None and error is not None
+    ]
     if not successful:
         raise errors[0]
 
@@ -396,6 +523,8 @@ def _generate_slot_offspring(
         harvest_outcome.update(result.to_dict())
         harvest_outcome["status"] = "accepted" if result.accepted else "duplicate_exhausted"
         harvest_outcome["slot_errors"] = [f"{error.__class__.__name__}: {error}" for error in errors]
+        harvest_outcome["failed_slot_ids"] = failed_slot_ids
+        harvest_outcome["partial_failure_blast_radius"] = len(failed_slot_ids)
     if errors:
         summary = "; ".join(f"{error.__class__.__name__}: {error}" for error in errors)
         for candidate in result.accepted:
@@ -404,22 +533,144 @@ def _generate_slot_offspring(
 
 
 def _slot_sampling_policy(policy: EvolutionPolicy, slot: dict[str, Any]) -> LLMRequestPolicy | None:
+    raw_directive = slot.get("directive")
+    directive = raw_directive if isinstance(raw_directive, dict) else {}
+    restart = _restart_action(directive.get("action_hint"))
+    restart_temperature = float((policy.metadata or {}).get("strategy_restart_temperature", 1.0)) if restart else 1.0
+    retry_limit = _positive_int((policy.metadata or {}).get("offspring_retry_attempts"))
     configured = (policy.metadata or {}).get("slot_sampling_profiles")
     if not isinstance(configured, dict):
-        return None
-    profiles = configured.get(str(slot.get("intent") or ""))
+        return LLMRequestPolicy(temperature=restart_temperature if restart else None, retry_attempts=retry_limit) if restart or retry_limit else None
+    phase = str((policy.metadata or {}).get("search_phase") or "explore").strip().lower()
+    phase_profiles = configured.get(phase)
+    phase_aware = isinstance(phase_profiles, dict)
+    available = phase_profiles if phase_aware else configured
+    intent = str(slot.get("intent") or "")
+    profiles = available.get(intent) if isinstance(available, dict) else None
+    profile_key = intent
+    if profiles in (None, []) and isinstance(available, dict):
+        profiles = available.get("default")
+        profile_key = "default"
     if profiles in (None, []):
-        return None
+        return LLMRequestPolicy(temperature=restart_temperature if restart else None, retry_attempts=retry_limit) if restart or retry_limit else None
     if not isinstance(profiles, list):
         raise ValueError("slot_sampling_profiles intent value must be a list")
-    profile = profiles[int(slot.get("variation_index") or 0) % len(profiles)]
+    profile_index = int(slot.get("variation_index") or 0) % len(profiles)
+    replay = directive.get("move_replay") if isinstance(directive.get("move_replay"), dict) else {}
+    preferred_emitter = replay.get("preferred_emitter") if isinstance(replay.get("preferred_emitter"), dict) else {}
+    preferred_profile = str(preferred_emitter.get("sampling_profile") or "")
+    prefix = f"{phase}:{profile_key}:"
+    if preferred_profile.startswith(prefix):
+        try:
+            preferred_index = int(preferred_profile.removeprefix(prefix))
+        except ValueError:
+            preferred_index = -1
+        if 0 <= preferred_index < len(profiles):
+            profile_index = preferred_index
+    profile = profiles[profile_index]
     if not isinstance(profile, dict):
         raise ValueError("slot_sampling_profiles entries must be objects")
+    temperature = float(profile["temperature"]) if profile.get("temperature") is not None else None
+    if restart:
+        temperature = max(restart_temperature, temperature or restart_temperature)
     return LLMRequestPolicy(
-        temperature=float(profile["temperature"]) if profile.get("temperature") is not None else None,
+        temperature=temperature,
         top_p=float(profile["top_p"]) if profile.get("top_p") is not None else None,
         seed=int(profile["seed"]) if profile.get("seed") is not None else None,
+        search_phase=phase,
+        sampling_profile_id=f"{phase}:{profile_key}:{profile_index}",
+        retry_attempts=retry_limit,
     )
+
+
+def _offspring_transport_decision(
+    *,
+    policy: EvolutionPolicy,
+    branch_slots: list[dict[str, Any]],
+    budget_history: list[dict[str, Any]],
+    target_size: int,
+) -> dict[str, Any]:
+    metadata = policy.metadata if isinstance(policy.metadata, dict) else {}
+    requested = str(metadata.get("offspring_parallel_mode") or os.environ.get("COGEV_OFFSPRING_PARALLEL_MODE") or "slot").strip().lower()
+    compiled = [_slot_sampling_policy(policy, slot) for slot in branch_slots]
+    serialized_profiles = [asdict(item) if item is not None else {} for item in compiled]
+    profile_keys = {
+        tuple(sorted((key, str(value)) for key, value in profile.items() if value is not None))
+        for profile in serialized_profiles
+    }
+    sampling_gate = {
+        "passed": len(profile_keys) <= 1,
+        "compiled_profiles": [
+            {"slot_id": str(slot.get("slot_id") or ""), **profile}
+            for slot, profile in zip(branch_slots, serialized_profiles)
+        ],
+    }
+
+    completion_tokens = 0
+    valid_children = 0
+    physical_calls = 0
+    truncations = 0
+    for record in budget_history:
+        if not isinstance(record, dict):
+            continue
+        ledger = record.get("cost_ledger") if isinstance(record.get("cost_ledger"), dict) else {}
+        totals = ledger.get("totals") if isinstance(ledger.get("totals"), dict) else {}
+        observations = ledger.get("observations") if isinstance(ledger.get("observations"), dict) else {}
+        completion_tokens += max(0, int(totals.get("completion_tokens") or 0))
+        valid_children += max(0, int(observations.get("unique_valid_children") or 0))
+        physical_calls += max(0, int(totals.get("physical_calls") or 0))
+        truncations += max(0, int(observations.get("truncation_count") or ledger.get("transport_truncation_count") or 0))
+    if valid_children > 0:
+        tokens_per_child = completion_tokens / valid_children
+        estimate_source = "round_cost_ledger"
+        output_history_available = completion_tokens > 0
+    else:
+        tokens_per_child = float(max(1, int(metadata.get("single_batch_default_tokens_per_child") or 8192)))
+        estimate_source = "conservative_default_no_valid_child_history"
+        output_history_available = False
+    output_limit = max(
+        1,
+        int(
+            metadata.get("single_batch_output_token_limit")
+            or max_tokens_for_request("nexus_generate_offspring", LLMRequestPolicy(long_context=True))
+        ),
+    )
+    required_tokens = int(math.ceil(tokens_per_child * max(1, int(target_size or 1))))
+    output_gate = {
+        "passed": output_history_available and required_tokens <= output_limit,
+        "history_available": output_history_available,
+        "history_completion_tokens": completion_tokens,
+        "history_valid_children": valid_children,
+        "observed_tokens_per_valid_child": round(tokens_per_child, 6),
+        "required_tokens": required_tokens,
+        "output_token_limit": output_limit,
+        "estimate_source": estimate_source,
+    }
+    threshold = float(metadata.get("single_batch_truncation_rate_threshold", 0.05) or 0.0)
+    observed_rate = truncations / physical_calls if physical_calls else 0.0
+    truncation_gate = {
+        "passed": physical_calls > 0 and observed_rate <= threshold,
+        "history_available": physical_calls > 0,
+        "historical_truncations": truncations,
+        "historical_physical_calls": physical_calls,
+        "observed_rate": round(observed_rate, 12),
+        "threshold": threshold,
+    }
+    gates = {
+        "sampling_homogeneous": sampling_gate,
+        "batch_output_budget": output_gate,
+        "historical_truncation_rate": truncation_gate,
+    }
+    failed_gate = next((name for name, gate in gates.items() if gate["passed"] is not True), "")
+    selected = "single_batch" if requested == "single_batch" and not failed_gate and branch_slots else "slot"
+    return {
+        "schema": "cogev.offspring_transport_gate.v1",
+        "requested_mode": requested,
+        "selected_mode": selected,
+        "reason": "all_gates_passed" if selected == "single_batch" else f"gate_failed:{failed_gate}" if requested == "single_batch" and failed_gate else "slot_requested_or_no_branch_slots",
+        "gates": gates,
+        "fallback": {"attempted": False, "passes": 0, "from": selected, "to": selected, "status": "not_needed"},
+    }
 
 
 def _deterministic_fallback_offspring(
@@ -455,6 +706,12 @@ def _bind_deterministic_branch_slot(candidate: CandidateGenome, plan: MutationPl
     arm_id = str(plan_metadata.get("branch_arm_id") or "")
     parent_id = str(plan_metadata.get("branch_slot_parent_id") or "")
     root_id = str(candidate.lineage[0] if candidate.lineage else candidate.id)
+    if plan.operator == MutationOperator.LINEAGE_RESTART and candidate.metadata.get("strategy_restart"):
+        metadata["branch_slot_binding_status"] = "bound"
+        metadata["branch_slot_parent_id"] = parent_id
+        metadata["branch_arm_id"] = root_id
+        candidate.metadata = metadata
+        return
     if candidate.parent_ids and candidate.parent_ids[0] == parent_id and arm_id == root_id:
         metadata["branch_slot_binding_status"] = "bound"
     else:
@@ -522,7 +779,11 @@ def _policy_for_generation_batch(
                 }
                 for item in rejected[-16:]
             ],
-            f"{kind}_instruction": "Produce alternatives that land in new descriptor cells and avoid accepted signatures; do not merely paraphrase.",
+            f"{kind}_instruction": (
+                "Produce alternatives that land in new descriptor cells and avoid accepted signatures; do not merely paraphrase. "
+                "For a Transfer or cross_domain_transfer candidate, include metadata.transfer_receipt with source_relations, "
+                "target_relations, element-level mapping, preserved_invariant, predicted_break_condition, probe_ref, and artifact_hash."
+            ),
             "search_kernel_skills": search_skill_payload(limit=4),
         }
     )
@@ -617,6 +878,7 @@ def _demote_model_offspring_runtime_controls(candidate: CandidateGenome) -> None
         metadata["model_claimed_runtime_controls"] = controls
     candidate.metadata = metadata
 
+
 def _merge_plan_metadata_into_model_offspring(offspring: list[CandidateGenome], plans: list[MutationPlan], parents: list[CandidateGenome] | None = None) -> None:
     if not plans:
         if offspring:
@@ -649,6 +911,7 @@ def _merge_plan_metadata_into_model_offspring(offspring: list[CandidateGenome], 
                 instruction="",
                 metadata={"unplanned_model_variation": True, "plan_binding_status": "unplanned_model_variation"},
             )
+        candidate.metadata["mutation_operator"] = plan.operator
         claimed_plan_id = str(candidate.metadata.get("plan_id") or candidate.metadata.get("mutation_plan_id") or "").strip()
         authoritative_plan_id = str((plan.metadata or {}).get("plan_id") or (plan.metadata or {}).get("id") or "").strip()
         if claimed_plan_id and claimed_plan_id != authoritative_plan_id:
@@ -700,16 +963,37 @@ def _merge_plan_metadata_into_model_offspring(offspring: list[CandidateGenome], 
         if len(bound_parents) != len(claimed_parent_ids):
             raise ModelResponseSchemaError(f"model offspring {candidate.id} references an unavailable parent")
         candidate.parent_ids = claimed_parent_ids
-        candidate.generation = max(parent.generation for parent in bound_parents) + 1
         _demote_model_offspring_runtime_controls(candidate)
-        _bind_branch_slot(
+        claimed_move_evidence = {
+            key: candidate.metadata.pop(key)
+            for key in ("move_contract", "move_receipt")
+            if key in candidate.metadata
+        }
+        if claimed_move_evidence:
+            candidate.metadata["model_claimed_move_evidence"] = claimed_move_evidence
+        selected_slot = _bind_branch_slot(
             candidate,
             branch_slots=branch_slots,
             used_slot_ids=used_branch_slot_ids,
             parent_by_id=parent_by_id,
         )
+        _bind_crossover_parentage(candidate, slot=selected_slot, parent_by_id=parent_by_id)
+        bound_parents = [parent_by_id[item] for item in candidate.parent_ids if item in parent_by_id]
+        candidate.generation = max(parent.generation for parent in bound_parents) + 1
         candidate.lineage = list(dict.fromkeys([item for parent in bound_parents for item in parent.lineage] + [candidate.id]))
         _merge_parent_edge_lineage(candidate, bound_parents)
+        attach_semantic_move_contract(candidate, plan)
+        directive = candidate.metadata.get("branch_slot_directive")
+        action_hint = str(directive.get("action_hint") or "") if isinstance(directive, dict) else ""
+        if _restart_action(action_hint):
+            apply_strategy_restart(candidate, bound_parents[0], reset_inherited_state=False)
+
+
+def _restart_action(action: Any) -> bool:
+    return "".join(character for character in str(action or "").lower() if character.isalnum()) in {
+        "strategyrestart",
+        "lineagerestart",
+    }
 
 
 def _branch_slots_from_plans(plans: list[MutationPlan]) -> list[dict[str, Any]]:
@@ -735,9 +1019,9 @@ def _bind_branch_slot(
     branch_slots: list[dict[str, Any]],
     used_slot_ids: set[str],
     parent_by_id: dict[str, CandidateGenome],
-) -> None:
+) -> dict[str, Any] | None:
     if not branch_slots:
-        return
+        return None
     metadata = candidate.metadata
     claimed_id = str(metadata.get("branch_slot_id") or "")
     primary_parent_id = str(candidate.parent_ids[0] if candidate.parent_ids else "")
@@ -771,7 +1055,7 @@ def _bind_branch_slot(
         metadata.pop("branch_arm_id", None)
         metadata.pop("branch_slot_parent_id", None)
         metadata.pop("branch_intent", None)
-        return
+        return None
     used_slot_ids.add(selected_id)
     metadata["branch_slot_id"] = selected_id
     metadata["branch_arm_id"] = str(selected.get("arm_id") or "")
@@ -788,6 +1072,70 @@ def _bind_branch_slot(
     for key in _TRUSTED_BRANCH_DIRECTIVE_KEYS:
         if key in directive:
             metadata[key] = directive[key]
+    donor_id = str(selected.get("donor_parent_id") or "")
+    if donor_id:
+        metadata["primary_parent_id"] = str(selected.get("primary_parent_id") or selected.get("parent_id") or "")
+        metadata["donor_parent_id"] = donor_id
+        metadata["donor_role"] = str(selected.get("donor_role") or "")
+        metadata["required_contribution_map"] = dict(selected.get("required_contribution_map") or {})
+    return selected
+
+
+def _bind_crossover_parentage(
+    candidate: CandidateGenome,
+    *,
+    slot: dict[str, Any] | None,
+    parent_by_id: dict[str, CandidateGenome],
+) -> None:
+    if not slot or not slot.get("donor_parent_id"):
+        return
+    metadata = candidate.metadata
+    primary_id = str(slot.get("primary_parent_id") or slot.get("parent_id") or "")
+    donor_id = str(slot.get("donor_parent_id") or "")
+    donor_role = str(slot.get("donor_role") or "")
+    primary = parent_by_id[primary_id]
+    donor = parent_by_id[donor_id]
+    raw = metadata.get("blend_receipt")
+    try:
+        if not isinstance(raw, dict):
+            raise ReceiptValidationError("crossover candidate is missing blend_receipt")
+        receipt = canonical_blend_receipt(
+            raw,
+            candidate=candidate,
+            primary=primary,
+            donor=donor,
+            donor_role=donor_role,
+        )
+    except ReceiptValidationError as exc:
+        candidate.parent_ids = [primary_id]
+        metadata.pop("blend_receipt", None)
+        metadata["blend_receipt_rejection"] = str(exc)
+        return
+    candidate.parent_ids = [primary_id, donor_id]
+    metadata["blend_receipt"] = receipt.to_dict()
+    obligations = list(receipt.incompatibilities) + list(receipt.unresolved_obligations)
+    if not obligations:
+        return
+    introduced = list(candidate.obligation_delta.get("introduced", []))
+    for index, description in enumerate(obligations):
+        obligation_id = "blend-obligation-" + stable_hash(
+            {
+                "candidate_id": candidate.id,
+                "receipt_id": receipt.receipt_id,
+                "index": index,
+                "description": description,
+            }
+        )[:16]
+        candidate.proof_obligations.append(
+            {
+                "id": obligation_id,
+                "status": "pending",
+                "description": description,
+                "source": "blend_receipt",
+            }
+        )
+        introduced.append(obligation_id)
+    candidate.obligation_delta["introduced"] = list(dict.fromkeys(introduced))
 
 
 def _artifact_has_content(value: Any) -> bool:

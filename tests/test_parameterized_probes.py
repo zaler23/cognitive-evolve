@@ -13,7 +13,7 @@ from cognitive_evolve_runtime.nexus.search_kernel.branch_allocator import (
 )
 from cognitive_evolve_runtime.tools.feedback import ToolFeedback
 from cognitive_evolve_runtime.verification.cache import check_with_cache
-from cognitive_evolve_runtime.verification.honesty_core import ProbeCase
+from cognitive_evolve_runtime.verification.honesty_core import ProbeCase, measure_honesty
 from cognitive_evolve_runtime.verification.ladder import VerificationStrength
 from cognitive_evolve_runtime.verification.probe_executor import (
     apply_probe_counterexample_evidence,
@@ -68,6 +68,75 @@ def test_parameterized_probe_executes_fixed_json_assertions_and_keeps_pending_ca
     assert observed["counterexample_count"] == 1
     assert observed["pending_count"] == 1
     assert observed["probe_survival_ratio"] == 0.5
+
+
+def test_known_good_bad_calibration_distinguishes_engine_artifacts_and_establishes_variety() -> None:
+    candidate = _candidate(
+        _case("calibrated", path="/metrics/score", operator="equal", expected="8"),
+        artifact={"metrics": {"score": "8"}},
+    )
+    regime = compile_grounding_regime(
+        candidate=candidate,
+        verifier_fingerprint="vf",
+        artifact_hash="artifact",
+        oracle_kind="toolrunner",
+        override_adversarial_budget=1,
+    )
+    raw = VerificationResult(passed=True)
+
+    observed = execute_probes(raw, regime, candidate=candidate)
+    measurements = measure_honesty(raw, regime, observed)
+
+    assert observed["known_good_bad_distinguishable"] is True
+    assert [
+        (item["calibration_role"], item["status"])
+        for item in observed["known_good_bad_probe_results"]
+    ] == [("known_good", "survived"), ("known_bad", "counterexample")]
+    assert all(
+        item["engine_generated"] is True
+        and item["provenance"] == "engine"
+        and item["calibration_artifact_sha256"]
+        for item in observed["known_good_bad_probe_results"]
+    )
+    assert measurements.variety_score == 1.0
+    assert observed["survived_count"] == 1
+    assert observed["counterexample_count"] == 0
+
+
+def test_known_good_bad_calibration_rejects_degenerate_probe(monkeypatch) -> None:
+    candidate = _candidate(_case("degenerate", path="/metrics/score", operator="equal", expected=8))
+    regime = compile_grounding_regime(
+        candidate=candidate,
+        verifier_fingerprint="vf",
+        artifact_hash="artifact",
+        oracle_kind="toolrunner",
+        override_adversarial_budget=1,
+    )
+
+    def _always_survives(_artifact, probes):  # noqa: ANN001, ANN202
+        return [
+            {
+                "probe_id": probe.probe_id,
+                "assertion_id": str(probe.parameters.get("assertion_id") or ""),
+                "status": "survived",
+                "path": str(probe.parameters.get("path") or ""),
+                "operator": str(probe.parameters.get("operator") or ""),
+            }
+            for probe in probes
+        ]
+
+    monkeypatch.setattr(
+        "cognitive_evolve_runtime.verification.probe_executor._run_artifact_assertions",
+        _always_survives,
+    )
+
+    observed = execute_probes(VerificationResult(passed=True), regime, candidate=candidate)
+
+    assert observed["known_good_bad_distinguishable"] is False
+    assert [item["status"] for item in observed["known_good_bad_probe_results"]] == [
+        "survived",
+        "survived",
+    ]
 
 
 def test_probe_harness_preserves_python_loader_path(monkeypatch) -> None:

@@ -3,6 +3,8 @@ from __future__ import annotations
 
 CANDIDATE_READY_FOR_EXTERNAL_REVIEW = "candidate_ready_for_external_review"
 DIMINISHING_RETURNS_CHECKPOINT = "diminishing_returns_checkpoint"
+GOAL_REACHED = "goal_reached"
+STAGNATION_EXHAUSTED = "stagnation_exhausted"
 
 EXTERNAL_REVIEW_STOP_REASONS = frozenset(
     {
@@ -46,12 +48,24 @@ def is_solved_stop_reason(value: object) -> bool:
     return str(value or "").strip().lower() in SOLVED_STOP_REASONS
 
 
+def stop_reason_class(value: object) -> str:
+    reason = str(value or "").strip().lower()
+    if reason == CANDIDATE_READY_FOR_EXTERNAL_REVIEW:
+        return GOAL_REACHED
+    if reason in {DIMINISHING_RETURNS_CHECKPOINT, "adaptive_safety_checkpoint", "max_rounds"}:
+        return STAGNATION_EXHAUSTED
+    return ""
+
+
 __all__ = [
     "CANDIDATE_READY_FOR_EXTERNAL_REVIEW",
     "DIMINISHING_RETURNS_CHECKPOINT",
+    "GOAL_REACHED",
+    "STAGNATION_EXHAUSTED",
     "EXTERNAL_REVIEW_STOP_REASONS",
     "SOLVED_STOP_REASONS",
     "is_external_review_stop_reason",
     "is_solved_stop_reason",
     "normalize_external_review_stop_reason",
+    "stop_reason_class",
 ]

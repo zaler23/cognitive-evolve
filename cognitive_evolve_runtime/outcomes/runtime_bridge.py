@@ -491,6 +491,25 @@ def latent_exploration_plan_for_contract(contract: Any | None, *, limit: int = 1
     if not selected:
         return {}
     trace = snapshot.decision_trace(decision_type="exploration_planning") if snapshot is not None else {}
+    selected_rank = {action.action_id: index for index, action in enumerate(selected, start=1)}
+    known_intents = {intent.id for intent in state.intents}
+    acquisition_candidates = []
+    for action in state.actions:
+        item = action.acquisition_audit(state.intents, posterior_entropy=state.posterior_entropy())
+        item["admissible"] = not action.target_intent_ids or all(intent_id in known_intents for intent_id in action.target_intent_ids)
+        item["selected"] = action.action_id in selected_rank
+        item["selection_rank"] = selected_rank.get(action.action_id)
+        item["selected_reason"] = (
+            "highest_acquisition_score_with_low_cost_tiebreak"
+            if item["selected"]
+            else "lower_acquisition_priority" if item["admissible"] else "inadmissible_unknown_target_hypothesis"
+        )
+        acquisition_candidates.append(item)
+    trace["acquisition"] = {
+        "candidates": acquisition_candidates,
+        "selected_action_ids": [action.action_id for action in selected],
+        "selection_rule": "max acquisition_score, then robust_information_gain, then lower cost, then action_id",
+    }
     return {
         "latent_exploration_actions": [action.to_dict() for action in selected],
         "mutation_actions": [_mutation_action_for_exploration(action) for action in selected],
@@ -1392,6 +1411,10 @@ def _action_from_dict(raw: Any) -> ExplorationAction | None:
         risk=_float(data.get("risk"), default=0.0),
         cost=_float(data.get("cost"), default=0.0),
         evidence_ref=str(data.get("evidence_ref") or ""),
+        hypothesis_outcomes={
+            str(hypothesis_id): tuple(_str_list(outcomes))
+            for hypothesis_id, outcomes in coerce_dict(data.get("hypothesis_outcomes")).items()
+        },
     )
 
 

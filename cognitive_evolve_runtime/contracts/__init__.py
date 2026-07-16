@@ -1,7 +1,6 @@
-from .contract_reviser import ContractReviser
-from .contract_synthesizer import ContractSynthesizer
-from .contract_validator import ContractValidator
 from .objective_contract import (
+    CriterionSpec,
+    EvaluatorBinding,
     ObjectiveContractCompiler,
     TaskContract,
     TaskContractValidator,
@@ -12,9 +11,8 @@ from .objective_contract import (
 from .schemas import ContractItem, ContractValidationReport, EvaluationContract, MATERIAL_DELTA_TYPES, META_CONTRACT_VERSION, RUN_STATUSES
 
 __all__ = [
-    "ContractReviser",
-    "ContractSynthesizer",
-    "ContractValidator",
+    "CriterionSpec",
+    "EvaluatorBinding",
     "contract_from_any",
     "objective_contract_from_task",
     "ObjectiveContractCompiler",

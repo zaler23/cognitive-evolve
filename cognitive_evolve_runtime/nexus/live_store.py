@@ -82,10 +82,15 @@ class LiveNexusStore:
         progress_event = dict(update.get("progress_event") or {})
         budget_history = [dict(item) for item in update.get("budget_history", []) if isinstance(item, dict)]
         adaptive_state = dict(update.get("adaptive_state") or {}) if isinstance(update.get("adaptive_state"), dict) else {}
+        elo_state = dict(update.get("elo") or {}) if isinstance(update.get("elo"), dict) else {}
         fabric_state = dict(update.get("fabric") or {}) if isinstance(update.get("fabric"), dict) else {}
+        cost_ledger = dict(update.get("cost_ledger") or {}) if isinstance(update.get("cost_ledger"), dict) else {}
         runtime_options = dict(update.get("runtime_options") or self.runtime_options) if isinstance(update.get("runtime_options") or self.runtime_options, dict) else {}
         policy_metadata = coerce_dict(getattr(policy, "metadata", None))
         search_kernel_state = dict(update.get("search_kernel") or {}) if isinstance(update.get("search_kernel"), dict) else {}
+        representation_store = dict(update.get("representation_store") or {}) if isinstance(update.get("representation_store"), dict) else {}
+        if representation_store:
+            search_kernel_state["representation_shadow_store"] = representation_store
         sidecar_ref = persist_seed_reservoir_sidecar(self.output_dir, policy_metadata.get(SEED_RESERVOIR_SIDECAR_PAYLOAD_KEY))
         if sidecar_ref:
             if isinstance(getattr(policy, "metadata", None), dict):
@@ -109,6 +114,9 @@ class LiveNexusStore:
         budget_payload = dict(self.budget)
         budget_payload["current_round"] = round_index
         budget_payload["max_rounds"] = self.max_rounds
+        progress_metadata = progress_event.get("metadata") if isinstance(progress_event.get("metadata"), dict) else {}
+        if progress_metadata.get("search_phase") in {"explore", "exit_sweep"}:
+            budget_payload["search_phase"] = progress_metadata["search_phase"]
         if progress_event.get("max_rounds"):
             budget_payload["round_limit"] = int(progress_event.get("max_rounds") or self.max_rounds)
         allow_round_repair = phase == "error_checkpoint"
@@ -130,7 +138,9 @@ class LiveNexusStore:
                 budget_history=budget_history,
                 budget=budget_payload,
                 adaptive_state=adaptive_state,
+                elo=elo_state,
                 fabric=fabric_state,
+                cost_ledger=cost_ledger,
                 search_kernel=search_kernel_state,
                 runtime_options=runtime_options,
                 allow_progress_round_repair=allow_round_repair,
@@ -164,6 +174,7 @@ class LiveNexusStore:
             "progress_event": progress_event,
             "adaptive_state": adaptive_state,
             "fabric": fabric_state,
+            "cost_ledger": cost_ledger,
             "runtime_options": runtime_options,
             "search_kernel": search_kernel_state,
             "monitor_state": monitor_state,

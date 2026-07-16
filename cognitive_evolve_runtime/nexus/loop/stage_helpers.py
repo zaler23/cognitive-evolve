@@ -61,27 +61,33 @@ def _notify_observer(
     diagnosis: SearchDiagnosis,
     progress_event: dict[str, Any],
     budget_history: list[dict[str, Any]],
+    elo_state: dict[str, Any] | None = None,
     error: dict[str, Any] | None = None,
     adaptive_state: dict[str, Any] | None = None,
     fabric_state: dict[str, Any] | None = None,
+    cost_ledger: dict[str, Any] | None = None,
+    representation_store: dict[str, Any] | None = None,
 ) -> None:
     if observer is None:
         return
-    observer(
-        {
-            "phase": phase,
-            "round": round_index,
-            "population": population,
-            "archives": archives,
-            "policy": policy,
-            "diagnosis": diagnosis,
-            "progress_event": progress_event,
-            "budget_history": list(budget_history),
-            "error": error,
-            "adaptive_state": dict(adaptive_state or {}),
-            "fabric": dict(fabric_state or {}),
-        }
-    )
+    payload = {
+        "phase": phase,
+        "round": round_index,
+        "population": population,
+        "archives": archives,
+        "policy": policy,
+        "diagnosis": diagnosis,
+        "progress_event": progress_event,
+        "budget_history": list(budget_history),
+        "elo": dict(elo_state or {}),
+        "error": error,
+        "adaptive_state": dict(adaptive_state or {}),
+        "fabric": dict(fabric_state or {}),
+        "cost_ledger": dict(cost_ledger or {}),
+    }
+    if representation_store:
+        payload["representation_store"] = dict(representation_store)
+    observer(payload)
 
 
 __all__ = ["_eligibility_policy", "_error_progress_event", "_notify_observer", "_raise_if_cancelled", "_theory_config_from_policy"]

@@ -5,6 +5,8 @@ import json
 import re
 from typing import Any
 
+from cognitive_evolve_runtime.core.redaction import public_error_message
+
 from .env import LLMResponseError, prompt_char_limit_details
 
 
@@ -97,7 +99,8 @@ def extract_json_from_text(text: str) -> dict[str, Any]:
 
     hint = "refusal_or_empty" if _REFUSAL_RE.search(cleaned) else "no_json_object_found"
     detail = f"{last_error}: " if last_error is not None else ""
-    raise LLMResponseError(f"LLM response was not valid JSON: parse_hint={hint}: {detail}{cleaned[:500]}")
+    safe_snippet = public_error_message(cleaned[:500], limit=500)
+    raise LLMResponseError(f"LLM response was not valid JSON: parse_hint={hint}: {detail}{safe_snippet}")
 
 
 def _json_candidates(cleaned: str) -> list[str]:

@@ -24,9 +24,8 @@ def test_build_routed_prompt_and_standalone_dry_run(monkeypatch: pytest.MonkeyPa
     assert "One-shot policies" in routed
     assert str(task_dir) in routed
 
-    monkeypatch.setattr(commands, "classify", lambda prompt: route)
     monkeypatch.setattr(commands, "new_task", lambda task_type, slug: task_dir)
-    monkeypatch.setattr(commands, "ensure_enhanced_task_contract", lambda *args, **kwargs: {})
+    monkeypatch.setattr(commands, "ensure_enhanced_task_contract", lambda *args, **kwargs: {"route": route.to_dict()})
     assert commands.run_standalone("refactor architecture", dry_run=True) == 0
     out = capsys.readouterr().out
     assert "Dry run" in out and "L4_evolutionary" in out

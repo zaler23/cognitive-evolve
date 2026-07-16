@@ -49,6 +49,17 @@ def test_event_store_append_fsyncs_and_redacts(monkeypatch: pytest.MonkeyPatch, 
     assert "[REDACTED]" in raw
 
 
+def test_event_store_replay_reports_corrupted_lines(caplog: pytest.LogCaptureFixture, tmp_path: Path) -> None:
+    path = tmp_path / "events.jsonl"
+    path.write_text('{"type": "ok"}\nnot-json\n{"type": "also-ok"}\n{broken\n', encoding="utf-8")
+
+    with caplog.at_level("WARNING", logger="cognitive_evolve_runtime.persistence.event_store"):
+        events = EventStore(path).read_all()
+
+    assert [event["type"] for event in events] == ["ok", "also-ok"]
+    assert "skipped 2 corrupted lines" in caplog.text
+
+
 def test_redact_secret_shaped_key_handles_nested_payloads_without_crashing() -> None:
     payload = {
         "type": "latent_metadata",

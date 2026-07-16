@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Any
 
 from cognitive_evolve_runtime.candidates.genome import CandidatePopulation
+from cognitive_evolve_runtime.evaluators.evidence import select_preliminary_incumbent
 from cognitive_evolve_runtime.nexus.diagnosis import SearchDiagnosis
 from cognitive_evolve_runtime.nexus.model_errors import is_quota_error
 from cognitive_evolve_runtime.nexus._shared import MODEL_BOUNDARY_ERRORS
@@ -44,47 +45,49 @@ class StopDecisionEngine:
             return ""
         if policy == "max_rounds":
             return ""
+        preliminary_incumbent = select_preliminary_incumbent(population.candidates)
+        current_best_id = preliminary_incumbent.id if preliminary_incumbent is not None else best_answer_id
         if adaptive_stagnation_exhausted(
             adaptive=bool(getattr(budget, "adaptive", False)),
-            best_answer_id=best_answer_id,
+            best_answer_id=current_best_id,
             history=[item for item in getattr(budget, "history", []) if isinstance(item, dict)],
             diagnosis=diagnosis,
             policy=evolution_policy,
             candidates=population.candidates,
         ):
             return DIMINISHING_RETURNS_CHECKPOINT
-        convergence_reason = self._self_observed_convergence(budget=budget, diagnosis=diagnosis, best_answer_id=best_answer_id)
+        convergence_reason = self._self_observed_convergence(budget=budget, diagnosis=diagnosis, best_answer_id=current_best_id)
         if convergence_reason:
             if normalize_external_review_stop_reason(convergence_reason):
                 return convergence_reason
             return convergence_reason
         if policy == "adaptive_until_solved":
             if isinstance(model, NexusStopModelProtocol):
-                decision = self._model_stop_decision(model=model, budget=budget, diagnosis=diagnosis, best_answer_id=best_answer_id, population=population)
+                decision = self._model_stop_decision(model=model, budget=budget, diagnosis=diagnosis, best_answer_id=current_best_id, population=population)
                 if isinstance(decision, dict) and decision.get("stop"):
-                    review_reason = _external_review_reason(decision, best_answer_id=best_answer_id)
+                    review_reason = _external_review_reason(decision, best_answer_id=current_best_id)
                     if review_reason:
                         return review_reason
                     if decision.get("solved") is True:
-                        return CANDIDATE_READY_FOR_EXTERNAL_REVIEW if best_answer_id else "model_stop_unsolved_needs_continuation"
+                        return CANDIDATE_READY_FOR_EXTERNAL_REVIEW if current_best_id else "model_stop_unsolved_needs_continuation"
                     return "model_stop_unsolved_needs_continuation"
                 if decision is True:
-                    return CANDIDATE_READY_FOR_EXTERNAL_REVIEW if best_answer_id else "model_stop_unsolved_needs_continuation"
+                    return CANDIDATE_READY_FOR_EXTERNAL_REVIEW if current_best_id else "model_stop_unsolved_needs_continuation"
             return ""
         if policy == "convergence_or_max_rounds":
-            if best_answer_id and not diagnosis.stagnation_detected:
+            if current_best_id and not diagnosis.stagnation_detected:
                 return "converged_after_minimum"
             return ""
         if policy == "llm_after_minimum" and isinstance(model, NexusStopModelProtocol):
-            decision = self._model_stop_decision(model=model, budget=budget, diagnosis=diagnosis, best_answer_id=best_answer_id, population=population)
+            decision = self._model_stop_decision(model=model, budget=budget, diagnosis=diagnosis, best_answer_id=current_best_id, population=population)
             if isinstance(decision, dict):
                 if not decision.get("stop"):
                     return ""
-                review_reason = _external_review_reason(decision, best_answer_id=best_answer_id)
+                review_reason = _external_review_reason(decision, best_answer_id=current_best_id)
                 if review_reason:
                     return review_reason
                 if decision.get("solved") is True:
-                    return CANDIDATE_READY_FOR_EXTERNAL_REVIEW if best_answer_id else "model_stop_unsolved_needs_continuation"
+                    return CANDIDATE_READY_FOR_EXTERNAL_REVIEW if current_best_id else "model_stop_unsolved_needs_continuation"
                 return "model_stop_unsolved_needs_continuation"
             if bool(decision):
                 return "model_stop_after_minimum"
@@ -104,7 +107,7 @@ class StopDecisionEngine:
         recent = history[-2:]
         recent_best = [str(((item.get("ranking") or {}).get("best_final_answer_id") if isinstance(item.get("ranking"), dict) else "") or "") for item in recent]
         recent_diag = [str(((item.get("diagnosis") or {}).get("stagnation_type") if isinstance(item.get("diagnosis"), dict) else "") or "") for item in recent]
-        if recent_best and all(item == best_answer_id for item in recent_best) and recent_diag and all(item.lower() in {"none", "converged"} for item in recent_diag):
+        if not diagnosis.stagnation_detected and recent_best and all(item == best_answer_id for item in recent_best) and recent_diag and all(item.lower() in {"none", "converged"} for item in recent_diag):
             return CANDIDATE_READY_FOR_EXTERNAL_REVIEW
         return ""
 

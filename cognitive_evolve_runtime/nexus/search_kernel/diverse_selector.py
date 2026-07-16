@@ -90,6 +90,13 @@ def select_diverse(
                 break
             if candidate.id in {item.id for item in selected}:
                 continue
+            if candidate.metadata.get("archive_elite_reentry") and _constraint_reason(
+                candidate,
+                selected,
+                max_per_lineage=max_per_lineage,
+                max_per_cell=max_per_cell,
+            ):
+                continue
             selected.append(candidate)
             trace.selected_ids.append(candidate.id)
             trace.rejected.append({"candidate_id": candidate.id, "reason": "constraint_relaxed_fill"})
@@ -108,10 +115,7 @@ def _quality(candidate: CandidateGenome, *, quality_fn: Callable[[CandidateGenom
             base += 0.05 * _bounded(feature.get("diversity")) + 0.05 * _bounded(feature.get("plan_value")) - 0.05 * _bounded(feature.get("risk"))
     qd = getattr(archives, "quality_diversity", None)
     if qd is not None and hasattr(qd, "directive_boost"):
-        try:
-            base += float(qd.directive_boost(candidate))
-        except Exception:
-            pass
+        base += float(qd.directive_boost(candidate))
     return max(0.0, min(1.0, float(base)))
 
 

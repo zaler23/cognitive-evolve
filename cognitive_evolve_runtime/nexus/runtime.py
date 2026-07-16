@@ -37,6 +37,7 @@ from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy, EvolutionPoli
 from cognitive_evolve_runtime.verification.synthesizer import VerificationSynthesizer
 from cognitive_evolve_runtime.verification.types import VerificationPlan
 from cognitive_evolve_runtime.nexus.protocols import NexusModelLike
+from cognitive_evolve_runtime.nexus.representation_shadow import RepresentationProvider
 from cognitive_evolve_runtime.nexus.project_verification import ProjectVerificationSummary
 from cognitive_evolve_runtime.nexus.fallbacks import capture_fallback_events, record_fallback
 from cognitive_evolve_runtime.nexus.runtime_options import option_bool, resolve_runtime_options, restore_runtime_options
@@ -44,7 +45,7 @@ from cognitive_evolve_runtime.nexus.runtime_services import NexusPersistenceServ
 from cognitive_evolve_runtime.nexus._shared import MODEL_BOUNDARY_ERRORS, positive_int
 from cognitive_evolve_runtime.nexus.stop_reasons import normalize_external_review_stop_reason
 from cognitive_evolve_runtime.persistence.checkpoint import CheckpointStore, contract_payload_for_persistence
-from cognitive_evolve_runtime.persistence.transactional_snapshot import snapshot_reader
+from cognitive_evolve_runtime.persistence.transactional_snapshot import read_snapshot_json, snapshot_reader
 
 
 @dataclass
@@ -68,10 +69,18 @@ class NexusRunResult:
 
 
 class NexusRuntime:
-    def __init__(self, *, model: NexusModelLike | None = None, model_routes: NexusModelRoutes | dict[str, Any] | None = None, output_dir: str | Path | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        model: NexusModelLike | None = None,
+        model_routes: NexusModelRoutes | dict[str, Any] | None = None,
+        output_dir: str | Path | None = None,
+        representation_provider: RepresentationProvider | None = None,
+    ) -> None:
         self.model_routes = coerce_model_routes(model=model, model_routes=model_routes)
         self.model = self.model_routes.model_for(NexusModelRole.DEFAULT)
         self.output_dir = Path(output_dir) if output_dir is not None else None
+        self.representation_provider = representation_provider
         self.contract_builder = NexusObjectiveContractBuilder()
         self.policy_builder = EvolutionPolicyBuilder()
         self.context_orchestrator = ContextOrchestrator()
@@ -198,6 +207,7 @@ class NexusRuntime:
                 adaptive_config=adaptive_config,
                 verification_plan=verification_plan,
                 provided_context=provided_context,
+                representation_provider=self.representation_provider,
             )
             run = NexusRunResult(
                 mode="text",
@@ -342,6 +352,7 @@ class NexusRuntime:
                 verification_plan=verification_plan,
                 provided_context=provided_context,
                 context_provider=refresh_project_context,
+                representation_provider=self.representation_provider,
             )
             run = NexusRunResult(
                 mode="project",
@@ -375,6 +386,18 @@ class NexusRuntime:
                 if restored is None:
                     raise FileNotFoundError(checkpoint_path)
                 checkpoint = restored["checkpoint"]
+                mode = restore_mode_specific(restored, checkpoint)
+                snapshot: ProjectSnapshot | None = None
+                if mode == "project":
+                    snapshot_data = _snapshot_payload_from_world(restored.get("world") or {})
+                    if snapshot_data:
+                        snapshot = ProjectSnapshot.from_dict(snapshot_data)
+                        current_root_hash = ProjectSnapshot.from_path(snapshot.root_path).root_hash
+                        if current_root_hash != snapshot.root_hash:
+                            raise ValueError(
+                                "project source drift detected on resume: "
+                                f"checkpoint root_hash={snapshot.root_hash}, current root_hash={current_root_hash}"
+                            )
                 budget_data = dict(getattr(checkpoint, "budget", {}) or {})
                 terminal_stop = normalize_external_review_stop_reason(budget_data.get("stop_reason"))
                 resume_does_not_extend = max_rounds is None or int(max_rounds) <= int(checkpoint.max_rounds or 0)
@@ -382,11 +405,10 @@ class NexusRuntime:
                     run_result_path = snapshot_root / "run-result.json"
                     if not run_result_path.exists():
                         raise FileNotFoundError(f"terminal checkpoint resume requires persisted run-result.json: {run_result_path}")
-                    payload = json.loads(run_result_path.read_text(encoding="utf-8"))
+                    payload = read_snapshot_json(snapshot_root, "run-result.json")
                     return NexusRunResult(**payload)
             runtime_options = restore_runtime_options(persisted=restored.get("runtime_options") or getattr(checkpoint, "runtime_options", {}), overrides={})
             _restore_legacy_search_mechanics(runtime_options)
-            mode = restore_mode_specific(restored, checkpoint)
             population = restore_population(restored)
             archives = restore_archives(restored)
             policy = restored["policy"]
@@ -402,9 +424,7 @@ class NexusRuntime:
             offspring_verifier = None
             context_provider = None
             if mode == "project":
-                snapshot_data = _snapshot_payload_from_world(restored.get("world") or {})
-                if snapshot_data:
-                    snapshot = ProjectSnapshot.from_dict(snapshot_data)
+                if snapshot is not None:
                     # Re-ground source-binding resolution after resume (runtime-only).
                     archives.project_root = snapshot.root_path
 
@@ -479,10 +499,13 @@ class NexusRuntime:
                 observer=observer,
                 offspring_verifier=offspring_verifier,
                 adaptive_state=restored.get("adaptive_state") or {},
+                elo_state=restored.get("elo") or {},
                 verification_plan=verification_plan,
                 fabric_state=restored.get("fabric") or {},
                 provided_context=provided_context,
                 context_provider=context_provider,
+                representation_provider=self.representation_provider,
+                representation_store=dict(restored.get("search_kernel") or {}).get("representation_shadow_store"),
             )
             world_payload = _world_to_dict_with_latent_metadata(world, contract)
             run = NexusRunResult(
@@ -563,13 +586,18 @@ def _enable_project_latent_exploration(contract: NexusObjectiveContract) -> None
 def _apply_search_mechanics(policy: EvolutionPolicy, runtime_options: dict[str, Any]) -> None:
     metadata = policy.metadata if isinstance(policy.metadata, dict) else {}
     metadata["offspring_parallel_mode"] = str(runtime_options["search.offspring_parallel_mode"])
+    metadata["slot_sampling_profiles"] = dict(runtime_options["search.slot_sampling_profiles"])
+    metadata["single_batch_truncation_rate_threshold"] = float(
+        runtime_options.get("search.single_batch_truncation_rate_threshold", 0.05)
+    )
     policy.metadata = metadata
 
 
 def _restore_legacy_search_mechanics(runtime_options: dict[str, Any]) -> None:
     missing_offspring_mode = "search.offspring_parallel_mode" not in runtime_options
     missing_persistence_mode = "persistence.mode" not in runtime_options
-    if not (missing_offspring_mode or missing_persistence_mode):
+    missing_sampling_profiles = "search.slot_sampling_profiles" not in runtime_options
+    if not (missing_offspring_mode or missing_persistence_mode or missing_sampling_profiles):
         return
     sources = dict(runtime_options.get("_sources") or {})
     if missing_offspring_mode:
@@ -578,6 +606,9 @@ def _restore_legacy_search_mechanics(runtime_options: dict[str, Any]) -> None:
     if missing_persistence_mode:
         runtime_options["persistence.mode"] = "sync_full"
         sources["persistence.mode"] = "legacy_checkpoint_default"
+    if missing_sampling_profiles:
+        runtime_options["search.slot_sampling_profiles"] = resolve_runtime_options(environment={})["search.slot_sampling_profiles"]
+        sources["search.slot_sampling_profiles"] = "legacy_checkpoint_default"
     runtime_options["legacy_mechanics_restored"] = True
     runtime_options["_sources"] = sources
 
@@ -731,7 +762,11 @@ def _attach_fallback_events(evolution: dict[str, Any], events: list[dict[str, st
 
 def _attach_limit_pressure(evolution: dict[str, Any], observer: Any | None) -> None:
     events = current_llm_session().snapshot()
-    physical_ids = {str(event.get("physical_call_id")) for event in events if str(event.get("physical_call_id") or "")}
+    physical_ids = {
+        str(event.get("physical_call_id"))
+        for event in events
+        if event.get("cache_replayed") is not True and str(event.get("physical_call_id") or "")
+    }
     physical_without_id = sum(
         1
         for event in events

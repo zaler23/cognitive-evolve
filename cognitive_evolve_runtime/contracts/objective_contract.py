@@ -62,6 +62,23 @@ class EvaluatorBinding:
     kind: str
     hard: bool = True
     description: str = ""
+    metric: str = ""
+    direction: str = ""
+    value_type: str = ""
+    source_span: dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+@dataclass(frozen=True)
+class CriterionSpec:
+    metric: str
+    direction: str
+    value_type: str
+    source_span: dict[str, Any]
+    description: str = ""
+    hard: bool = True
 
 
 @dataclass
@@ -350,6 +367,7 @@ __all__ = [
     "ObjectiveDimension",
     "EvidenceContract",
     "EvaluatorBinding",
+    "CriterionSpec",
     "AbstentionPolicy",
     "FinalSchema",
     "TaskContract",
@@ -439,6 +457,94 @@ def _bind_frozen_text_spec(contract: "NexusObjectiveContract", *, packet: Any, f
     contract.frozen_spec = _frozen_spec_from_text(problem_text)
 
 
+def _bind_frozen_project_spec(contract: "NexusObjectiveContract", *, user_goal: str) -> None:
+    contract.original_user_goal = str(user_goal or "")
+    contract.frozen_spec = _frozen_spec_from_text(contract.original_user_goal)
+
+
+def _compile_contract_criteria(contract: "NexusObjectiveContract", raw_criteria: Any) -> None:
+    """Compile complete model criteria into the existing evaluator-binding vocabulary."""
+
+    contract.evaluators = []
+    if raw_criteria is None:
+        return
+    criteria = raw_criteria if isinstance(raw_criteria, list) else [raw_criteria]
+    frozen = coerce_dict(contract.frozen_spec)
+    frozen_text = str(frozen.get("problem_text") or "")
+    frozen_hash = str(frozen.get("spec_sha256") or "")
+    audit: list[dict[str, Any]] = []
+    seen_metrics: set[str] = set()
+    for index, raw in enumerate(criteria):
+        item = coerce_dict(raw)
+        metric = str(item.get("metric") or "").strip()
+        direction = str(item.get("direction") or "").strip().lower()
+        value_type = str(item.get("value_type") or "").strip().lower()
+        source_span = coerce_dict(item.get("source_span"))
+        reason = ""
+        if not item:
+            reason = "criterion_must_be_an_object"
+        elif not metric:
+            reason = "criterion_metric_required"
+        elif direction not in {"maximize", "minimize"}:
+            reason = "criterion_direction_required"
+        elif value_type not in {"number", "integer", "boolean"}:
+            reason = "criterion_value_type_required"
+        elif not source_span:
+            reason = "criterion_source_span_required"
+        elif type(source_span.get("start")) is not int or type(source_span.get("end")) is not int:
+            reason = "criterion_source_span_offsets_required"
+        elif not (0 <= source_span["start"] < source_span["end"] <= len(frozen_text)):
+            reason = "criterion_source_span_out_of_bounds"
+        elif not frozen_hash:
+            reason = "criterion_frozen_input_hash_required"
+        elif metric in seen_metrics:
+            reason = "criterion_metric_duplicate"
+        if reason:
+            audit.append({
+                "criterion_index": index,
+                "metric": metric,
+                "status": "rejected",
+                "reason": reason,
+                "frozen_input_sha256": frozen_hash,
+            })
+            continue
+        bound_span = {
+            "start": source_span["start"],
+            "end": source_span["end"],
+            "spec_sha256": frozen_hash,
+        }
+        spec = CriterionSpec(
+            metric=metric,
+            direction=direction,
+            value_type=value_type,
+            source_span=bound_span,
+            description=str(item.get("description") or ""),
+            hard=bool(item.get("hard", True)),
+        )
+        contract.evaluators.append(
+            EvaluatorBinding(
+                id=f"criterion:{spec.metric}",
+                kind="criterion_metric",
+                hard=spec.hard,
+                description=spec.description,
+                metric=spec.metric,
+                direction=spec.direction,
+                value_type=spec.value_type,
+                source_span=spec.source_span,
+            )
+        )
+        seen_metrics.add(metric)
+        audit.append({
+            "criterion_index": index,
+            "metric": metric,
+            "status": "bound",
+            "frozen_input_sha256": frozen_hash,
+        })
+    metadata = coerce_dict(contract.metadata)
+    metadata["criterion_binding_audit"] = audit
+    contract.metadata = metadata
+
+
 @dataclass
 class NexusObjectiveContract:
     """Task-bound objective boundary for the Nexus runtime.
@@ -469,6 +575,7 @@ class NexusObjectiveContract:
     verification_preferences: list[str] = field(default_factory=list)
     success_dimensions: list[str] = field(default_factory=lambda: ["objective_alignment", "verifiability", "robustness"])
     failure_dimensions: list[str] = field(default_factory=lambda: ["semantic_drift", "unsupported_claim", "auxiliary_substitution"])
+    evaluators: list[EvaluatorBinding] = field(default_factory=list)
     metadata: dict[str, Any] = field(default_factory=dict)
     contract_id: str = "nexus-objective-contract"
     version: str = "nexus/objective-contract/v1"
@@ -482,6 +589,8 @@ class NexusObjectiveContract:
         data = asdict(self)
         if not data.get("search_space_plan"):
             data.pop("search_space_plan", None)
+        if not data.get("evaluators"):
+            data.pop("evaluators", None)
         if data.get("dynamic_artifact_contract"):
             policy = dict(data.get("outcome_policy") or {})
             policy.setdefault("dynamic_artifact_contract", data["dynamic_artifact_contract"])
@@ -513,6 +622,11 @@ class NexusObjectiveContract:
             verification_preferences=[str(item) for item in data.get("verification_preferences", [])],
             success_dimensions=[str(item) for item in data.get("success_dimensions", [])] or ["objective_alignment", "verifiability", "robustness"],
             failure_dimensions=[str(item) for item in data.get("failure_dimensions", [])] or ["semantic_drift", "unsupported_claim", "auxiliary_substitution"],
+            evaluators=[
+                EvaluatorBinding(**item)
+                for item in data.get("evaluators", [])
+                if isinstance(item, dict) and item.get("id")
+            ],
             metadata=coerce_dict(data.get("metadata")),
             contract_id=str(data.get("contract_id") or "nexus-objective-contract"),
             version=str(data.get("version") or "nexus/objective-contract/v1"),
@@ -648,12 +762,14 @@ class NexusObjectiveContractBuilder:
             raw = model.build_objective_contract(user_goal=user_goal, world=world if world is not None else packet)
             if isinstance(raw, NexusObjectiveContract):
                 _bind_frozen_text_spec(raw, packet=packet, fallback_text=user_goal)
+                _compile_contract_criteria(raw, [item.to_dict() for item in raw.evaluators])
                 _attach_latent_objective_state(raw, world if world is not None else packet)
                 apply_artifact_policy_to_contract(raw, artifact_policy_config, source="adaptive.evidence")
                 return raw
             if isinstance(raw, dict):
                 contract = NexusObjectiveContract.from_dict(raw)
                 _bind_frozen_text_spec(contract, packet=packet, fallback_text=user_goal)
+                _compile_contract_criteria(contract, raw.get("criteria"))
                 _attach_latent_objective_state(contract, world if world is not None else packet)
                 apply_artifact_policy_to_contract(contract, artifact_policy_config, source="adaptive.evidence")
                 return contract
@@ -684,11 +800,15 @@ class NexusObjectiveContractBuilder:
         if model is not None and hasattr(model, "build_project_objective_contract"):
             raw = model.build_project_objective_contract(user_goal=user_goal, snapshot=snapshot, world=world)
             if isinstance(raw, NexusProjectObjectiveContract):
+                _bind_frozen_project_spec(raw, user_goal=user_goal)
+                _compile_contract_criteria(raw, [item.to_dict() for item in raw.evaluators])
                 _attach_latent_objective_state(raw, world if world is not None else snapshot)
                 apply_artifact_policy_to_contract(raw, artifact_policy_config, source="adaptive.evidence")
                 return raw
             if isinstance(raw, dict):
                 contract = NexusProjectObjectiveContract.from_dict(raw)
+                _bind_frozen_project_spec(contract, user_goal=user_goal)
+                _compile_contract_criteria(contract, raw.get("criteria"))
                 _attach_latent_objective_state(contract, world if world is not None else snapshot)
                 apply_artifact_policy_to_contract(contract, artifact_policy_config, source="adaptive.evidence")
                 return contract

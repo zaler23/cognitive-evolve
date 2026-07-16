@@ -11,7 +11,6 @@ from cognitive_evolve_runtime.nexus._serde import coerce_dict
 @dataclass(frozen=True)
 class SpatialAdaptiveConfig:
     enabled: bool = False
-    mode: str = "observe"
     width: int = 0
     height: int = 0
     region_size: int = 3
@@ -24,12 +23,8 @@ class SpatialAdaptiveConfig:
     @classmethod
     def from_mapping(cls, data: dict[str, Any] | None) -> "SpatialAdaptiveConfig":
         data = coerce_dict(data)
-        mode = str(data.get("mode") or "observe").strip().lower()
-        if mode != "observe":
-            mode = "observe"
         return cls(
             enabled=_bool(data.get("enabled"), default=False),
-            mode=mode,
             width=_int(data.get("width"), default=0),
             height=_int(data.get("height"), default=0),
             region_size=max(1, _int(data.get("region_size"), default=3)),
@@ -60,7 +55,7 @@ class AdaptiveConfig:
         world: Any | None = None,
     ) -> "AdaptiveConfig":
         merged: dict[str, Any] = {}
-        for source in (_metadata(contract), _metadata(policy), _metadata(world), coerce_dict(explicit)):
+        for source in (_metadata(contract), _criterion_evaluator_config(contract), _metadata(policy), _metadata(world), coerce_dict(explicit)):
             merged = _deep_merge(merged, coerce_dict(source.get("adaptive") if "adaptive" in source else source))
         env_config = _env_config()
         if env_config:
@@ -87,7 +82,7 @@ class AdaptiveConfig:
             "adaptive": self.enabled,
             "evidence_control_plane": self.enabled,
             "external_evaluator": self.enabled and evaluator_enabled,
-            "spatial_observe": self.enabled and self.spatial.enabled and self.spatial.mode == "observe",
+            "spatial_observe": self.enabled and self.spatial.enabled,
         }
 
 
@@ -104,6 +99,24 @@ def _metadata(source: Any | None) -> dict[str, Any]:
     return {}
 
 
+def _criterion_evaluator_config(contract: Any | None) -> dict[str, Any]:
+    bindings = getattr(contract, "evaluators", None)
+    if not isinstance(bindings, list):
+        return {}
+    metrics: list[dict[str, Any]] = []
+    for binding in bindings:
+        data = binding.to_dict() if hasattr(binding, "to_dict") else asdict(binding) if hasattr(binding, "__dataclass_fields__") else coerce_dict(binding)
+        if data.get("kind") != "criterion_metric":
+            continue
+        metrics.append({
+            "name": str(data.get("metric") or ""),
+            "direction": str(data.get("direction") or ""),
+            "value_type": str(data.get("value_type") or ""),
+            "source_span": coerce_dict(data.get("source_span")),
+        })
+    return {"evaluator": {"metrics": metrics}} if metrics else {}
+
+
 def _env_config() -> dict[str, Any]:
     out: dict[str, Any] = {}
     if os.environ.get("COGEV_ADAPTIVE_ENABLED"):
@@ -117,9 +130,6 @@ def _env_config() -> dict[str, Any]:
         out.setdefault("evidence", {})["machine_artifact_required"] = os.environ.get("COGEV_MACHINE_ARTIFACT_REQUIRED")
     if os.environ.get("COGEV_ARTIFACT_TYPE"):
         out.setdefault("evidence", {})["artifact_type"] = os.environ.get("COGEV_ARTIFACT_TYPE")
-    if os.environ.get("COGEV_SPATIAL_MODE"):
-        out.setdefault("spatial", {})["enabled"] = True
-        out["spatial"]["mode"] = os.environ.get("COGEV_SPATIAL_MODE")
     return out
 
 

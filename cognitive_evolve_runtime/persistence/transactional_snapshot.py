@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import logging
 import os
 import shutil
 import uuid
@@ -12,11 +14,13 @@ from typing import Any, Iterator
 
 from cognitive_evolve_runtime.durable.file_lock import _fsync_dir, atomic_write_json, atomic_write_text, file_lock
 from cognitive_evolve_runtime.core.serialization import utc_now
+from cognitive_evolve_runtime.persistence.event_store import EventStore
 
 
 _CURRENT = "CURRENT"
 _GENERATIONS = "generations"
 _MANIFEST = "snapshot-transaction.json"
+_LOG = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -54,6 +58,7 @@ class NexusSnapshotTransaction:
         generation = generations / transaction_id
         lock_path = self.root / ".snapshot-transaction.lock"
         with file_lock(lock_path):
+            event_watermark = EventStore(self.root / "events.jsonl").watermark()
             generations.mkdir(parents=True, exist_ok=True)
             previous_root = resolve_snapshot_root(self.root)
             previous_transaction_id = previous_root.name if previous_root.parent == generations else ""
@@ -81,6 +86,7 @@ class NexusSnapshotTransaction:
                     "schema": "cogev.nexus_snapshot_transaction.v1",
                     "transaction_id": transaction_id,
                     "created_at": utc_now(),
+                    "event_watermark": event_watermark,
                     "files": manifest_files,
                 }
                 atomic_write_json(staging / _MANIFEST, manifest, sort_keys=True)
@@ -116,6 +122,34 @@ def _sha256(path: Path) -> str:
         for chunk in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(chunk)
     return digest.hexdigest()
+
+
+def read_snapshot_json(snapshot_root: str | Path, relative_path: str) -> Any:
+    """Read one JSON snapshot file after verifying its declared SHA-256."""
+
+    root = Path(snapshot_root)
+    relative = _safe_relative_path(relative_path)
+    payload = (root / relative).read_bytes()
+    manifest_path = root / _MANIFEST
+    if not manifest_path.exists():
+        if root.parent.name == _GENERATIONS and root.name.startswith("txn-"):
+            raise ValueError(f"snapshot manifest missing for published generation: {manifest_path}")
+        _LOG.info("snapshot manifest missing; skipping hash verification for legacy snapshot file %s", root / relative)
+        return json.loads(payload)
+    try:
+        manifest = json.loads(manifest_path.read_bytes())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ValueError(f"snapshot manifest is unreadable: {manifest_path}") from exc
+    files = manifest.get("files") if isinstance(manifest, dict) else None
+    entry = files.get(relative) if isinstance(files, dict) else None
+    actual_hash = hashlib.sha256(payload).hexdigest()
+    expected_hash = str(entry.get("sha256") or "") if isinstance(entry, dict) else ""
+    if not expected_hash or actual_hash != expected_hash:
+        raise ValueError(
+            f"snapshot hash mismatch for {relative}: "
+            f"expected sha256={expected_hash or '<missing>'}, actual sha256={actual_hash}"
+        )
+    return json.loads(payload)
 
 
 def resolve_snapshot_root(root: str | Path) -> Path:
@@ -234,6 +268,7 @@ __all__ = [
     "NexusSnapshotTransaction",
     "SnapshotTransactionResult",
     "SnapshotWrite",
+    "read_snapshot_json",
     "resolve_snapshot_path",
     "resolve_snapshot_root",
     "snapshot_reader",

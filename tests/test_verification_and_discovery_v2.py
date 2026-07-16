@@ -8,9 +8,6 @@ from types import SimpleNamespace
 import pytest
 
 from cognitive_evolve_runtime.candidates.genome import CandidateGenome
-from cognitive_evolve_runtime.discovery.illumination import MapElitesIllumination, behavior_descriptor
-from cognitive_evolve_runtime.discovery.operators import operator_registry
-from cognitive_evolve_runtime.discovery.tension_map import TensionMap
 from cognitive_evolve_runtime.evaluators.evidence import EvidenceRecord
 from cognitive_evolve_runtime.verification.grading import GradedOutput, VerifiedResult
 from cognitive_evolve_runtime.verification.factory import verifier_from_plan
@@ -98,14 +95,20 @@ def test_project_tool_defaults_do_not_execute_repository_defined_commands(tmp_pa
 
 
 def test_formal_verifier_does_not_attempt_z3_cli_when_binding_missing_or_runs_in_process() -> None:
-    result = FormalVerifier(formula=True).check(CandidateGenome(id="C1", artifact="x"))
-    assert "cli_not_attempted" in result.metadata or result.replayable is True
+    result = FormalVerifier(
+        dsl={"version": "z3_dsl/v1", "symbols": [], "constraints": [{"op": "bool", "value": True}]}
+    ).check(CandidateGenome(id="C1", artifact="x", metadata={"formal_kind": "satisfiability"}))
+    assert result.metadata["cli_not_attempted"] is True
+    assert result.metadata["z3_status"] in {"sat", "unavailable"}
 
 
 def test_formal_verifier_uses_proof_semantics_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     class _Solver:
-        def add(self, expr: object) -> None:
-            self.expr = expr
+        def set(self, *, timeout: int) -> None:
+            self.timeout = timeout
+
+        def add(self, *expr: object) -> None:
+            self.expr = expr[0]
 
         def check(self) -> str:
             if self.expr is False:
@@ -113,6 +116,9 @@ def test_formal_verifier_uses_proof_semantics_by_default(monkeypatch: pytest.Mon
             if self.expr == "unknown":
                 return "unknown"
             return "sat"
+
+        def reason_unknown(self) -> str:
+            return "incomplete"
 
     fake_z3 = SimpleNamespace(
         sat="sat",
@@ -123,35 +129,16 @@ def test_formal_verifier_uses_proof_semantics_by_default(monkeypatch: pytest.Mon
     )
     monkeypatch.setitem(sys.modules, "z3", fake_z3)
 
-    assert FormalVerifier(formula=True).check(CandidateGenome()).passed is True
-    assert FormalVerifier(formula="x > 0").check(CandidateGenome()).passed is False
-    assert FormalVerifier(formula="unknown").check(CandidateGenome()).to_dict()["validation_status"] == "inconclusive"
+    true_dsl = {"version": "z3_dsl/v1", "symbols": [], "constraints": [{"op": "bool", "value": True}]}
+    false_dsl = {"version": "z3_dsl/v1", "symbols": [], "constraints": [{"op": "bool", "value": False}]}
+
+    assert FormalVerifier(dsl=false_dsl).check(CandidateGenome()).passed is True
+    assert FormalVerifier(formula="x > 0").check(CandidateGenome()).metadata["z3_status"] == "rejected"
     assert FormalVerifier().check(CandidateGenome()).to_dict()["validation_status"] == "not_run"
-    assert FormalVerifier(formula="x > 0").check(CandidateGenome(metadata={"formal_kind": "satisfiability"})).passed is True
+    assert FormalVerifier(dsl=true_dsl).check(CandidateGenome(metadata={"formal_kind": "satisfiability"})).passed is True
 
 
 def test_decomposed_check_without_declared_claims_is_not_run() -> None:
     result = DecomposedVerifier().check(CandidateGenome(artifact="candidate"))
 
     assert result.to_dict()["validation_status"] == "not_run"
-
-
-def test_discovery_operator_registry_returns_distinct_descriptors() -> None:
-    candidate = CandidateGenome(id="C1", artifact="x", concise_claim="base claim")
-    descriptors = [op.propose(candidate, None, None, k=1)[0]["descriptor"][0] for op in operator_registry().values()]
-    assert len(descriptors) == len(set(descriptors))
-
-
-def test_map_elites_wraps_quality_diversity_and_tension_map_rules_out_region() -> None:
-    candidate = CandidateGenome(id="C1", artifact="x", artifact_type="program", multihead_scores={"frontier_score": 0.8})
-    illum = MapElitesIllumination()
-    added = illum.add(candidate)
-    descriptor = behavior_descriptor(candidate)
-    assert added["candidate_id"] == "C1"
-    assert descriptor
-    tensions = TensionMap()
-    record = EvidenceRecord(candidate_id="C1", diagnostics=["missing_required_fields: output"])
-    tensions.memory.ingest(record, round_index=1)
-    assert tensions.open_tensions
-    tensions.mark_ruled_out(candidate_id="C1", descriptor=descriptor, evidence_ref="e1")
-    assert tensions.is_ruled_out(descriptor) is True

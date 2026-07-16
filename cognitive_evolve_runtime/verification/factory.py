@@ -19,7 +19,7 @@ def verifier_from_plan(plan: VerificationPlan | dict[str, Any] | None) -> Synthe
         # Synthesized plans are untrusted; executable commands are direct operator API only.
         return None
     elif modality == "formal":
-        verifier = FormalVerifier(formula=metadata.get("z3_formula"))
+        verifier = FormalVerifier(dsl=metadata.get("z3_dsl", metadata.get("z3_formula")))
     elif modality == "empirical":
         verifier = EmpiricalVerifier(threshold=float(metadata.get("threshold", 0.5) or 0.5))
     elif modality == "decomposed":
@@ -30,14 +30,8 @@ def verifier_from_plan(plan: VerificationPlan | dict[str, Any] | None) -> Synthe
     else:
         return None
     if plan.verifier_fingerprint:
-        try:
-            verifier.fingerprint = plan.verifier_fingerprint
-        except Exception:
-            pass
-    try:
-        verifier.plan = plan.to_dict()
-    except Exception:
-        pass
+        verifier.fingerprint = plan.verifier_fingerprint
+    verifier.plan = plan.to_dict()
     return verifier
 
 

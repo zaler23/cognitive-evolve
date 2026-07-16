@@ -24,6 +24,29 @@ def _objective_contract_schema(*, project: bool) -> dict[str, Any]:
         "verification_preferences": _string_array(),
         "success_dimensions": _string_array(),
         "failure_dimensions": _string_array(),
+        "criteria": {
+            "type": "array",
+            "description": "Objective-grounded evaluator criteria. Each complete item is compiled into an EvaluatorBinding; incomplete items are rejected with an audit record.",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "metric": {"type": "string"},
+                    "direction": {"type": "string", "enum": ["maximize", "minimize"]},
+                    "value_type": {"type": "string", "enum": ["number", "integer", "boolean"]},
+                    "source_span": {
+                        "type": "object",
+                        "properties": {
+                            "start": {"type": "integer", "minimum": 0},
+                            "end": {"type": "integer", "minimum": 1},
+                        },
+                        "additionalProperties": True,
+                    },
+                    "description": {"type": "string"},
+                    "hard": {"type": "boolean"},
+                },
+                "additionalProperties": True,
+            },
+        },
     }
     if project:
         properties.update({
@@ -216,6 +239,12 @@ def _mutation_plan_schema() -> dict[str, Any]:
                         "instruction": {"type": "string"},
                         "rarity_seed": {"type": "string"},
                         "expected_gene_effects": _string_array(),
+                        "move_kind": {"type": "string"},
+                        "input_domain": {"type": "string"},
+                        "declared_invariant_refs": _string_array(),
+                        "expected_delta": {"type": "object"},
+                        "actual_delta": {"type": "object"},
+                        "receipt_refs": _string_array(),
                         "metadata": {"type": "object"},
                     },
                     "additionalProperties": True,
@@ -308,7 +337,7 @@ def _candidate_item_schema(required: tuple[str, ...] | None = None) -> dict[str,
             },
             "proof_obligations": {
                 "type": "array",
-                "description": "Named obligations with id/status/description. Use status introduced, blocked, decomposed, discharged, refuted, or open.",
+                "description": "Named obligations with id/status/description. Use status introduced, blocked, decomposed, discharged, refuted, or open. Engine-owned tool probes use typed allowlisted templates: artifact_json_relation/v2 accepts args.path plus expected_relation; metamorphic_json_relation/v1 accepts relation_id=dict_numeric_summary_permutation_invariance/v1 plus args.mapping_path/summary_path. Models cannot provide relation bodies, commands, cwd, shell, or timeout.",
                 "items": {"type": "object", "additionalProperties": True},
             },
             "obligation_delta": {
@@ -351,7 +380,7 @@ def _candidate_item_schema(required: tuple[str, ...] | None = None) -> dict[str,
             "multihead_scores": {"type": "object"},
             "metadata": {
                 "type": "object",
-                "description": "For seed portfolio responses, set seed_type to the exact slot_id as a contract receipt. A label alone is not evidence of capability.",
+                "description": "For seed portfolio responses, set seed_type to the exact slot_id as a contract receipt. A label alone is not evidence of capability. Formal checks may provide z3_dsl as z3_dsl/v1 typed JSON with Bool/Int/bounded BitVec symbols and expression nodes; raw SMT-LIB strings are rejected. For cross_domain_transfer or a Transfer mutation, add transfer_receipt with source_relations, target_relations, element-level mapping[{source,target}], preserved_invariant, predicted_break_condition, probe_ref, and artifact_hash. For a branch slot with donor_parent_id, add blend_receipt with generic_space_mapping, retained_from_primary, borrowed_from_donor, structural_correspondence, emergent_delta, incompatibilities, and unresolved_obligations.",
             },
         },
         "additionalProperties": True,
