@@ -201,6 +201,68 @@ def test_default_seed_run_passes_full_portfolio_in_one_model_call(monkeypatch: A
     assert coverage["capability_status"] == "pending_pba_outcome"
 
 
+def test_slot_seed_transport_calls_once_per_portfolio_slot(monkeypatch: Any) -> None:
+    policy = _policy()
+    policy.metadata["seed_transport"] = "slot"
+    monkeypatch.setenv("COGEV_MODEL_FANOUT_CONCURRENCY", "1")
+    calls: list[tuple[str, int]] = []
+
+    class Model:
+        def seed_population(self, *, policy: EvolutionPolicy, **_: Any) -> list[dict[str, Any]]:
+            slots = list(policy.metadata["seed_portfolio"])
+            assert len(slots) == 1
+            calls.append((str(slots[0]["slot_id"]), int(policy.metadata["requested_candidate_count"])))
+            return [_candidate_for_slot(slots[0])]
+
+    population = seed_population(
+        contract=NexusObjectiveContract(original_user_goal="explore an unknown mechanism", normalized_goal="explore unknown mechanism"),
+        world=_World(),
+        policy=policy,
+        model=Model(),
+    )
+
+    expected_slots = policy.metadata["seed_portfolio"]
+    assert len(calls) == len(expected_slots)
+    assert {slot_id for slot_id, _ in calls} == {str(slot["slot_id"]) for slot in expected_slots}
+    assert all(requested_count == 1 for _, requested_count in calls)
+    assert len(population.candidates) == len(expected_slots)
+
+
+def test_slot_seed_transport_records_cardinality_failures_without_stopping_other_slots(monkeypatch: Any) -> None:
+    policy = _policy()
+    policy.metadata["seed_transport"] = "slot"
+    monkeypatch.setenv("COGEV_MODEL_FANOUT_CONCURRENCY", "1")
+    calls: list[str] = []
+
+    class Model:
+        def seed_population(self, *, policy: EvolutionPolicy, **_: Any) -> list[dict[str, Any]]:
+            slots = list(policy.metadata["seed_portfolio"])
+            assert len(slots) == 1
+            slot = slots[0]
+            slot_id = str(slot["slot_id"])
+            calls.append(slot_id)
+            if len(calls) == 1:
+                return [_candidate_for_slot(slot), _candidate_for_slot(slot, suffix="-extra")]
+            if len(calls) == 2:
+                return []
+            return [_candidate_for_slot(slot)]
+
+    population = seed_population(
+        contract=NexusObjectiveContract(original_user_goal="explore an unknown mechanism", normalized_goal="explore unknown mechanism"),
+        world=_World(),
+        policy=policy,
+        model=Model(),
+    )
+
+    expected_slots = policy.metadata["seed_portfolio"]
+    rejected = policy.metadata["seed_harvest"]["rejected"]
+    failed_slot_ids = {str(item["seed_slot_id"]) for item in rejected if "seed_slot_id" in item}
+    assert len(calls) == len(expected_slots)
+    assert len(population.candidates) == len(expected_slots) - 2
+    assert failed_slot_ids == {calls[0], calls[1]}
+    assert policy.metadata["seed_harvest"]["fatal_model_error"] == ""
+
+
 def test_model_claimed_duplicate_seed_ids_cannot_collapse_lineage_arms() -> None:
     policy = EvolutionPolicy(
         search_space={
