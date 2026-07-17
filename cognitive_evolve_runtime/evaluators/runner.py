@@ -9,6 +9,7 @@ from typing import Any
 
 from cognitive_evolve_runtime.candidates.genome import CandidateGenome
 from cognitive_evolve_runtime.contracts.objective_contract import EvaluatorBinding
+from cognitive_evolve_runtime.core.serialization import coerce_dict, stable_hash
 from cognitive_evolve_runtime.evaluators.artifact_normalizer import artifact_policy_from_config, normalize_artifact, uses_artifact_policy
 from cognitive_evolve_runtime.evaluators.evidence import apply_evidence_record
 from cognitive_evolve_runtime.evaluators.progressive import ProgressiveEvaluator
@@ -27,6 +28,11 @@ class ExternalEvaluatorRunner:
             return []
         results: list[EvaluatorResult] = []
         for candidate in candidates:
+            if spec.execute_once:
+                reused = _stored_evaluator_result(candidate, spec=spec)
+                if reused is not None:
+                    results.append(reused)
+                    continue
             result = self.evaluate_candidate(candidate, spec=spec)
             apply_evaluator_result(candidate, result, progressive=self.progressive, spec=spec, round_index=round_index)
             results.append(result)
@@ -106,6 +112,9 @@ def apply_evaluator_result(candidate: CandidateGenome, result: EvaluatorResult, 
     selection_binding = _selection_binding(spec)
     if selection_binding is not None:
         evaluator_payload["selection_binding"] = selection_binding.to_dict()
+    if spec is not None and spec.execute_once:
+        evaluator_payload["artifact_hash"] = _artifact_content_hash(candidate)
+        evaluator_payload["spec_identity"] = _evaluator_spec_identity(spec)
     metadata["evaluator"] = evaluator_payload
     candidate.metadata = metadata
     if result.passed:
@@ -128,6 +137,50 @@ def apply_evaluator_result(candidate: CandidateGenome, result: EvaluatorResult, 
     evidence = (progressive or ProgressiveEvaluator()).evaluate_result(candidate, result, spec=spec, round_index=round_index)
     apply_evidence_record(candidate, evidence)
     candidate.add_verification_feedback(result.to_feedback())
+
+
+def _stored_evaluator_result(candidate: CandidateGenome, *, spec: EvaluatorSpec) -> EvaluatorResult | None:
+    metadata = candidate.metadata if isinstance(candidate.metadata, dict) else {}
+    payload = metadata.get("evaluator")
+    if not isinstance(payload, dict):
+        return None
+    if payload.get("candidate_id") != candidate.id:
+        return None
+    if payload.get("artifact_hash") != _artifact_content_hash(candidate):
+        return None
+    if payload.get("spec_identity") != _evaluator_spec_identity(spec):
+        return None
+    if not isinstance(payload.get("passed"), bool) or not str(payload.get("status") or "").strip():
+        return None
+    return EvaluatorResult(
+        candidate_id=candidate.id,
+        status=str(payload["status"]),
+        passed=payload["passed"],
+        metrics=coerce_dict(payload.get("metrics")),
+        diagnostics=[str(item) for item in payload.get("diagnostics", []) if item],
+        details=coerce_dict(payload.get("details")),
+        cost=coerce_dict(payload.get("cost")),
+        created_at=str(payload.get("created_at") or ""),
+    )
+
+
+def _artifact_content_hash(candidate: CandidateGenome) -> str:
+    return stable_hash({"artifact_type": candidate.artifact_type, "artifact": candidate.artifact})
+
+
+def _evaluator_spec_identity(spec: EvaluatorSpec) -> str:
+    return stable_hash(
+        {
+            "command": spec.command,
+            "timeout_seconds": spec.timeout_seconds,
+            "deterministic": spec.deterministic,
+            "metrics": [item.to_dict() for item in spec.metrics],
+            "cwd": str(spec.cwd_path().expanduser().resolve()),
+            "level": spec.level,
+            "domain_id": spec.domain_id,
+            "progressive": spec.progressive,
+        }
+    )
 
 
 def _selection_binding(spec: EvaluatorSpec | None) -> EvaluatorBinding | None:

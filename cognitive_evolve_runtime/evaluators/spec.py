@@ -42,6 +42,7 @@ class EvaluatorSpec:
     level: str = "probe"
     domain_id: str = ""
     progressive: dict[str, Any] = field(default_factory=dict)
+    execute_once: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         # Do not persist cwd because it may be an absolute local path.
@@ -50,6 +51,7 @@ class EvaluatorSpec:
             "command_configured": bool(self.command),
             "timeout_seconds": self.timeout_seconds,
             "deterministic": self.deterministic,
+            "execute_once": self.execute_once,
             "metrics": [item.to_dict() for item in self.metrics],
             "stage": self.level,
             "domain_id": self.domain_id,
@@ -80,6 +82,7 @@ class EvaluatorSpec:
             command=command,
             timeout_seconds=_float(data.get("timeout_seconds"), 30.0),
             deterministic=_bool(data.get("deterministic"), default=True),
+            execute_once=_bool(data.get("execute_once"), default=False),
             metrics=metrics,
             cwd=str(data.get("cwd") or ""),
             level=level,
