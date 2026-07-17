@@ -198,25 +198,29 @@ def _generate_model_seed_batches(
         if isinstance(policy.metadata, dict):
             policy.metadata["seed_portfolio"] = [dict(slot) for slot in portfolio]
             policy.metadata["seed_portfolio_contract"] = _seed_portfolio_contract()
+    seed_transport = _seed_transport(policy)
+    seed_slots = _uncovered_seed_slots(portfolio, incumbent_candidates) if seed_transport == "slot" else []
+    slot_transport = seed_transport == "slot" and bool(seed_slots)
     harvester = CandidateHarvester(
         deduper=deduper,
         policy=HarvestPolicy(
             target_size=target_size,
-            max_batches=1 if portfolio else _seed_safety_batch_limit(policy=policy),
+            max_batches=len(seed_slots) if slot_transport else 1 if portfolio else _seed_safety_batch_limit(policy=policy),
             min_batches=1 if portfolio else _seed_min_batches(policy=policy),
-            low_gain_patience=_seed_low_novelty_patience(policy=policy),
+            low_gain_patience=max(_seed_low_novelty_patience(policy=policy), len(seed_slots) + 1) if slot_transport else _seed_low_novelty_patience(policy=policy),
             relevance_floor=0.20,
             stage="seed",
-            fanout_workers=1 if portfolio else _seed_fanout_workers(policy=policy, target_size=target_size),
+            fanout_workers=_seed_fanout_workers(policy=policy, target_size=target_size) if slot_transport else 1 if portfolio else _seed_fanout_workers(policy=policy, target_size=target_size),
             stop_at_target=True,
             exhaust_on_no_new=False,
             reservoir_mode=True,
         ),
     )
+    slot_errors: list[tuple[int, Exception]] = []
 
     def _request(batch_index: int, accepted: list[CandidateGenome], rejected: list[dict[str, Any]]) -> list[CandidateGenome]:
         accepted_with_incumbent = [*incumbent_candidates, *accepted]
-        batch_slots = _uncovered_seed_slots(portfolio, accepted_with_incumbent)
+        batch_slots = [seed_slots[batch_index]] if slot_transport else _uncovered_seed_slots(portfolio, accepted_with_incumbent)
         batch_policy = _policy_for_seed_batch(
             policy,
             batch_index=batch_index,
@@ -225,14 +229,24 @@ def _generate_model_seed_batches(
             target_size=len(portfolio) or target_size + len(incumbent_candidates),
             seed_portfolio=batch_slots,
         )
-        raw = call_with_optional_context(
-            model.seed_population,
-            contract=contract,
-            world=world,
-            policy=batch_policy,
-            provided_context=provided_context,
-        )
-        batch = _order_seed_batch_for_portfolio(_coerce_seed_batch(raw), batch_slots)
+        try:
+            raw = call_with_optional_context(
+                model.seed_population,
+                contract=contract,
+                world=world,
+                policy=batch_policy,
+                provided_context=provided_context,
+            )
+            batch = _coerce_seed_batch(raw)
+            if slot_transport and len(batch) != 1:
+                slot_id = str(seed_slots[batch_index].get("slot_id") or batch_index)
+                raise ModelResponseSchemaError(f"seed slot {slot_id} must return exactly one candidate")
+        except MODEL_BOUNDARY_ERRORS as exc:
+            if not slot_transport:
+                raise
+            slot_errors.append((batch_index, exc))
+            return []
+        batch = _order_seed_batch_for_portfolio(batch, batch_slots)
         priority = _seed_family_priority(policy, accepted_with_incumbent)
         origin = _seed_origin_metadata(model)
         for candidate in batch:
@@ -256,14 +270,41 @@ def _generate_model_seed_batches(
         context={"contract": contract, "policy": policy, "world": world},
         recoverable_errors=MODEL_BOUNDARY_ERRORS,
     )
+    if slot_transport:
+        for failed_batch, error in sorted(slot_errors):
+            error_record = {
+                "batch": failed_batch,
+                "reason": "recoverable_model_error",
+                "error_type": error.__class__.__name__,
+                "error": str(error),
+            }
+            result.failed_batch_ids.append(failed_batch)
+            result.recoverable_batch_errors.append(error_record)
+            result.rejected.append(error_record)
+        for record in result.rejected:
+            if not isinstance(record, dict):
+                continue
+            try:
+                failed_batch = int(record.get("batch"))
+            except (TypeError, ValueError):
+                continue
+            if 0 <= failed_batch < len(seed_slots):
+                record.setdefault("seed_slot_id", seed_slots[failed_batch].get("slot_id", ""))
     if not result.accepted and not incumbent_candidates and result.fatal_model_error is None:
         result.fatal_model_error = ModelResponseSchemaError("nexus_seed_population returned no valid candidates")
         result.stopped_reason = "model_error"
+    harvest_summary = result.to_dict()
+    if slot_transport:
+        harvest_summary["failed_seed_slot_ids"] = [
+            seed_slots[index].get("slot_id", "")
+            for index in result.failed_batch_ids
+            if 0 <= index < len(seed_slots)
+        ]
     coverage = assess_seed_coverage(
         target_qualified_candidates([*incumbent_candidates, *result.accepted]),
         reservoir=result.reservoir,
         rejected=result.rejected,
-        harvest_summary=result.to_dict(),
+        harvest_summary=harvest_summary,
         contract=contract,
         policy=policy,
     )
@@ -271,7 +312,7 @@ def _generate_model_seed_batches(
         all_seed_candidates = [*incumbent_candidates, *result.accepted]
         frontier = apply_seed_active_frontier(all_seed_candidates, limit=_seed_active_frontier_limit(policy=policy))
         ablation = run_core_ablation(all_seed_candidates, policy=policy)
-        policy.metadata["seed_harvest"] = result.to_dict()
+        policy.metadata["seed_harvest"] = harvest_summary
         policy.metadata["seed_coverage"] = coverage
         policy.metadata["seed_active_frontier"] = frontier
         policy.metadata["minimal_core_ablation"] = ablation
@@ -288,8 +329,8 @@ def _generate_model_seed_batches(
             "policy": "measure_only_no_capability_tradeoff",
         }
         policy.metadata["model_parallel_efficiency"] = {
-            "seed_fanout_workers": 1 if portfolio else _seed_fanout_workers(policy=policy, target_size=target_size),
-            "max_batches": 1 if portfolio else _seed_safety_batch_limit(policy=policy),
+            "seed_fanout_workers": _seed_fanout_workers(policy=policy, target_size=target_size) if slot_transport else 1 if portfolio else _seed_fanout_workers(policy=policy, target_size=target_size),
+            "max_batches": len(seed_slots) if slot_transport else 1 if portfolio else _seed_safety_batch_limit(policy=policy),
             "policy": "parallelism_observed_not_seed_breadth_reduced",
         }
     for candidate in result.accepted:
@@ -383,6 +424,14 @@ def _seed_active_frontier_limit(*, policy: EvolutionPolicy) -> int:
     if configured:
         return configured
     return 64
+
+
+def _seed_transport(policy: EvolutionPolicy) -> str:
+    metadata = policy.metadata if isinstance(policy.metadata, dict) else {}
+    transport = str(metadata.get("seed_transport") or "batch").strip().lower()
+    if transport not in {"batch", "slot"}:
+        raise ValueError("seed_transport must be batch or slot")
+    return transport
 
 
 def _coerce_seed_batch(raw: Any) -> list[CandidateGenome]:
