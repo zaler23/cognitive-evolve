@@ -648,6 +648,11 @@ class PolicyUpdater:
                 updated = EvolutionPolicy.from_dict(raw)
         if updated is None:
             updated = EvolutionPolicy.from_dict(policy.to_dict())
+        transport_lock = policy.metadata.get("offspring_transport_lock")
+        if transport_lock is not None:
+            metadata = dict(updated.metadata)
+            metadata["offspring_transport_lock"] = transport_lock
+            updated.metadata = metadata
         if not updated.search_space and policy.search_space:
             updated.search_space = dict(policy.search_space)
         updated.updated_from_diagnoses.append(diagnosis.stagnation_type)

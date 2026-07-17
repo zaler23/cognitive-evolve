@@ -41,6 +41,8 @@ DEFAULT_ARCHIVES = [
     "ProjectPatchArchive",
 ]
 
+VALID_OFFSPRING_TRANSPORT_MODES = frozenset({"slot", "single_batch"})
+
 DEFAULT_ELIGIBILITY_POLICY = {
     # This is a deterministic fallback policy for offline tests and model
     # outages.  Model-backed runs can replace or tune it through
@@ -115,6 +117,11 @@ class EvolutionPolicy:
         self.search_space = coerce_dict(self.search_space)
         self.updated_from_diagnoses = coerce_str_list(self.updated_from_diagnoses)
         self.metadata = coerce_dict(self.metadata)
+        transport_lock = self.metadata.get("offspring_transport_lock")
+        if transport_lock is not None and (
+            not isinstance(transport_lock, str) or transport_lock not in VALID_OFFSPRING_TRANSPORT_MODES
+        ):
+            raise ValueError("offspring_transport_lock must be slot or single_batch")
         self.metadata.setdefault("eligibility_policy", dict(DEFAULT_ELIGIBILITY_POLICY))
         try:
             self.rarity_budget = max(0.0, float(self.rarity_budget))

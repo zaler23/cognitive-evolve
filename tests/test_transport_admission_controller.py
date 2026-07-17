@@ -12,6 +12,7 @@ from cognitive_evolve_runtime.candidates.mutation import MutationEngine, Mutatio
 from cognitive_evolve_runtime.evaluators import EvaluatorSpec, ExternalEvaluatorRunner
 from cognitive_evolve_runtime.llm.env import LLMResponseError
 from cognitive_evolve_runtime.llm.telemetry import build_round_cost_ledger
+from cognitive_evolve_runtime.nexus.diagnosis import PolicyUpdater, SearchDiagnosis
 from cognitive_evolve_runtime.nexus.loop.budget import EvolutionBudget
 from cognitive_evolve_runtime.nexus.loop.controller import _apply_gain_token_control, _gain_token_control
 from cognitive_evolve_runtime.nexus.loop.evaluate_stage import _pre_rank_admission_view
@@ -398,6 +399,72 @@ def test_gain_token_controller_adjusts_only_next_round_resources(
     assert policy.metadata["offspring_parallel_mode"] == expected_transport
     assert policy.metadata["evaluator_verdict_fixture"] == verdict
     assert decision["authority_boundary"] == "budget_width_transport_retry_only"
+
+
+def test_offspring_transport_lock_keeps_slot_across_low_gain_rounds_and_records_suppression() -> None:
+    policy = EvolutionPolicy(
+        metadata={
+            "offspring_parallel_mode": "single_batch",
+            "offspring_transport_lock": "slot",
+        }
+    )
+    history: list[dict[str, Any]] = []
+    budget = EvolutionBudget(max_rounds=4, branch_factor=4)
+
+    for round_index in range(1, 4):
+        record = {
+            "round": round_index,
+            "direction_aware_gain": {"total_gain": 0.01, "sample_count": 2},
+            "cost_ledger": {
+                "round": round_index,
+                "totals": {"total_tokens": 10_000, "estimated_cost_usd": 0.25},
+            },
+        }
+        history.append(record)
+        decision = _gain_token_control(
+            history=history,
+            cost_ledger={"rounds": [record["cost_ledger"]]},
+            current_width=budget.branch_factor,
+            current_transport=str(policy.metadata.get("offspring_parallel_mode") or "slot"),
+            current_retry_limit=int(policy.metadata.get("offspring_retry_attempts") or 3),
+            config={"low_gain_per_token": 0.00001, "high_gain_per_token": 0.0001, "min_width": 2},
+            transport_lock=policy.metadata.get("offspring_transport_lock"),
+        )
+        _apply_gain_token_control(budget=budget, policy=policy, decision=decision)
+        transport = _offspring_transport_decision(
+            policy=policy,
+            branch_slots=_slots(),
+            budget_history=_gate_history(completion_tokens=200, valid_children=2, physical_calls=5),
+            target_size=2,
+        )
+        record["generation_plan"] = {"offspring_transport": transport}
+        record["gain_token_control"] = decision
+
+    assert [record["generation_plan"]["offspring_transport"]["selected_mode"] for record in history] == [
+        "slot",
+        "slot",
+        "slot",
+    ]
+    assert all(record["gain_token_control"]["transport_lock"]["suppressed"] for record in history)
+    assert all(record["gain_token_control"]["next"]["transport"] == "slot" for record in history)
+    assert budget.branch_factor == 2
+    assert policy.metadata["offspring_retry_attempts"] == 1
+
+
+def test_offspring_transport_lock_rejects_invalid_value() -> None:
+    with pytest.raises(ValueError, match="offspring_transport_lock"):
+        EvolutionPolicy(metadata={"offspring_transport_lock": "batch"})
+
+
+def test_offspring_transport_lock_survives_model_policy_replacement() -> None:
+    class _Model:
+        def update_policy(self, **_: Any) -> EvolutionPolicy:
+            return EvolutionPolicy(metadata={"offspring_parallel_mode": "single_batch"})
+
+    policy = EvolutionPolicy(metadata={"offspring_transport_lock": "slot"})
+    updated = PolicyUpdater().update(policy, SearchDiagnosis(), model=_Model())
+
+    assert updated.metadata["offspring_transport_lock"] == "slot"
 
 
 def test_gain_token_controller_does_not_reuse_stale_gain_when_latest_round_has_no_outcome() -> None:

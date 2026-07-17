@@ -13,7 +13,7 @@ from cognitive_evolve_runtime.nexus.diagnosis import SearchDiagnosis
 from cognitive_evolve_runtime.nexus.display_selection import build_display_context, select_displayed_candidate
 from cognitive_evolve_runtime.nexus.minimal_core import run_core_ablation
 from cognitive_evolve_runtime.nexus.model_errors import is_quota_error
-from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy
+from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy, VALID_OFFSPRING_TRANSPORT_MODES
 from cognitive_evolve_runtime.nexus.protocols import NexusModelLike
 from cognitive_evolve_runtime.nexus.representation_shadow import RepresentationProvider, RepresentationVectorStore
 from cognitive_evolve_runtime.nexus.synthesis import SynthesizedResult, synthesize_result
@@ -379,6 +379,7 @@ class EvolutionLoopController:
             current_transport=str(metadata.get("offspring_parallel_mode") or "slot"),
             current_retry_limit=max(1, int(metadata.get("offspring_retry_attempts") or 5)),
             config=dict(metadata.get("gain_token_controller") or {}),
+            transport_lock=metadata.get("offspring_transport_lock"),
         )
         _apply_gain_token_control(budget=self.budget, policy=self.policy, decision=decision)
         self.budget.history[-1]["gain_token_control"] = decision
@@ -801,9 +802,15 @@ def _gain_token_control(
     current_transport: str,
     current_retry_limit: int,
     config: dict[str, Any],
+    transport_lock: str | None = None,
 ) -> dict[str, Any]:
     width = max(1, int(current_width or 1))
-    transport = current_transport if current_transport in {"slot", "single_batch"} else "slot"
+    requested_transport = current_transport if current_transport in VALID_OFFSPRING_TRANSPORT_MODES else "slot"
+    if transport_lock is not None and (
+        not isinstance(transport_lock, str) or transport_lock not in VALID_OFFSPRING_TRANSPORT_MODES
+    ):
+        raise ValueError("offspring_transport_lock must be slot or single_batch")
+    transport = transport_lock or requested_transport
     retry_limit = max(1, int(current_retry_limit or 1))
     low = float(config.get("low_gain_per_token", 0.00001))
     high = max(low, float(config.get("high_gain_per_token", 0.00005)))
@@ -857,7 +864,10 @@ def _gain_token_control(
         reason = "controller_disabled"
     elif gain_per_token is not None:
         reason = "gain_per_token_inside_hold_band"
-    return {
+    suggested_transport = next_transport
+    if transport_lock is not None:
+        next_transport = transport_lock
+    decision = {
         "schema": "cogev.gain_token_control.v1",
         "source_round": source_round,
         "action": action,
@@ -878,10 +888,24 @@ def _gain_token_control(
         },
         "authority_boundary": "budget_width_transport_retry_only",
     }
+    if transport_lock is not None:
+        decision["transport_lock"] = {
+            "configured": True,
+            "mode": transport_lock,
+            "requested_transport": requested_transport,
+            "suggested_transport": suggested_transport,
+            "applied_transport": transport_lock,
+            "suppressed": suggested_transport != transport_lock,
+            "reason": "gain_token_transport_suggestion_suppressed",
+        }
+    return decision
 
 
 def _apply_gain_token_control(*, budget: EvolutionBudget, policy: EvolutionPolicy, decision: dict[str, Any]) -> None:
+    transport_lock = decision.get("transport_lock")
     if decision.get("action") == "hold":
+        if isinstance(transport_lock, dict) and transport_lock.get("configured"):
+            policy.metadata["offspring_parallel_mode"] = str(decision["next"]["transport"])
         return
     controls = decision["next"]
     budget.branch_factor = int(controls["width"])
