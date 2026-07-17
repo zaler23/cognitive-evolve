@@ -16,6 +16,7 @@ def record_event(
     usage_provenance: str | None = None,
     estimated_cost_usd: float | None = None,
     attempts: int = 1,
+    transport_attempts: int | None = None,
     retry_history: list[dict[str, Any]] | None = None,
     governor: dict[str, Any] | None = None,
     error_type: str | None = None,
@@ -44,6 +45,10 @@ def record_event(
         "test_provider_only": status.get("test_provider_only", False),
         "confidence": response.get("confidence"),
         "attempts": attempts,
+        "transport_attempts": max(
+            0,
+            int(attempts if transport_attempts is None else transport_attempts),
+        ),
         "usage": usage,
         "usage_provenance": usage_provenance or ("unspecified" if usage else "unavailable"),
         "estimated_cost_usd": estimated_cost_usd,
@@ -82,6 +87,7 @@ def record_event(
 _TOTAL_FIELDS = (
     "logical_calls",
     "physical_calls",
+    "transport_attempts",
     "remote_attempts",
     "cache_hits",
     "prompt_tokens",
@@ -155,7 +161,13 @@ def build_round_cost_ledger(
     budget_history: list[dict[str, Any]] | None = None,
     existing_ledger: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """Project transport telemetry into a conservative round/slot/candidate ledger."""
+    """Project transport telemetry into a conservative round/slot/candidate ledger.
+
+    ``physical_calls`` intentionally retains its existing meaning: one logical
+    transport invocation per unique ``physical_call_id``.  ``transport_attempts``
+    is the additive count of provider attempts, including both retry layers.
+    ``remote_attempts`` remains for compatibility with existing consumers.
+    """
 
     history = [item for item in (budget_history or []) if isinstance(item, dict)]
     rounds: dict[str, dict[str, Any]] = {}
@@ -184,19 +196,27 @@ def build_round_cost_ledger(
                 round_acc["cache_replay_logical_call_ids"].add(logical_id)
                 contribution["cache_hits"] = 1
         else:
-            physical_key = physical_id or (logical_id if int(event.get("attempts") or 0) > 0 else "")
+            observed_attempts = int(event.get("attempts", event.get("transport_attempts")) or 0)
+            physical_key = physical_id or (logical_id if observed_attempts > 0 else "")
             if physical_key and physical_key not in round_acc["physical_call_ids"]:
                 round_acc["physical_call_ids"].add(physical_key)
                 usage = event.get("usage") if isinstance(event.get("usage"), dict) else {}
                 contribution.update(
                     {
                         "physical_calls": 1,
+                        "transport_attempts": max(
+                            0,
+                            int(event.get("transport_attempts", event.get("attempts")) or 0),
+                        ),
                         "remote_attempts": max(0, int(event.get("attempts") or 0)),
                         "prompt_tokens": int(usage.get("prompt_tokens") or 0),
                         "completion_tokens": int(usage.get("completion_tokens") or 0),
                         "total_tokens": int(usage.get("total_tokens") or 0),
                         "unpriced_remote_attempts": (
-                            max(0, int(event.get("attempts") or 0))
+                            max(
+                                0,
+                                int(event.get("transport_attempts", event.get("attempts")) or 0),
+                            )
                             if event.get("estimated_cost_usd") is None
                             else 0
                         ),

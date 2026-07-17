@@ -23,6 +23,7 @@ from cognitive_evolve_runtime.nexus.synthesis import SynthesizedResult
 _TOTAL_FIELDS = (
     "logical_calls",
     "physical_calls",
+    "transport_attempts",
     "remote_attempts",
     "cache_hits",
     "prompt_tokens",
@@ -174,6 +175,7 @@ def test_fake_transport_trace_conserves_costs_and_separates_retry_cache_and_part
     assert round_record["totals"] == {
         "logical_calls": 3,
         "physical_calls": 3,
+        "transport_attempts": 4,
         "remote_attempts": 4,
         "cache_hits": 1,
         "prompt_tokens": 46,

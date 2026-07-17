@@ -9,7 +9,8 @@ from cognitive_evolve_runtime.contracts.objective_contract import NexusObjective
 from cognitive_evolve_runtime.llm.provider_interface import LLMProviderResult
 from cognitive_evolve_runtime.llm.env import LLMResponseError
 from cognitive_evolve_runtime.llm.json_tools import extract_json_from_text
-from cognitive_evolve_runtime.llm.session import _LAST_RETRY_HISTORY
+from cognitive_evolve_runtime.llm.session import LLMSession, _LAST_RETRY_HISTORY, llm_session
+from cognitive_evolve_runtime.llm.telemetry import build_round_cost_ledger
 from cognitive_evolve_runtime.llm.transport import llm_json
 from cognitive_evolve_runtime.nexus.live_store import LiveNexusStore
 from cognitive_evolve_runtime.nexus.loop import EvolutionBudget
@@ -74,6 +75,83 @@ def test_llm_json_exception_after_parse_retry_does_not_self_extend_history(monke
 
     assert provider.calls == 2
     assert [item["attempt"] for item in _LAST_RETRY_HISTORY.get()] == [1]
+
+
+def test_llm_json_telemetry_counts_provider_retry_attempts_without_changing_call_count(monkeypatch) -> None:
+    class Provider:
+        provider_id = "test"
+
+        def complete_json(self, **kwargs):  # noqa: ANN001
+            return LLMProviderResult(response=_response('{"ok": true}'), attempts=3)
+
+    monkeypatch.setenv("COGEV_LLM_PROVIDER", "litellm")
+    monkeypatch.setenv("COGEV_LLM_MODEL", "test/model")
+    monkeypatch.setenv("COGEV_LLM_RETRY_ATTEMPTS", "3")
+
+    session = LLMSession()
+    with llm_session(session):
+        assert llm_json("unit_test", {"x": 1}, system="Return JSON", schema_hint={}, provider=Provider())["ok"]
+
+    event = session.snapshot()[0]
+    assert event["physical_call_id"]
+    assert event["attempts"] == 3
+    assert event["transport_attempts"] == 3
+    ledger = build_round_cost_ledger(session.snapshot())
+    assert ledger["rounds"][0]["totals"]["physical_calls"] == 1
+    assert ledger["rounds"][0]["totals"]["transport_attempts"] == 3
+
+
+def test_llm_json_telemetry_counts_outer_json_retries_once_per_provider_call(monkeypatch) -> None:
+    class Provider:
+        provider_id = "test"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def complete_json(self, **kwargs):  # noqa: ANN001
+            self.calls += 1
+            content = "not json" if self.calls == 1 else '{"ok": true}'
+            return LLMProviderResult(response=_response(content), attempts=1)
+
+    monkeypatch.setenv("COGEV_LLM_PROVIDER", "litellm")
+    monkeypatch.setenv("COGEV_LLM_MODEL", "test/model")
+    monkeypatch.setenv("COGEV_LLM_RETRY_ATTEMPTS", "2")
+    monkeypatch.setenv("COGEV_LLM_JSON_RETRY_ATTEMPTS", "2")
+
+    provider = Provider()
+    session = LLMSession()
+    with llm_session(session):
+        assert llm_json("unit_test", {"x": 1}, system="Return JSON", schema_hint={}, provider=provider)["ok"]
+
+    event = session.snapshot()[0]
+    assert provider.calls == 2
+    assert event["attempts"] == 2
+    assert event["transport_attempts"] == 2
+    totals = build_round_cost_ledger(session.snapshot())["rounds"][0]["totals"]
+    assert totals["physical_calls"] == 1
+    assert totals["transport_attempts"] == 2
+
+
+def test_llm_json_telemetry_no_retry_has_equal_call_and_attempt_counts(monkeypatch) -> None:
+    class Provider:
+        provider_id = "test"
+
+        def complete_json(self, **kwargs):  # noqa: ANN001
+            return LLMProviderResult(response=_response('{"ok": true}'))
+
+    monkeypatch.setenv("COGEV_LLM_PROVIDER", "litellm")
+    monkeypatch.setenv("COGEV_LLM_MODEL", "test/model")
+    monkeypatch.setenv("COGEV_LLM_RETRY_ATTEMPTS", "1")
+
+    session = LLMSession()
+    with llm_session(session):
+        llm_json("unit_test", {"x": 1}, system="Return JSON", schema_hint={}, provider=Provider())
+
+    event = session.snapshot()[0]
+    ledger = build_round_cost_ledger(session.snapshot())
+    assert event["attempts"] == event["transport_attempts"] == 1
+    assert ledger["rounds"][0]["totals"]["physical_calls"] == 1
+    assert ledger["rounds"][0]["totals"]["transport_attempts"] == 1
 
 
 def test_extract_json_from_text_accepts_embedded_fenced_json() -> None:
