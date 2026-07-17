@@ -11,7 +11,11 @@ from typing import Any, Protocol
 
 @dataclass
 class LLMProviderResult:
-    """Raw provider response plus transport metadata."""
+    """Raw provider response plus transport metadata.
+
+    ``attempts`` is the number of provider transport attempts used to produce
+    the result, including provider-level retries.
+    """
 
     response: Any
     attempts: int = 1
