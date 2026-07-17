@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -16,6 +17,7 @@ from cognitive_evolve_runtime.nexus.synthesis import SynthesizedResult
 from cognitive_evolve_runtime.persistence.checkpoint import NexusCheckpoint, build_checkpoint_state
 from cognitive_evolve_runtime.archives.manager import ArchiveManager
 from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy
+from cognitive_evolve_runtime.tools.feedback import ToolFeedback
 
 
 def test_adaptive_state_roundtrip_and_old_checkpoint_default() -> None:
@@ -92,6 +94,91 @@ def test_external_evaluator_applies_metadata_and_scores(tmp_path: Path) -> None:
     assert candidate.multihead_scores["objective_score"] == 0.87
     assert candidate.multihead_scores["correctness"] == 1.0
     assert any(item.get("tool_id") == "external_evaluator" for item in candidate.verification_trace)
+
+
+class _CountingEvaluatorRunner:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def run(self, command: list[str], **_: Any) -> ToolFeedback:
+        self.calls += 1
+        return ToolFeedback(
+            tool_id="counting-evaluator",
+            status="passed",
+            raw_output_ref=json.dumps({"passed": True, "metrics": {"score": 0.75}}),
+            cost={"seconds": 0.0, "returncode": 0},
+        )
+
+
+def _counting_evaluator_spec(tmp_path: Path, *, execute_once: bool) -> EvaluatorSpec:
+    return EvaluatorSpec.from_mapping(
+        {
+            "enabled": True,
+            "command": "python evaluator.py {candidate_path}",
+            "cwd": str(tmp_path),
+            "execute_once": execute_once,
+        }
+    )
+
+
+def test_external_evaluator_execute_once_reuses_result_for_surviving_candidate(tmp_path: Path) -> None:
+    counting_runner = _CountingEvaluatorRunner()
+    runner = ExternalEvaluatorRunner(runner=counting_runner)
+    candidate = CandidateGenome(id="C-once", artifact={"answer": 1})
+    spec = _counting_evaluator_spec(tmp_path, execute_once=True)
+
+    for round_index in range(1, 4):
+        runner.evaluate_population_if_configured([candidate], spec=spec, round_index=round_index)
+
+    assert counting_runner.calls == 1
+    assert len(candidate.metadata["evidence_records"]) == 1
+    assert len(candidate.verification_trace) == 1
+
+
+def test_external_evaluator_execute_once_reruns_when_artifact_changes(tmp_path: Path) -> None:
+    counting_runner = _CountingEvaluatorRunner()
+    runner = ExternalEvaluatorRunner(runner=counting_runner)
+    candidate = CandidateGenome(id="C-change", artifact={"answer": 1})
+    spec = _counting_evaluator_spec(tmp_path, execute_once=True)
+
+    runner.evaluate_population_if_configured([candidate], spec=spec, round_index=1)
+    candidate.artifact = {"answer": 2}
+    runner.evaluate_population_if_configured([candidate], spec=spec, round_index=2)
+
+    assert counting_runner.calls == 2
+    assert len(candidate.metadata["evidence_records"]) == 2
+
+
+def test_external_evaluator_execute_once_reruns_when_spec_identity_changes(tmp_path: Path) -> None:
+    counting_runner = _CountingEvaluatorRunner()
+    runner = ExternalEvaluatorRunner(runner=counting_runner)
+    candidate = CandidateGenome(id="C-spec", artifact={"answer": 1})
+
+    runner.evaluate_population_if_configured([candidate], spec=_counting_evaluator_spec(tmp_path, execute_once=True), round_index=1)
+    final_spec = EvaluatorSpec.from_mapping(
+        {
+            "enabled": True,
+            "command": "python evaluator.py {candidate_path}",
+            "cwd": str(tmp_path),
+            "stage": "final",
+            "execute_once": True,
+        }
+    )
+    runner.evaluate_population_if_configured([candidate], spec=final_spec, round_index=2)
+
+    assert counting_runner.calls == 2
+
+
+def test_external_evaluator_execute_once_is_opt_in(tmp_path: Path) -> None:
+    counting_runner = _CountingEvaluatorRunner()
+    runner = ExternalEvaluatorRunner(runner=counting_runner)
+    candidate = CandidateGenome(id="C-default", artifact={"answer": 1})
+    spec = _counting_evaluator_spec(tmp_path, execute_once=False)
+
+    for round_index in range(1, 4):
+        runner.evaluate_population_if_configured([candidate], spec=spec, round_index=round_index)
+
+    assert counting_runner.calls == 3
 
 
 @pytest.mark.parametrize(
