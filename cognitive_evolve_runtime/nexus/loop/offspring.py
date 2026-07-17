@@ -27,7 +27,7 @@ from cognitive_evolve_runtime.llm.request_policy import LLMRequestPolicy
 from cognitive_evolve_runtime.llm.session import logical_llm_call
 from cognitive_evolve_runtime.llm.transport import max_tokens_for_request
 from cognitive_evolve_runtime.nexus.diagnosis import SearchDiagnosis
-from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy
+from cognitive_evolve_runtime.nexus.policy import EvolutionPolicy, VALID_OFFSPRING_TRANSPORT_MODES
 from cognitive_evolve_runtime.nexus.protocols import NexusModelLike, NexusMutationPlannerModelProtocol, NexusOffspringModelProtocol
 from cognitive_evolve_runtime.nexus.receipts import (
     DONOR_ROLES,
@@ -592,6 +592,11 @@ def _offspring_transport_decision(
 ) -> dict[str, Any]:
     metadata = policy.metadata if isinstance(policy.metadata, dict) else {}
     requested = str(metadata.get("offspring_parallel_mode") or os.environ.get("COGEV_OFFSPRING_PARALLEL_MODE") or "slot").strip().lower()
+    transport_lock = metadata.get("offspring_transport_lock")
+    if transport_lock is not None and (
+        not isinstance(transport_lock, str) or transport_lock not in VALID_OFFSPRING_TRANSPORT_MODES
+    ):
+        raise ValueError("offspring_transport_lock must be slot or single_batch")
     compiled = [_slot_sampling_policy(policy, slot) for slot in branch_slots]
     serialized_profiles = [asdict(item) if item is not None else {} for item in compiled]
     profile_keys = {
@@ -662,15 +667,24 @@ def _offspring_transport_decision(
         "historical_truncation_rate": truncation_gate,
     }
     failed_gate = next((name for name, gate in gates.items() if gate["passed"] is not True), "")
-    selected = "single_batch" if requested == "single_batch" and not failed_gate and branch_slots else "slot"
-    return {
+    selected = transport_lock if transport_lock is not None and branch_slots else "single_batch" if requested == "single_batch" and not failed_gate and branch_slots else "slot"
+    decision = {
         "schema": "cogev.offspring_transport_gate.v1",
         "requested_mode": requested,
         "selected_mode": selected,
-        "reason": "all_gates_passed" if selected == "single_batch" else f"gate_failed:{failed_gate}" if requested == "single_batch" and failed_gate else "slot_requested_or_no_branch_slots",
+        "reason": "transport_locked" if transport_lock is not None and branch_slots else "all_gates_passed" if selected == "single_batch" else f"gate_failed:{failed_gate}" if requested == "single_batch" and failed_gate else "slot_requested_or_no_branch_slots",
         "gates": gates,
         "fallback": {"attempted": False, "passes": 0, "from": selected, "to": selected, "status": "not_needed"},
     }
+    if transport_lock is not None:
+        decision["transport_lock"] = {
+            "configured": True,
+            "mode": transport_lock,
+            "requested_mode": requested,
+            "suppressed": requested != transport_lock,
+            "reason": "offspring_transport_lock",
+        }
+    return decision
 
 
 def _deterministic_fallback_offspring(
