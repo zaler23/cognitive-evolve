@@ -519,7 +519,13 @@ def test_direct_offspring_view_keeps_exact_parent_and_evaluator_vector() -> None
                 "status": "passed",
                 "metadata": {"cache_key": "runtime-cache"},
                 "replay_record": {"verification_cache_key": "verification:abc"},
-            }
+            },
+            {
+                "tool_id": "external_evaluator",
+                "status": "failed",
+                "diagnostics": ["one duplicate path remains"],
+                "raw_output_ref": "external_evaluator:failed",
+            },
         ],
     )
 
@@ -545,10 +551,13 @@ def test_direct_offspring_view_keeps_exact_parent_and_evaluator_vector() -> None
         "failures": [{"kind": "oracle_process", "detail": "oracle unavailable"}],
     }
     assert sent_parent["external_evaluator"]["evidence_state"]["target_challenge_ids"] == ["duplicate-path"]
+    assert not {"evaluator", "evidence_records", "evidence_state"} & sent_parent["metadata"].keys()
+    assert all(item.get("tool_id") != "external_evaluator" for item in sent_parent["verification_trace"])
     assert "initial_candidates" not in view.payload["source_context"]
     assert "supersede earlier packet/world absence claims" in view.payload["prompt_contract"]["current_state_precedence"]
     prompt_text = json.dumps(view.payload, ensure_ascii=False, sort_keys=True)
     assert "oracle unavailable" in prompt_text
+    assert prompt_text.count("one duplicate path remains") == 1
     for volatile_key in (
         "_cache",
         "cache_hit",

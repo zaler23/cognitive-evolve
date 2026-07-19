@@ -182,6 +182,14 @@ def candidate_prompt_view(candidate: CandidateGenome | dict[str, Any], *, detail
 
     genome = candidate if isinstance(candidate, CandidateGenome) else candidate_from_dict(candidate)
     artifact_text = _stringify(genome.artifact)
+    evaluator_feedback = _evaluator_feedback_view(genome.metadata, detail=detail)
+    verification_trace = _without_evaluator_telemetry(genome.verification_trace)
+    if evaluator_feedback:
+        verification_trace = [
+            item
+            for item in verification_trace
+            if item.get("tool_id") != "external_evaluator"
+        ]
     view: dict[str, Any] = {
         "id": genome.id,
         "parent_ids": list(genome.parent_ids)[:4],
@@ -201,7 +209,7 @@ def candidate_prompt_view(candidate: CandidateGenome | dict[str, Any], *, detail
         "mutation_history_tail": _clip_list(genome.mutation_history[-4:], 4, 720),
         "scores": _top_scores(genome.multihead_scores),
         "tool_feedback_summary": _feedback_summary(_without_evaluator_telemetry(genome.tool_results)),
-        "verification_summary": _feedback_summary(_without_evaluator_telemetry(genome.verification_trace)),
+        "verification_summary": _feedback_summary(verification_trace),
         "formal_artifacts": [_small_mapping(item, max_items=8, string_chars=880) for item in genome.formal_artifacts[:4]],
         "proof_obligations": [_small_mapping(item, max_items=8, string_chars=880) for item in genome.proof_obligations[:6]],
         "obligation_delta": _small_mapping(genome.obligation_delta, max_items=8, string_chars=880),
@@ -219,10 +227,16 @@ def candidate_prompt_view(candidate: CandidateGenome | dict[str, Any], *, detail
     repair_seed_contract = _repair_seed_contract_view(genome, detail=detail)
     if repair_seed_contract:
         view["repair_seed_contract"] = repair_seed_contract
-    evaluator_feedback = _evaluator_feedback_view(genome.metadata, detail=detail)
     if evaluator_feedback:
         view["external_evaluator"] = evaluator_feedback
     if detail == "exact":
+        metadata = _without_evaluator_telemetry(genome.metadata)
+        if evaluator_feedback:
+            metadata = {
+                key: value
+                for key, value in metadata.items()
+                if key not in {"evaluator", "evidence_records", "evidence_state"}
+            }
         view.update(
             {
                 "parent_ids": list(genome.parent_ids),
@@ -245,9 +259,9 @@ def candidate_prompt_view(candidate: CandidateGenome | dict[str, Any], *, detail
                 "evidence_delta": dict(genome.evidence_delta),
                 "verification_result": dict(genome.verification_result),
                 "tool_results": _without_evaluator_telemetry(genome.tool_results),
-                "verification_trace": _without_evaluator_telemetry(genome.verification_trace),
+                "verification_trace": verification_trace,
                 "scores": dict(genome.multihead_scores),
-                "metadata": _without_evaluator_telemetry(genome.metadata),
+                "metadata": metadata,
                 "artifact": genome.artifact,
             }
         )
