@@ -408,8 +408,8 @@ def _pre_rank_admission_view(
     def priority(candidate: CandidateGenome) -> tuple[float, ...]:
         signal = signals[candidate.id]
         return (
-            float(signal["deferred_rounds"]),
             float(not signal["evaluated"]),
+            float(signal["deferred_rounds"]),
             float(signal["uncertainty"]),
             float(signal["value"]),
             -float(signal["confidence"]),

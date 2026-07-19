@@ -285,6 +285,30 @@ def test_pre_rank_admission_defers_without_dropping_and_rotates_deferred_candida
     )
 
 
+def test_pre_rank_admission_does_not_delay_fresh_candidate_behind_evaluated_reentry() -> None:
+    evaluated = _candidate("evaluated")
+    evaluated.metadata["evaluator"] = {"status": "passed", "passed": True}
+    fresh = _candidate("fresh")
+    history = [
+        {
+            "round": 1,
+            "generation_plan": {
+                "pre_rank_admission": {"deferred_candidate_ids": [evaluated.id]},
+            },
+        }
+    ]
+
+    admitted, audit = _pre_rank_admission_view(
+        [evaluated, fresh],
+        limit=1,
+        history=history,
+        uncertainty_floor=0,
+    )
+
+    assert [candidate.id for candidate in admitted] == [fresh.id]
+    assert audit["deferred_candidate_ids"] == [evaluated.id]
+
+
 def test_pre_rank_admission_preserves_axis_family_and_uncertainty_floors() -> None:
     candidates = [
         _candidate("axis-a", axis="axis-a", family="family-a"),
