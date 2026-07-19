@@ -12,8 +12,9 @@ from cognitive_evolve_runtime.candidates.crossover import crossover, neighborhoo
 from cognitive_evolve_runtime.candidates.genome import CandidateFate, CandidateGenome, CandidatePopulation, candidate_from_dict
 from cognitive_evolve_runtime.candidates.mutation import MutationOperator, MutationPlan
 from cognitive_evolve_runtime.contracts.objective_contract import NexusObjectiveContract
-from cognitive_evolve_runtime.evaluators import EvaluatorSpec, evidence_advisory_features
+from cognitive_evolve_runtime.evaluators import evidence_advisory_features
 from cognitive_evolve_runtime.evaluators.evidence import evaluator_selection_key, select_preliminary_incumbent
+from cognitive_evolve_runtime.evaluators.spec import EvaluatorSpec, evaluator_measurement_available
 from cognitive_evolve_runtime.nexus.critique import CandidateCritique
 from cognitive_evolve_runtime.nexus.activation_reseed import emergency_activation_reseed
 from cognitive_evolve_runtime.nexus._serde import stable_hash
@@ -413,7 +414,7 @@ class ReproduceStage:
         self.last_generation_plan["plan_id"] = expected_generation_plan_id(plan)
 
     def _branch_limit(self) -> int:
-        return max(2, int(self.budget.branch_factor or 2))
+        return max(1, int(self.budget.branch_factor or 1))
 
     def _evaluator_led(self, evaluator_spec: EvaluatorSpec | None = None) -> bool:
         spec = evaluator_spec or EvaluatorSpec.from_mapping(dict(self.adaptive.config.evaluator or {}))
@@ -605,7 +606,24 @@ class ReproduceStage:
         limit_override: int | None = None,
     ) -> list[CandidateGenome]:
         limit = max(1, int(limit_override or self._branch_limit()))
-        preliminary_incumbent = select_preliminary_incumbent(population.candidates)
+        evaluator_spec = EvaluatorSpec.from_mapping(dict(self.adaptive.config.evaluator or {}))
+        evaluator_led = self._evaluator_led(evaluator_spec)
+
+        def _eligible_candidates(candidates: list[CandidateGenome]) -> list[CandidateGenome]:
+            if not evaluator_led:
+                return list(candidates)
+            return [
+                candidate
+                for candidate in candidates
+                if isinstance(candidate.metadata, dict)
+                and isinstance(candidate.metadata.get("evaluator"), dict)
+                and evaluator_measurement_available(candidate.metadata["evaluator"], evaluator_spec)
+            ]
+
+        population_candidates = _eligible_candidates(population.candidates)
+        repair_candidates = _eligible_candidates(repair_parent_candidates or [])
+        archive_candidates = _eligible_candidates(archive_admission_candidates or [])
+        preliminary_incumbent = select_preliminary_incumbent(population_candidates)
 
         def _with_incumbent(selected: list[CandidateGenome]) -> list[CandidateGenome]:
             if preliminary_incumbent is None or structurally_blocked(preliminary_incumbent):
@@ -617,10 +635,10 @@ class ReproduceStage:
             )
             return list({candidate.id: candidate for candidate in ordered}.values())[:limit]
 
-        advisory_features = self._combined_advisory_features(policy=policy, candidates=population.candidates, current_round=current_round)
-        selection_candidates = [*population.candidates, *(archive_admission_candidates or [])]
-        if self.budget.search_phase == "explore" and repair_parent_candidates:
-            selection_candidates = [*selection_candidates, *repair_parent_candidates]
+        advisory_features = self._combined_advisory_features(policy=policy, candidates=population_candidates, current_round=current_round)
+        selection_candidates = [*population_candidates, *archive_candidates]
+        if self.budget.search_phase == "explore" and repair_candidates:
+            selection_candidates = [*selection_candidates, *repair_candidates]
         selection_candidates = list({candidate.id: candidate for candidate in selection_candidates}.values())
         parents = self.selector.select(
             selection_candidates,
@@ -632,19 +650,25 @@ class ReproduceStage:
         )
         if parents:
             return _with_incumbent(parents)
-        parents = ranked_repair_fallback_parents(population.candidates, rankings=rankings, diagnosis=diagnosis, limit=limit, current_round=current_round)
+        parents = ranked_repair_fallback_parents(population_candidates, rankings=rankings, diagnosis=diagnosis, limit=limit, current_round=current_round)
         if parents:
             return _with_incumbent(parents)
-        if repair_parent_candidates:
-            parents = ranked_repair_fallback_parents(repair_parent_candidates, rankings=rankings, diagnosis=diagnosis, limit=limit, current_round=current_round)
+        if repair_candidates:
+            parents = ranked_repair_fallback_parents(repair_candidates, rankings=rankings, diagnosis=diagnosis, limit=limit, current_round=current_round)
             if parents:
                 return _with_incumbent(parents)
-        parents = recover_repairable_dormant_seeds(archives=archives, diagnosis=diagnosis, policy=policy, limit=limit, current_round=current_round)
+        parents = _eligible_candidates(
+            recover_repairable_dormant_seeds(archives=archives, diagnosis=diagnosis, policy=policy, limit=limit, current_round=current_round)
+        )
         if parents:
             return _with_incumbent(parents)
-        parents = recover_failure_archive_repair_seeds(archives=archives, diagnosis=diagnosis, policy=policy, limit=limit, current_round=current_round)
-        if parents or population.candidates:
+        parents = _eligible_candidates(
+            recover_failure_archive_repair_seeds(archives=archives, diagnosis=diagnosis, policy=policy, limit=limit, current_round=current_round)
+        )
+        if parents or population_candidates:
             return _with_incumbent(parents)
+        if evaluator_led:
+            return []
         return _with_incumbent(emergency_activation_reseed(
             contract=contract,
             world=world,

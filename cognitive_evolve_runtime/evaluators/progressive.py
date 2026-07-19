@@ -20,6 +20,7 @@ class ProgressiveEvaluator:
         external_artifact_authority = evaluator_result is not None and not uses_artifact_policy(policy)
         artifact_state = _external_evaluator_artifact_state(normalizer_state) if external_artifact_authority else normalizer_state
         semantic_diagnostics = semantic_drift_diagnostics(artifact_state, policy)
+        inconclusive = evaluator_result is not None and evaluator_result.status == "inconclusive"
         source = str(getattr(spec, "domain_id", "") or artifact_state.get("artifact_type") or "general")
         normalized_artifact_hash = stable_artifact_hash(artifact_state.get("normalized_artifact")) if external_artifact_authority or artifact_state.get("normalized_artifact") is not None else ""
         artifact_hash = stable_artifact_identity_hash(artifact_state, artifact_policy=policy.to_dict()) if external_artifact_authority or artifact_state.get("normalized_artifact") is not None else ""
@@ -34,7 +35,7 @@ class ProgressiveEvaluator:
             cost: dict[str, Any] = {}
         else:
             passed = bool(evaluator_result.passed)
-            status = "passed" if passed else "challenge_failed"
+            status = "evaluator_inconclusive" if inconclusive else ("passed" if passed else "challenge_failed")
             metrics = dict(evaluator_result.metrics or {})
             metrics.setdefault("schema_cleanliness", artifact_state.get("schema_cleanliness", 0.0))
             metrics["semantic_drift_count"] = len(semantic_diagnostics)
@@ -43,9 +44,9 @@ class ProgressiveEvaluator:
                 list(evaluator_result.diagnostics or [])
                 + list(artifact_state.get("diagnostics") or [])
                 + semantic_diagnostics
-                + _behavior_diagnostics(metrics, passed=passed, diagnostics=list(evaluator_result.diagnostics or []))
+                + ([] if inconclusive else _behavior_diagnostics(metrics, passed=passed, diagnostics=list(evaluator_result.diagnostics or [])))
             )
-        score = _score_from_metrics(metrics, passed=passed, artifact_score=bounded_score(artifact_state.get("schema_cleanliness", 0.0)))
+        score = 0.0 if inconclusive else _score_from_metrics(metrics, passed=passed, artifact_score=bounded_score(artifact_state.get("schema_cleanliness", 0.0)))
         artifact_status = str(artifact_state.get("status") or "")
         probe_blocked = bool(artifact_status in {"malformed", "absent"} and policy.machine_readable_required)
         terminal_reject = bool(artifact_status == "absent" and policy.machine_readable_required)
@@ -60,7 +61,7 @@ class ProgressiveEvaluator:
         artifact_blocks_final = bool((artifact_status and artifact_status != "clean") or semantic_diagnostics)
         if external_artifact_authority and passed and not artifact_blocks_final:
             diagnostics = []
-        if not passed or artifact_blocks_final:
+        if not inconclusive and (not passed or artifact_blocks_final):
             priority = 0.7 if score >= 0.65 else 0.5
             for diagnostic in diagnostics or [status]:
                 challenge_items.append(challenge_from_diagnostic(candidate_id=getattr(candidate, "id", ""), source=source, diagnostic=diagnostic, round_index=round_index, priority=priority))
@@ -69,13 +70,13 @@ class ProgressiveEvaluator:
         metadata = getattr(candidate, "metadata", None)
         if isinstance(metadata, dict) and isinstance(metadata.get("target_challenge_ids"), list):
             targets = [str(item) for item in metadata.get("target_challenge_ids", []) if item]
-        hints = _repair_hints(diagnostics, str(artifact_state.get("status") or "")) if not external_artifact_authority or not passed or artifact_blocks_final else []
+        hints = [] if inconclusive else (_repair_hints(diagnostics, str(artifact_state.get("status") or "")) if not external_artifact_authority or not passed or artifact_blocks_final else [])
         provisional = EvidenceRecord(
             candidate_id=getattr(candidate, "id", ""),
             source=source,
             stage=stage,
             score=score,
-            confidence=0.85 if passed else 0.55,
+            confidence=0.0 if inconclusive else (0.85 if passed else 0.55),
             cost=cost,
             final_blocked=not final_ready,
             parent_blocked=probe_blocked,
@@ -90,7 +91,7 @@ class ProgressiveEvaluator:
             hints=hints,
             metadata={
                 "status": status,
-                "authority": "final" if final_stage and passed else ("verifier" if evaluator_result is not None else "probe"),
+                "authority": "probe" if inconclusive else ("final" if final_stage and passed else ("verifier" if evaluator_result is not None else "probe")),
                 "artifact_hash": artifact_hash,
                 "artifact_identity_hash": artifact_hash,
                 "normalized_artifact_hash": normalized_artifact_hash,
@@ -104,6 +105,10 @@ class ProgressiveEvaluator:
                 "semantic_drift_diagnostics": semantic_diagnostics,
             },
         )
+        if inconclusive:
+            return EvidenceRecord(
+                **{**provisional.to_dict(), "repair_value": 0.0, "continuation_value": 0.0}
+            )
         repair = repair_value_from_record(provisional)
         return EvidenceRecord(
             **{**provisional.to_dict(), "repair_value": repair, "continuation_value": repair if not terminal_reject else 0.0}

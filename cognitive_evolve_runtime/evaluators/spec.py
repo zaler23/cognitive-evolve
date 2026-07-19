@@ -1,6 +1,7 @@
 """External evaluator specifications."""
 from __future__ import annotations
 
+import math
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any
@@ -94,6 +95,24 @@ class EvaluatorSpec:
         return Path(self.cwd).expanduser() if self.cwd else Path.cwd()
 
 
+def evaluator_measurement_available(payload: dict[str, Any], spec: EvaluatorSpec) -> bool:
+    """Return whether the configured selection metric has a usable value."""
+
+    status = str(payload.get("status") or "").strip().lower()
+    if status in {"inconclusive", "invalid_evaluator_output"}:
+        return False
+    metric = spec.metrics[0]
+    metrics = coerce_dict(payload.get("metrics"))
+    value = metrics.get(metric.name)
+    if metric.direction == "pass":
+        return isinstance(value, bool) or isinstance(payload.get("passed"), bool)
+    if metric.value_type == "boolean":
+        return isinstance(value, bool)
+    if metric.value_type == "integer":
+        return isinstance(value, int) and not isinstance(value, bool)
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(float(value))
+
+
 def _bool(value: Any, *, default: bool) -> bool:
     if value is None:
         return default
@@ -115,4 +134,4 @@ def _safe_progressive_config(data: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-__all__ = ["EvaluatorMetricSpec", "EvaluatorSpec"]
+__all__ = ["EvaluatorMetricSpec", "EvaluatorSpec", "evaluator_measurement_available"]

@@ -14,7 +14,7 @@ from cognitive_evolve_runtime.evaluators.artifact_normalizer import artifact_pol
 from cognitive_evolve_runtime.evaluators.evidence import apply_evidence_record
 from cognitive_evolve_runtime.evaluators.progressive import ProgressiveEvaluator
 from cognitive_evolve_runtime.evaluators.result import EvaluatorResult
-from cognitive_evolve_runtime.evaluators.spec import EvaluatorSpec
+from cognitive_evolve_runtime.evaluators.spec import EvaluatorSpec, evaluator_measurement_available
 from cognitive_evolve_runtime.tools.runner import ToolRunner
 
 
@@ -69,12 +69,17 @@ class ExternalEvaluatorRunner:
             feedback = runner.run(command, cwd=spec.cwd_path(), timeout_seconds=spec.timeout_seconds)
             parsed = _parse_evaluator_output(feedback.raw_output_ref)
             verdict = _explicit_verdict(parsed)
-            if feedback.status != "passed":
-                passed = False
-                status = "failed"
-            elif verdict is None:
+            metrics = dict(parsed.get("metrics") or {}) if isinstance(parsed.get("metrics"), dict) else {}
+            measurement = evaluator_measurement_available({"passed": verdict, "metrics": metrics}, spec)
+            if feedback.status == "passed" and verdict is None:
                 passed = False
                 status = "invalid_evaluator_output"
+            elif not measurement:
+                passed = False
+                status = "inconclusive"
+            elif feedback.status != "passed":
+                passed = False
+                status = "failed"
             else:
                 passed = verdict
                 status = "passed" if passed else "failed"
@@ -82,10 +87,12 @@ class ExternalEvaluatorRunner:
                 diagnostics = [str(item) for item in parsed.get("diagnostics", []) if item]
             else:
                 diagnostics = list(feedback.diagnostics)
-            if status == "invalid_evaluator_output":
-                diagnostics.append("invalid_evaluator_output")
-            metrics = dict(parsed.get("metrics") or {}) if isinstance(parsed.get("metrics"), dict) else {}
-            metrics["correctness"] = passed
+            if status == "inconclusive":
+                diagnostics.append(f"configured_evaluator_metric_unavailable:{spec.metrics[0].name}")
+            else:
+                if status == "invalid_evaluator_output":
+                    diagnostics.append("invalid_evaluator_output")
+                metrics["correctness"] = passed
             details = dict(parsed.get("details") or {}) if isinstance(parsed.get("details"), dict) else {}
             details.update({
                 key: value
@@ -117,23 +124,21 @@ def apply_evaluator_result(candidate: CandidateGenome, result: EvaluatorResult, 
         evaluator_payload["spec_identity"] = _evaluator_spec_identity(spec)
     metadata["evaluator"] = evaluator_payload
     candidate.metadata = metadata
-    if result.passed:
-        candidate.multihead_scores["correctness"] = 1.0
-    else:
-        candidate.multihead_scores["correctness"] = 0.0
-    score = result.metrics.get("score")
-    if isinstance(score, (int, float)):
-        candidate.multihead_scores["objective_score"] = max(0.0, min(1.0, float(score)))
-    elif result.passed:
-        candidate.multihead_scores.setdefault("objective_score", 1.0)
-    else:
-        candidate.multihead_scores.setdefault("objective_score", 0.0)
-    runtime_ms = result.metrics.get("runtime_ms")
-    try:
-        runtime_penalty = min(0.5, max(0.0, float(runtime_ms) / 100000.0)) if runtime_ms is not None else 0.0
-    except (TypeError, ValueError):
-        runtime_penalty = 0.0
-    candidate.multihead_scores["cost_adjusted_fitness"] = max(0.0, float(candidate.multihead_scores.get("objective_score", 0.0) or 0.0) - runtime_penalty)
+    if result.status != "inconclusive":
+        candidate.multihead_scores["correctness"] = 1.0 if result.passed else 0.0
+        score = result.metrics.get("score")
+        if isinstance(score, (int, float)):
+            candidate.multihead_scores["objective_score"] = max(0.0, min(1.0, float(score)))
+        elif result.passed:
+            candidate.multihead_scores.setdefault("objective_score", 1.0)
+        else:
+            candidate.multihead_scores.setdefault("objective_score", 0.0)
+        runtime_ms = result.metrics.get("runtime_ms")
+        try:
+            runtime_penalty = min(0.5, max(0.0, float(runtime_ms) / 100000.0)) if runtime_ms is not None else 0.0
+        except (TypeError, ValueError):
+            runtime_penalty = 0.0
+        candidate.multihead_scores["cost_adjusted_fitness"] = max(0.0, float(candidate.multihead_scores.get("objective_score", 0.0) or 0.0) - runtime_penalty)
     evidence = (progressive or ProgressiveEvaluator()).evaluate_result(candidate, result, spec=spec, round_index=round_index)
     apply_evidence_record(candidate, evidence)
     candidate.add_verification_feedback(result.to_feedback())
@@ -151,6 +156,8 @@ def _stored_evaluator_result(candidate: CandidateGenome, *, spec: EvaluatorSpec)
     if payload.get("spec_identity") != _evaluator_spec_identity(spec):
         return None
     if not isinstance(payload.get("passed"), bool) or not str(payload.get("status") or "").strip():
+        return None
+    if not evaluator_measurement_available(payload, spec):
         return None
     return EvaluatorResult(
         candidate_id=candidate.id,

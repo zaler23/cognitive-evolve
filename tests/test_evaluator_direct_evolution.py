@@ -245,6 +245,193 @@ def test_external_evaluator_path_uses_one_direct_model_call_per_slot(monkeypatch
     ]
 
 
+def test_evaluator_led_branch_factor_one_generates_one_slot(monkeypatch) -> None:
+    monkeypatch.setenv("COGEV_MODEL_FANOUT_CONCURRENCY", "1")
+    model = _DirectOnlyModel()
+    budget = EvolutionBudget(max_rounds=2, branch_factor=1, stop_policy="max_rounds")
+    pipeline = EvolutionRound(model=model, budget=budget, adaptive=_evaluator_controller())
+    monkeypatch.setattr(
+        pipeline.evaluator_runner,
+        "evaluate_population_if_configured",
+        _apply_fake_external_evaluation,
+    )
+    population = CandidatePopulation(
+        [
+            CandidateGenome(
+                id="parent",
+                artifact={"answer": "incumbent"},
+                artifact_type="machine",
+                concise_claim="incumbent",
+                core_mechanism="baseline",
+            )
+        ]
+    )
+    archives = ArchiveManager()
+    policy = EvolutionPolicy(metadata={"offspring_transport_lock": "slot"})
+    contract = NexusObjectiveContract(
+        original_user_goal="improve the machine artifact",
+        normalized_goal="improve the machine artifact",
+        frozen_spec={"problem_text": "Return the best machine artifact."},
+    )
+
+    evaluation = pipeline.evaluate(
+        current_round=1,
+        population=population,
+        archives=archives,
+        policy=policy,
+        contract=contract,
+    )
+    stop_reason, _, _ = pipeline.reproduce(
+        current_round=1,
+        population=population,
+        archives=archives,
+        policy=evaluation.policy,
+        contract=contract,
+        world={},
+        rankings=evaluation.rankings,
+        diagnosis=evaluation.diagnosis,
+        critiques=evaluation.critiques,
+        offspring_verifier=None,
+        repair_parent_candidates=evaluation.repair_parent_candidates,
+    )
+
+    assert stop_reason == ""
+    assert model.calls == ["generate_offspring"]
+    assert len(pipeline.last_generation_plan["productive_branch_allocation"]["slots"]) == 1
+
+
+def test_evaluator_led_parent_pool_excludes_unmeasured_candidates() -> None:
+    adaptive = AdaptiveRuntimeController(
+        config=AdaptiveConfig.from_sources(
+            explicit={
+                "enabled": True,
+                "evaluator": {
+                    "enabled": True,
+                    "command": "unit-test-evaluator",
+                    "metrics": [{"name": "mean_score", "direction": "maximize", "value_type": "number"}],
+                },
+            }
+        )
+    )
+    pipeline = EvolutionRound(
+        model=None,
+        budget=EvolutionBudget(max_rounds=2, branch_factor=2),
+        adaptive=adaptive,
+    )
+    measured = CandidateGenome(
+        id="measured",
+        artifact={"answer": "measured"},
+        metadata={
+            "evaluator": {
+                "candidate_id": "measured",
+                "status": "passed",
+                "passed": True,
+                "metrics": {"mean_score": 0.0},
+            }
+        },
+    )
+    inconclusive = CandidateGenome(
+        id="inconclusive",
+        artifact={"answer": "not measured"},
+        metadata={
+            "evaluator": {
+                "candidate_id": "inconclusive",
+                "status": "inconclusive",
+                "passed": False,
+                "metrics": {"mean_score": None},
+            }
+        },
+    )
+    unmeasured = CandidateGenome(id="unmeasured", artifact={"answer": "unmeasured"})
+    captured: list[str] = []
+
+    def select(candidates, _archives, **_kwargs):
+        captured.extend(candidate.id for candidate in candidates)
+        return list(candidates)
+
+    pipeline.selector = SimpleNamespace(select=select)
+    parents = pipeline._select_reproduction_parents(
+        current_round=1,
+        population=CandidatePopulation([measured, inconclusive, unmeasured]),
+        archives=ArchiveManager(),
+        policy=EvolutionPolicy(),
+        contract=NexusObjectiveContract(original_user_goal="improve", normalized_goal="improve"),
+        world={},
+        rankings=SimpleNamespace(),
+        diagnosis=SearchDiagnosis(),
+        repair_parent_candidates=None,
+    )
+
+    assert captured == ["measured"]
+    assert [candidate.id for candidate in parents] == ["measured"]
+
+
+def test_direction_aware_gain_uses_prior_evaluated_population_as_baseline(monkeypatch) -> None:
+    adaptive = AdaptiveRuntimeController(
+        config=AdaptiveConfig.from_sources(
+            explicit={
+                "enabled": True,
+                "evaluator": {
+                    "enabled": True,
+                    "command": "unit-test-evaluator",
+                    "metrics": [{"name": "score", "direction": "maximize"}],
+                },
+            }
+        )
+    )
+    pipeline = EvolutionRound(
+        model=None,
+        budget=EvolutionBudget(max_rounds=2, branch_factor=1),
+        adaptive=adaptive,
+    )
+    baseline = CandidateGenome(
+        id="baseline",
+        artifact={"answer": "baseline"},
+        metadata={
+            "evaluator": {
+                "candidate_id": "baseline",
+                "status": "passed",
+                "passed": True,
+                "metrics": {"score": 1.0},
+            }
+        },
+    )
+    child = CandidateGenome(
+        id="child",
+        parent_ids=["baseline"],
+        generation=1,
+        artifact={"answer": "improved"},
+        metadata={"created_in_round": 1},
+    )
+
+    def evaluate(candidates, **_kwargs):
+        results = []
+        for candidate in candidates:
+            if candidate.id == "child":
+                candidate.metadata["evaluator"] = {
+                    "candidate_id": "child",
+                    "status": "passed",
+                    "passed": True,
+                    "metrics": {"score": 2.0},
+                }
+            results.append(SimpleNamespace(passed=True))
+        return results
+
+    monkeypatch.setattr(pipeline.evaluator_runner, "evaluate_population_if_configured", evaluate)
+    result = pipeline.evaluate(
+        current_round=2,
+        population=CandidatePopulation([baseline, child]),
+        archives=ArchiveManager(),
+        policy=EvolutionPolicy(),
+        contract=NexusObjectiveContract(original_user_goal="improve", normalized_goal="improve"),
+    )
+
+    outcomes = result.generation_plan["direction_aware_gain"]["outcomes"]
+    assert len(outcomes) == 1
+    assert outcomes[0]["candidate_id"] == "child"
+    assert outcomes[0]["reason_codes"] == ["same_cell_evaluator_elite_improvement"]
+
+
 def test_evaluator_flag_without_command_does_not_disable_model_control() -> None:
     controller = AdaptiveRuntimeController(
         config=AdaptiveConfig.from_sources(

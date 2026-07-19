@@ -110,6 +110,27 @@ class _CountingEvaluatorRunner:
         )
 
 
+class _UnavailableNumericEvaluatorRunner:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    def run(self, command: list[str], **_: Any) -> ToolFeedback:
+        self.calls += 1
+        return ToolFeedback(
+            tool_id="unavailable-numeric-evaluator",
+            status="failed",
+            raw_output_ref=json.dumps(
+                {
+                    "passed": False,
+                    "metrics": {"mean_score": None},
+                    "failures": [{"kind": "oracle_process", "detail": "Resource temporarily unavailable"}],
+                }
+            ),
+            diagnostics=["Resource temporarily unavailable"],
+            cost={"seconds": 0.0, "returncode": 1},
+        )
+
+
 def _counting_evaluator_spec(tmp_path: Path, *, execute_once: bool) -> EvaluatorSpec:
     return EvaluatorSpec.from_mapping(
         {
@@ -179,6 +200,37 @@ def test_external_evaluator_execute_once_is_opt_in(tmp_path: Path) -> None:
         runner.evaluate_population_if_configured([candidate], spec=spec, round_index=round_index)
 
     assert counting_runner.calls == 3
+
+
+def test_external_evaluator_infrastructure_failure_without_numeric_measurement_is_inconclusive_and_retried(tmp_path: Path) -> None:
+    unavailable = _UnavailableNumericEvaluatorRunner()
+    runner = ExternalEvaluatorRunner(runner=unavailable)
+    candidate = CandidateGenome(id="C-inconclusive", artifact={"answer": 1})
+    spec = EvaluatorSpec.from_mapping(
+        {
+            "enabled": True,
+            "command": "python evaluator.py {candidate_path}",
+            "cwd": str(tmp_path),
+            "execute_once": True,
+            "metrics": [{"name": "mean_score", "direction": "maximize", "value_type": "number"}],
+        }
+    )
+
+    results = []
+    for round_index in (1, 2):
+        results.extend(runner.evaluate_population_if_configured([candidate], spec=spec, round_index=round_index))
+
+    assert unavailable.calls == 2
+    assert [result.status for result in results] == ["inconclusive", "inconclusive"]
+    assert all("correctness" not in result.metrics for result in results)
+    assert "correctness" not in candidate.multihead_scores
+    assert "objective_score" not in candidate.multihead_scores
+    latest = candidate.metadata["evidence_records"][-1]
+    assert latest["metadata"]["status"] == "evaluator_inconclusive"
+    assert latest["emitted_challenge_ids"] == []
+    assert latest["hints"] == []
+    assert latest["repair_value"] == 0.0
+    assert candidate.verification_trace[-1]["failed_fragments"] == []
 
 
 @pytest.mark.parametrize(

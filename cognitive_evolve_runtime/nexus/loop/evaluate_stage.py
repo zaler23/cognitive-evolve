@@ -81,7 +81,15 @@ class EvaluateStage:
             and isinstance(candidate.metadata.get("evaluator"), dict)
         ]
         metric_directions = {item.name: item.direction for item in evaluator_spec.metrics}
-        grounded_outcomes = productive_outcomes(newly_evaluated, metric_directions=metric_directions)
+        newly_evaluated_ids = {candidate.id for candidate in newly_evaluated}
+        grounded_outcomes = tuple(
+            outcome
+            for outcome in productive_outcomes(
+                population.candidates,
+                metric_directions=metric_directions,
+            )
+            if outcome.candidate_id in newly_evaluated_ids
+        )
         direction_aware_gain = {
             "schema": "cogev.direction_aware_gain.v1",
             "total_gain": round(sum(max(0.0, item.reward) for item in grounded_outcomes), 12),

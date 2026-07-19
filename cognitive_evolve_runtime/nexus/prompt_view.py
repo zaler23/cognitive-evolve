@@ -37,6 +37,15 @@ HEAVY_CANDIDATE_FIELDS = {
     "inherited_genes",
 }
 
+EVALUATOR_TELEMETRY_KEYS = {
+    "_cache",
+    "cache_hit",
+    "cache_path",
+    "candidate_sha256",
+    "evaluated_at",
+    "oracle_invocations",
+}
+
 
 def prompt_char_budget(*, long_context: bool = False) -> int:
     """Return the model-facing prompt budget in characters.
@@ -233,10 +242,10 @@ def candidate_prompt_view(candidate: CandidateGenome | dict[str, Any], *, detail
                 "source_bindings": list(genome.source_bindings),
                 "evidence_delta": dict(genome.evidence_delta),
                 "verification_result": dict(genome.verification_result),
-                "tool_results": list(genome.tool_results),
-                "verification_trace": list(genome.verification_trace),
+                "tool_results": _without_evaluator_telemetry(genome.tool_results),
+                "verification_trace": _without_evaluator_telemetry(genome.verification_trace),
                 "scores": dict(genome.multihead_scores),
-                "metadata": dict(genome.metadata),
+                "metadata": _without_evaluator_telemetry(genome.metadata),
                 "artifact": genome.artifact,
             }
         )
@@ -1424,11 +1433,36 @@ def _metadata_view(metadata: dict[str, Any]) -> dict[str, Any]:
     return view
 
 
+def _without_evaluator_telemetry(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _without_evaluator_telemetry(item)
+            for key, item in value.items()
+            if key not in EVALUATOR_TELEMETRY_KEYS
+        }
+    if isinstance(value, list):
+        return [_without_evaluator_telemetry(item) for item in value]
+    if not isinstance(value, str):
+        return value
+    json_start = value.find("{")
+    if json_start < 0:
+        return value
+    try:
+        decoded = json.loads(value[json_start:])
+    except json.JSONDecodeError:
+        return value
+    if not isinstance(decoded, (dict, list)):
+        return value
+    cleaned = _without_evaluator_telemetry(decoded)
+    return value[:json_start] + json.dumps(cleaned, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
 def _evaluator_feedback_view(metadata: dict[str, Any], *, detail: str = "summary") -> dict[str, Any]:
     metadata = _to_mapping(metadata)
-    evaluator = _to_mapping(metadata.get("evaluator"))
+    evaluator = _to_mapping(_without_evaluator_telemetry(metadata.get("evaluator")))
     evidence_state = _to_mapping(metadata.get("evidence_state"))
-    records = metadata.get("evidence_records") if isinstance(metadata.get("evidence_records"), list) else []
+    raw_records = metadata.get("evidence_records") if isinstance(metadata.get("evidence_records"), list) else []
+    records = _without_evaluator_telemetry(raw_records)
     latest = _to_mapping(records[-1]) if records else {}
     if not evaluator and not evidence_state and not latest:
         return {}
@@ -1442,12 +1476,16 @@ def _evaluator_feedback_view(metadata: dict[str, Any], *, detail: str = "summary
     diagnostics = evaluator.get("diagnostics") if isinstance(evaluator.get("diagnostics"), list) else latest.get("diagnostics")
     hints = latest.get("hints")
     if isinstance(diagnostics, list) and diagnostics:
-        out["diagnostics"] = list(diagnostics) if detail == "exact" else _clip_list(diagnostics, 8, 320)
+        cleaned_diagnostics = _without_evaluator_telemetry(diagnostics)
+        out["diagnostics"] = list(cleaned_diagnostics) if detail == "exact" else _clip_list(cleaned_diagnostics, 8, 320)
     details = evaluator.get("details")
     if isinstance(details, dict) and details:
-        out["details"] = dict(details) if detail == "exact" else _small_mapping(details, max_items=20, string_chars=1000)
+        model_details = _without_evaluator_telemetry(details)
+        if model_details:
+            out["details"] = dict(model_details) if detail == "exact" else _small_mapping(model_details, max_items=20, string_chars=1000)
     if isinstance(hints, list) and hints:
-        out["hints"] = list(hints) if detail == "exact" else _clip_list(hints, 6, 260)
+        cleaned_hints = _without_evaluator_telemetry(hints)
+        out["hints"] = list(cleaned_hints) if detail == "exact" else _clip_list(cleaned_hints, 6, 260)
     state_keys = (
         "search_score",
         "final_score",

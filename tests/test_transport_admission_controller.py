@@ -494,6 +494,33 @@ def test_gain_token_controller_does_not_reuse_stale_gain_when_latest_round_has_n
     assert decision["gain_per_token"] is None
 
 
+def test_gain_token_controller_applies_configured_bounds_even_when_holding() -> None:
+    policy = EvolutionPolicy(metadata={"offspring_parallel_mode": "slot", "offspring_retry_attempts": 5})
+    budget = EvolutionBudget(max_rounds=4, branch_factor=5)
+
+    decision = _gain_token_control(
+        history=[],
+        cost_ledger={"rounds": []},
+        current_width=budget.branch_factor,
+        current_transport="slot",
+        current_retry_limit=policy.metadata["offspring_retry_attempts"],
+        config={"min_width": 1, "max_width": 2, "min_retry_limit": 1, "max_retry_limit": 1},
+    )
+    _apply_gain_token_control(budget=budget, policy=policy, decision=decision)
+
+    assert decision["action"] == "hold"
+    assert decision["current"] == {"width": 2, "transport": "slot", "retry_limit": 1}
+    assert decision["next"] == {
+        "width": 2,
+        "transport": "slot",
+        "retry_limit": 1,
+        "pre_rank_admission_limit": 2,
+    }
+    assert budget.branch_factor == 2
+    assert policy.metadata["offspring_retry_attempts"] == 1
+    assert policy.metadata["pre_rank_admission_limit"] == 2
+
+
 def test_round_cost_ledger_exposes_all_acceptance_metrics() -> None:
     events = [
         {

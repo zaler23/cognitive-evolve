@@ -489,7 +489,24 @@ def test_direct_offspring_view_keeps_exact_parent_and_evaluator_vector() -> None
                 "passed": False,
                 "metrics": {"length": 873, "coverage": 720, "distinct": 719},
                 "diagnostics": ["one duplicate path remains"],
+                "details": {
+                    "per_instance": [{"instance_id": "feedback-1", "score": 0.8}],
+                    "failures": [{"kind": "oracle_process", "detail": "oracle unavailable"}],
+                    "_cache": {"cache_hit": True, "cache_path": "/private/e2-cache/item.json"},
+                },
             },
+            "evidence_records": [
+                {
+                    "candidate_id": "P",
+                    "diagnostics": [
+                        'repair diagnostic: {"failure":"oracle unavailable","candidate_sha256":"abc","evaluated_at":"now"}'
+                    ],
+                    "hints": [
+                        'repair diagnostic: {"failure":"oracle unavailable","cache_hit":true,"oracle_invocations":1}'
+                    ],
+                    "metadata": {"metrics": {"length": 873}, "cache_path": "/private/e2-cache/item.json"},
+                }
+            ],
             "evidence_state": {
                 "search_score": 0.82,
                 "repair_value": 0.9,
@@ -516,9 +533,17 @@ def test_direct_offspring_view_keeps_exact_parent_and_evaluator_vector() -> None
     assert "PARENT-MIDDLE-CANARY" in json.dumps(view.payload, ensure_ascii=False)
     assert sent_parent["external_evaluator"]["metrics"] == {"length": 873, "coverage": 720, "distinct": 719}
     assert sent_parent["external_evaluator"]["diagnostics"] == ["one duplicate path remains"]
+    assert sent_parent["external_evaluator"]["details"] == {
+        "per_instance": [{"instance_id": "feedback-1", "score": 0.8}],
+        "failures": [{"kind": "oracle_process", "detail": "oracle unavailable"}],
+    }
     assert sent_parent["external_evaluator"]["evidence_state"]["target_challenge_ids"] == ["duplicate-path"]
     assert "initial_candidates" not in view.payload["source_context"]
     assert "supersede earlier packet/world absence claims" in view.payload["prompt_contract"]["current_state_precedence"]
+    prompt_text = json.dumps(view.payload, ensure_ascii=False, sort_keys=True)
+    assert "oracle unavailable" in prompt_text
+    for volatile_key in ("_cache", "cache_hit", "cache_path", "candidate_sha256", "evaluated_at", "oracle_invocations"):
+        assert volatile_key not in prompt_text
 
 
 def test_evaluator_led_runtime_lineage_offspring_requires_complete_task_artifacts_only() -> None:

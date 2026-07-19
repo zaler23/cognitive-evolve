@@ -308,7 +308,11 @@ def select_preliminary_incumbent(candidates: Iterable[Any]) -> Any | None:
     unmeasured model self-score must not replace it.
     """
 
-    evaluated = [candidate for candidate in candidates if _external_evaluator_payload(candidate)]
+    evaluated = [
+        candidate
+        for candidate in candidates
+        if _external_evaluator_payload(candidate) and evaluator_selection_key(candidate)[0] >= 0
+    ]
     if not evaluated:
         return None
     return max(evaluated, key=_preliminary_incumbent_key)

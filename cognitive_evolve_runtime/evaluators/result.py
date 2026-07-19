@@ -23,14 +23,15 @@ class EvaluatorResult:
         return asdict(self)
 
     def to_feedback(self) -> ToolFeedback:
+        inconclusive = self.status == "inconclusive"
         return ToolFeedback(
             tool_id="external_evaluator",
             status=self.status,
             diagnostics=list(self.diagnostics),
             verified_fragments=["external_evaluator_passed"] if self.passed else [],
-            failed_fragments=[] if self.passed else ["external_evaluator_failed"],
+            failed_fragments=[] if self.passed or inconclusive else ["external_evaluator_failed"],
             cost=dict(self.cost),
-            confidence=1.0 if self.passed else 0.8,
+            confidence=0.0 if inconclusive else (1.0 if self.passed else 0.8),
             raw_output_ref=f"external_evaluator:{self.status}",
         )
 

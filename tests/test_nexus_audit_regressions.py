@@ -23,7 +23,7 @@ from cognitive_evolve_runtime.nexus.state import nexus_verification_results
 from cognitive_evolve_runtime.nexus.synthesis import synthesize_result
 from cognitive_evolve_runtime.persistence.event_store import EventStore
 from cognitive_evolve_runtime.tools.patch_sandbox import PatchSandbox
-from cognitive_evolve_runtime.tools.runner import ToolRunner
+from cognitive_evolve_runtime.tools.runner import ToolRunner, _resource_limiter
 from cognitive_evolve_runtime.tools.verifier_environment import VerifierEnvironment
 from cognitive_evolve_runtime.verification.ladder import VerificationStrength
 from cognitive_evolve_runtime.verification.types import GradedOutput, VerifiedResult
@@ -491,6 +491,21 @@ def test_runner_uses_process_group_and_resource_limiter(monkeypatch: pytest.Monk
     assert result.status == "passed"
     assert captured["start_new_session"] is True
     assert callable(captured["preexec_fn"])
+
+
+def test_runner_honors_verifier_process_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+    import resource
+
+    captured: dict[int, tuple[int, int]] = {}
+    monkeypatch.setenv("COGEV_VERIFIER_MAX_PROCS", "3900")
+    monkeypatch.setattr(resource, "getrlimit", lambda _limit: (resource.RLIM_INFINITY, resource.RLIM_INFINITY))
+    monkeypatch.setattr(resource, "setrlimit", lambda limit, value: captured.__setitem__(limit, value))
+
+    limiter = _resource_limiter(1.0)
+    assert limiter is not None
+    limiter()
+
+    assert captured[resource.RLIMIT_NPROC] == (3900, 3900)
 
 
 def test_yaml_config_uses_real_yaml_semantics() -> None:

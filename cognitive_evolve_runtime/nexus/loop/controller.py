@@ -804,20 +804,23 @@ def _gain_token_control(
     config: dict[str, Any],
     transport_lock: str | None = None,
 ) -> dict[str, Any]:
-    width = max(1, int(current_width or 1))
+    requested_width = max(1, int(current_width or 1))
+    requested_retry_limit = max(1, int(current_retry_limit or 1))
+    min_width = max(1, int(config.get("min_width", 1)))
+    max_width = max(min_width, int(config.get("max_width", max(8, requested_width))))
+    min_retry = max(1, int(config.get("min_retry_limit", 1)))
+    max_retry = max(min_retry, int(config.get("max_retry_limit", 5)))
+    width = min(max_width, max(min_width, requested_width))
     requested_transport = current_transport if current_transport in VALID_OFFSPRING_TRANSPORT_MODES else "slot"
     if transport_lock is not None and (
         not isinstance(transport_lock, str) or transport_lock not in VALID_OFFSPRING_TRANSPORT_MODES
     ):
         raise ValueError("offspring_transport_lock must be slot or single_batch")
     transport = transport_lock or requested_transport
-    retry_limit = max(1, int(current_retry_limit or 1))
+    retry_limit = min(max_retry, max(min_retry, requested_retry_limit))
+    bounds_adjusted = width != requested_width or retry_limit != requested_retry_limit
     low = float(config.get("low_gain_per_token", 0.00001))
     high = max(low, float(config.get("high_gain_per_token", 0.00005)))
-    min_width = max(1, int(config.get("min_width", 1)))
-    max_width = max(min_width, int(config.get("max_width", max(8, width))))
-    min_retry = max(1, int(config.get("min_retry_limit", 1)))
-    max_retry = max(min_retry, int(config.get("max_retry_limit", 5)))
     gain_record: dict[str, Any] = {}
     source_round: Any = None
     for record in reversed(history):
@@ -887,6 +890,7 @@ def _gain_token_control(
             "pre_rank_admission_limit": next_width,
         },
         "authority_boundary": "budget_width_transport_retry_only",
+        "bounds_adjusted": bounds_adjusted,
     }
     if transport_lock is not None:
         decision["transport_lock"] = {
@@ -903,7 +907,7 @@ def _gain_token_control(
 
 def _apply_gain_token_control(*, budget: EvolutionBudget, policy: EvolutionPolicy, decision: dict[str, Any]) -> None:
     transport_lock = decision.get("transport_lock")
-    if decision.get("action") == "hold":
+    if decision.get("action") == "hold" and not decision.get("bounds_adjusted"):
         if isinstance(transport_lock, dict) and transport_lock.get("configured"):
             policy.metadata["offspring_parallel_mode"] = str(decision["next"]["transport"])
         return

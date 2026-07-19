@@ -133,7 +133,8 @@ def _resource_limiter(timeout_seconds: float):
         if hasattr(resource, "RLIMIT_NOFILE"):
             _safe_setrlimit(resource, resource.RLIMIT_NOFILE, open_files, open_files)
         if hasattr(resource, "RLIMIT_NPROC"):
-            _safe_setrlimit(resource, resource.RLIMIT_NPROC, 64, 64)
+            max_procs = _positive_int(os.environ.get("COGEV_VERIFIER_MAX_PROCS"), 64)
+            _safe_setrlimit(resource, resource.RLIMIT_NPROC, max_procs, max_procs)
 
     return _limit
 
