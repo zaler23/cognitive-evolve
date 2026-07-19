@@ -304,3 +304,42 @@ def test_runtime_plan_identity_overrides_unknown_model_claim() -> None:
     assert child.metadata["plan_source"] == "runtime_lineage_envelope"
     assert child.metadata["model_claimed_plan_id"] == "model-invented"
     assert child.metadata["model_claimed_plan_source"] == "model-invented-source"
+
+
+def test_evaluator_led_offspring_rejects_incremental_patch_without_complete_artifact() -> None:
+    parent = CandidateGenome(
+        id="P",
+        artifact={
+            "patch_set": [
+                {
+                    "path": "heuristic.py",
+                    "operation": "write",
+                    "content": "def heuristic():\n    return []\n",
+                }
+            ]
+        },
+    )
+    plan = MutationPlan(
+        operator="ModelDirected",
+        parent_ids=["P"],
+        metadata={
+            "plan_id": "runtime-plan",
+            "plan_source": "runtime_lineage_envelope",
+            "completion_mode": "complete_task_artifact_only",
+        },
+    )
+    child = CandidateGenome(
+        id="C",
+        parent_ids=["P"],
+        artifact={
+            "unified_diff": "--- a/heuristic.py\n+++ b/heuristic.py\n@@ -1,2 +1,2 @@\n-def heuristic():\n+def heuristic(x):\n",
+        },
+        artifact_type="project_patch",
+    )
+
+    with pytest.raises(ModelResponseSchemaError, match="complete evaluator-visible artifact"):
+        offspring_module._merge_plan_metadata_into_model_offspring([child], [plan], [parent])
+
+    plan.metadata["completion_mode"] = "concrete_progress_allowed"
+    offspring_module._merge_plan_metadata_into_model_offspring([child], [plan], [parent])
+    assert child.parent_ids == ["P"]

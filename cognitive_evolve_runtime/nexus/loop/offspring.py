@@ -926,6 +926,13 @@ def _merge_plan_metadata_into_model_offspring(offspring: list[CandidateGenome], 
                 instruction="",
                 metadata={"unplanned_model_variation": True, "plan_binding_status": "unplanned_model_variation"},
             )
+        if (
+            (plan.metadata or {}).get("completion_mode") == "complete_task_artifact_only"
+            and _incremental_patch_without_complete_artifact(candidate)
+        ):
+            raise ModelResponseSchemaError(
+                f"model offspring {candidate.id} must contain a complete evaluator-visible artifact, not only an incremental patch"
+            )
         candidate.metadata["mutation_operator"] = plan.operator
         claimed_plan_id = str(candidate.metadata.get("plan_id") or candidate.metadata.get("mutation_plan_id") or "").strip()
         authoritative_plan_id = str((plan.metadata or {}).get("plan_id") or (plan.metadata or {}).get("id") or "").strip()
@@ -1002,6 +1009,24 @@ def _merge_plan_metadata_into_model_offspring(offspring: list[CandidateGenome], 
         action_hint = str(directive.get("action_hint") or "") if isinstance(directive, dict) else ""
         if _restart_action(action_hint):
             apply_strategy_restart(candidate, bound_parents[0], reset_inherited_state=False)
+
+
+def _incremental_patch_without_complete_artifact(candidate: CandidateGenome) -> bool:
+    artifact = candidate.artifact if isinstance(candidate.artifact, dict) else {}
+    incremental = any(
+        isinstance(artifact.get(key), str) and artifact.get(key).strip()
+        for key in ("patch", "patch_content", "diff", "unified_diff")
+    )
+    if not incremental:
+        return False
+    patch_set = list(getattr(candidate, "patch_set", None) or artifact.get("patch_set") or [])
+    for item in patch_set:
+        mapping = item if isinstance(item, dict) else {}
+        operation = str(getattr(item, "operation", None) or mapping.get("operation") or "").lower()
+        content = str(getattr(item, "content", None) or mapping.get("content") or "").strip()
+        if operation == "write" and content:
+            return False
+    return True
 
 
 def _restart_action(action: Any) -> bool:

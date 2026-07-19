@@ -40,10 +40,12 @@ HEAVY_CANDIDATE_FIELDS = {
 EVALUATOR_TELEMETRY_KEYS = {
     "_cache",
     "cache_hit",
+    "cache_key",
     "cache_path",
     "candidate_sha256",
     "evaluated_at",
     "oracle_invocations",
+    "verification_cache_key",
 }
 
 
@@ -198,8 +200,8 @@ def candidate_prompt_view(candidate: CandidateGenome | dict[str, Any], *, detail
         "inherited_genes": _clip_list(genome.inherited_genes, 5 if detail != "tiny" else 2, 900),
         "mutation_history_tail": _clip_list(genome.mutation_history[-4:], 4, 720),
         "scores": _top_scores(genome.multihead_scores),
-        "tool_feedback_summary": _feedback_summary(genome.tool_results),
-        "verification_summary": _feedback_summary(genome.verification_trace),
+        "tool_feedback_summary": _feedback_summary(_without_evaluator_telemetry(genome.tool_results)),
+        "verification_summary": _feedback_summary(_without_evaluator_telemetry(genome.verification_trace)),
         "formal_artifacts": [_small_mapping(item, max_items=8, string_chars=880) for item in genome.formal_artifacts[:4]],
         "proof_obligations": [_small_mapping(item, max_items=8, string_chars=880) for item in genome.proof_obligations[:6]],
         "obligation_delta": _small_mapping(genome.obligation_delta, max_items=8, string_chars=880),
@@ -554,10 +556,10 @@ def _compress_payload(request_type: str, payload: dict[str, Any]) -> dict[str, A
         if request_type == "nexus_generate_offspring":
             compressed["source_context"].pop("initial_candidates", None)
     if "mutation_instruction" in payload:
-        compressed["mutation_instruction"] = _stringify(payload.get("mutation_instruction"))
+        compressed["mutation_instruction"] = _without_evaluator_telemetry(_stringify(payload.get("mutation_instruction")))
     if "plans" in payload:
         compressed["plans"] = (
-            [_to_mapping(plan) for plan in payload.get("plans") or []]
+            _without_evaluator_telemetry([_to_mapping(plan) for plan in payload.get("plans") or []])
             if request_type == "nexus_generate_offspring"
             else [_small_mapping(_to_mapping(plan), max_items=10, string_chars=1040) for plan in payload.get("plans") or []]
         )
@@ -773,6 +775,7 @@ def _artifact_generation_contract_from_view(
                 "non_negotiable_runtime_invariant": "Every candidate must contain a complete evaluator-visible task artifact; procedural substitutes, search instructions, commentary, partial artifacts, and unchanged copies are invalid.",
                 "when_incomplete": "Return an empty result array under the request schema; the runtime preserves any already accepted incumbent and otherwise checkpoints. Never substitute partial work, procedures, or plans for the task artifact.",
                 "duplicate_rule": "Do not return an unchanged parent, a prior-attempt artifact, or duplicate siblings. Return an empty result rather than a known exact duplicate.",
+                "project_patch_output_rule": "For evaluator-led project/code candidates, return complete file contents with artifact.patch_set write operations. artifact.unified_diff and other incremental-only patch forms are invalid because they are not complete evaluator-visible task artifacts.",
             }
         )
     return contract
@@ -1448,13 +1451,17 @@ def _without_evaluator_telemetry(value: Any) -> Any:
     if json_start < 0:
         return value
     try:
-        decoded = json.loads(value[json_start:])
+        decoded, json_end = json.JSONDecoder().raw_decode(value[json_start:])
     except json.JSONDecodeError:
         return value
     if not isinstance(decoded, (dict, list)):
         return value
     cleaned = _without_evaluator_telemetry(decoded)
-    return value[:json_start] + json.dumps(cleaned, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return (
+        value[:json_start]
+        + json.dumps(cleaned, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        + value[json_start + json_end :]
+    )
 
 
 def _evaluator_feedback_view(metadata: dict[str, Any], *, detail: str = "summary") -> dict[str, Any]:

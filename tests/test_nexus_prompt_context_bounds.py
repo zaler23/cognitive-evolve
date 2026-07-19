@@ -514,6 +514,13 @@ def test_direct_offspring_view_keeps_exact_parent_and_evaluator_vector() -> None
                 "target_challenge_ids": ["duplicate-path"],
             },
         },
+        verification_trace=[
+            {
+                "status": "passed",
+                "metadata": {"cache_key": "runtime-cache"},
+                "replay_record": {"verification_cache_key": "verification:abc"},
+            }
+        ],
     )
 
     view = build_prompt_view(
@@ -542,7 +549,76 @@ def test_direct_offspring_view_keeps_exact_parent_and_evaluator_vector() -> None
     assert "supersede earlier packet/world absence claims" in view.payload["prompt_contract"]["current_state_precedence"]
     prompt_text = json.dumps(view.payload, ensure_ascii=False, sort_keys=True)
     assert "oracle unavailable" in prompt_text
-    for volatile_key in ("_cache", "cache_hit", "cache_path", "candidate_sha256", "evaluated_at", "oracle_invocations"):
+    for volatile_key in (
+        "_cache",
+        "cache_hit",
+        "cache_key",
+        "cache_path",
+        "candidate_sha256",
+        "evaluated_at",
+        "oracle_invocations",
+        "verification_cache_key",
+    ):
+        assert volatile_key not in prompt_text
+
+
+def test_direct_offspring_view_cleans_evaluator_telemetry_from_runtime_plan() -> None:
+    failure = {
+        "_cache": {
+            "cache_hit": False,
+            "cache_path": "/private/e2-cache/item.json",
+            "candidate_sha256": "abc",
+            "evaluated_at": "now",
+            "oracle_invocations": 1,
+            "cache_key": "runtime-cache",
+            "verification_cache_key": "verification:abc",
+        },
+        "failures": [{"kind": "evaluator_error", "detail": "candidate contains no source"}],
+        "mean_score": None,
+    }
+    plan = {
+        "operator": "ModelDirected",
+        "parent_ids": ["P"],
+        "instruction": "repair the evaluator-visible artifact",
+        "metadata": {
+            "plan_source": "runtime_lineage_envelope",
+            "completion_mode": "complete_task_artifact_only",
+            "branch_slots": [
+                {
+                    "slot_id": "slot-p",
+                    "directive": {
+                        "search_pressure": {
+                            "success_criteria": [{"summary": json.dumps(failure)}],
+                        }
+                    },
+                }
+            ],
+        },
+    }
+
+    view = build_prompt_view(
+        "nexus_generate_offspring",
+        {
+            "plans": [plan],
+            "mutation_instruction": f"repair this failure: {json.dumps(failure)}; keep the measured failure",
+        },
+        max_chars=30_000,
+    )
+
+    prompt_text = json.dumps(view.payload, ensure_ascii=False, sort_keys=True)
+    assert "candidate contains no source" in prompt_text
+    assert "mean_score" in prompt_text
+    assert "keep the measured failure" in prompt_text
+    for volatile_key in (
+        "_cache",
+        "cache_hit",
+        "cache_key",
+        "cache_path",
+        "candidate_sha256",
+        "evaluated_at",
+        "oracle_invocations",
+        "verification_cache_key",
+    ):
         assert volatile_key not in prompt_text
 
 
@@ -565,6 +641,8 @@ def test_evaluator_led_runtime_lineage_offspring_requires_complete_task_artifact
     direct = build_prompt_view("nexus_generate_offspring", payload).payload["artifact_generation_contract"]
     assert direct["completion_mode"] == "complete_task_artifact_only"
     assert "complete evaluator-visible task artifact" in direct["non_negotiable_runtime_invariant"]
+    assert "unified_diff" in direct["project_patch_output_rule"]
+    assert "invalid" in direct["project_patch_output_rule"]
     assert "executable repair step" not in direct["non_negotiable_runtime_invariant"]
     assert "repair obligation" not in direct["when_incomplete"]
 
